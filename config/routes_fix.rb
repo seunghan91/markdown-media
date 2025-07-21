@@ -6,20 +6,15 @@ Rails.application.routes.draw do
   # ... existing code ...
   
   namespace :api do
-    namespace :v1 do
-      resources :tasks do
-        collection do
-          post :generate
-        end
-      end
-    end
-    
-    # 기존 API 라우트 (v1 없이)
+    # API 라우트 (v1 없이)
     resources :tasks do
       collection do
         post :generate
       end
     end
+    
+    # holidays 라우트
+    get '/holidays/:year/:month', to: 'holidays#index'
   end
   
   # ... existing code ...

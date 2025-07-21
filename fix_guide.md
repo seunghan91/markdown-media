@@ -3,8 +3,9 @@
 ## 발견된 문제점들
 
 1. **Holiday 라우트 미정의**: `/holidays/:year/:month` 와 `/api/holidays/:year/:month` 경로가 정의되지 않음
+   - 2025년 7월처럼 공휴일이 없는 달도 정상적으로 처리해야 함
 2. **Task 모델 status 메서드 미정의**: Task 모델에 status 메서드가 없음
-3. **API 버전 라우트 문제**: `/api/v1/tasks` 경로가 정의되지 않음
+3. **잘못된 API 경로 접근**: 클라이언트가 존재하지 않는 `/api/v1/tasks` 경로에 접근 (v1은 사용하지 않음)
 4. **Task 생성 시 에러**: Task 컨트롤러의 create 액션에서 에러 발생
 
 ## 해결 방법
