@@ -25,7 +25,7 @@ Go beyond simple image display. Create centered, captioned, or precisely-sized i
 ![[profile.jpg]]
 
 // Image with attributes (alignment, width, alt text, caption)
-![[brand-logo.png]{width=250px align=center alt="MDM Project Logo" caption="The official MDM logo"}]]
+![[brand-logo.png | width=250px align=center alt="MDM Project Logo" caption="The official MDM logo"]]
 ```
 
 ### ✨ Image Presets (Size & Ratio)
@@ -34,10 +34,10 @@ To make responsive design intuitive, MDM includes built-in presets for common si
 
 ```markdown
 // Use a preset for a thumbnail
-![[photo.jpg]{size=thumb}]]
+![[photo.jpg | size=thumb]]
 
 // Use a preset for a widescreen 16:9 ratio
-![[landscape.jpg]{ratio=widescreen}]]
+![[landscape.jpg | ratio=widescreen]]
 ```
 
 | Category | Preset Name | Representative Value |
