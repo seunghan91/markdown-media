@@ -12,13 +12,13 @@ Standard Markdown is great for text, but it falls short with local media:
 - **No Control:** You can't specify a video's width, make it autoplay, or loop it without resorting to raw HTML.
 - **Limited Media Types:** Embedding audio files or creating image galleries is cumbersome and non-standard.
 
-## 💡 The Solution: `![[]]` Syntax
+## 💡 The Solution: `![[]]` Syntax for Advanced Images
 
-MDM introduces a single, powerful syntax: `![[]]`. It's an intuitive extension of the familiar Markdown image syntax and the "wikilink" style used in tools like Obsidian.
+MDM introduces a single, powerful syntax: `![[]]`. For our MVP, we are focusing on creating a best-in-class experience for image handling.
 
-### 🖼️ Images
+### 🖼️ Advanced Image Control
 
-Go beyond simple image display. Create centered, captioned, or stylized images.
+Go beyond simple image display. Create centered, captioned, or precisely-sized images with ease.
 
 ```markdown
 // Simple image embed
@@ -28,32 +28,36 @@ Go beyond simple image display. Create centered, captioned, or stylized images.
 ![[brand-logo.png]{width=250px align=center alt="MDM Project Logo" caption="The official MDM logo"}]]
 ```
 
-### 🎬 Video & 🔉 Audio
+### ✨ Image Presets (Size & Ratio)
 
-Embed and control video and audio files natively within your Markdown.
+To make responsive design intuitive, MDM includes built-in presets for common sizes and aspect ratios.
 
 ```markdown
-// Video with controls, specified size, and no autoplay
-![[product-demo.mp4]{width=720px controls=true autoplay=false}]]
+// Use a preset for a thumbnail
+![[photo.jpg]{size=thumb}]]
 
-// A looping, muted background video
-![[background-loop.mp4]{loop=true muted=true}]]
-
-// Embed an audio file with player controls
-![[podcast-episode-1.mp3]{controls=true}]]
+// Use a preset for a widescreen 16:9 ratio
+![[landscape.jpg]{ratio=widescreen}]]
 ```
 
-## 🚀 Technology Roadmap
+| Category | Preset Name | Representative Value |
+| :--- | :--- | :--- |
+| **Size** | `thumb`, `small`, `medium`, `large` | `150px`, `480px`, `768px`, `1024px` (width) |
+| **Ratio** | `square`, `standard`, `widescreen`, `portrait`, `story` | `1:1`, `4:3`, `16:9`, `3:4`, `9:16` |
 
-MDM adopts a multi-language strategy to ensure both universal accessibility and high performance.
+### 📁 Supported Image Formats
 
-1.  **JavaScript (NPM):** The reference implementation for the web ecosystem.
-2.  **Python (PyPI):** For integration into the data science and tooling ecosystem.
-3.  **Rust:** The performance core, to be compiled to WASM and native modules.
+Our goal is to support a wide range of image formats. The MVP will prioritize:
+- **Standard:** `jpg`, `jpeg`, `png`, `gif`
+- **Modern:** `webp`, `svg`
+
+## 🚀 MVP Roadmap: JavaScript First
+
+Our immediate goal is to deliver a stable JavaScript parser as the foundation of the MDM ecosystem. Future phases will include Python and Rust implementations.
 
 ## 🤝 How to Contribute
 
-MDM is an open-source project, and we welcome contributions of all kinds! Please see our `CONTRIBUTING.md` file for detailed guidelines on how to get involved.
+MDM is an open-source project, and we welcome contributions of all kinds! Please see our `plan.md` for the detailed roadmap and `CONTRIBUTING.md` for guidelines on how to get involved.
 
 ## 📜 License
 
