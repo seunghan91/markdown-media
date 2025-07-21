@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>MDM Parser Demo</title>
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 1200px; 
+      margin: 0 auto; 
+      padding: 20px;
+      line-height: 1.6;
+    }
+    img { max-width: 100%; height: auto; }
+    figure { margin: 20px 0; text-align: center; }
+    figcaption { margin-top: 10px; font-style: italic; color: #666; }
+    .align-center { display: block; margin: 0 auto; }
+    video { max-width: 100%; }
+    h1, h2 { color: #333; }
+    h1 { border-bottom: 2px solid #eee; padding-bottom: 10px; }
+    h2 { margin-top: 30px; }
+  </style>
+</head>
+<body>
+# MDM 파서 테스트
+
+## 기본 이미지 참조
+
+이것은 MDM에 정의된 이미지입니다:
+
+<img src="/workspace/packages/parser-js/example/assets/logo.png" alt="My Blog Logo">
+
+헤더 프리셋을 적용한 로고:
+
+<img src="/workspace/packages/parser-js/example/assets/logo.png" alt="My Blog Logo" height="50">
+
+## 히어로 이미지
+
+<img src="/workspace/packages/parser-js/example/assets/hero-bg.jpg" alt="환영 배너" width="100%" height="400" loading="eager">
+
+모바일 버전:
+
+<img src="/workspace/packages/parser-js/example/assets/hero-bg.jpg" alt="환영 배너" width="100%" height="200" loading="eager">
+
+## 캡션이 있는 이미지
+
+<figure><img src="/workspace/packages/parser-js/example/assets/screenshots/app-main.png" alt="앱 메인 화면" width="800"><figcaption>앱의 메인 대시보드 화면</figcaption></figure>
+
+## 인라인 속성 오버라이드
+
+<img src="/workspace/packages/parser-js/example/assets/logo.png" alt="My Blog Logo" height="50" style="opacity: 0.5" class="align-center">
+
+## 비디오
+
+인라인 비디오:
+
+<video src="/workspace/packages/parser-js/example/assets/intro.mp4" width="800" poster="/workspace/packages/parser-js/example/assets/intro-thumb.jpg" controls></video>
+
+배경 비디오:
+
+<video src="/workspace/packages/parser-js/example/assets/intro.mp4" width="100%" poster="/workspace/packages/parser-js/example/assets/intro-thumb.jpg" autoplay muted loop></video>
+
+## YouTube 임베드
+
+<iframe width="800" height="450" src="https://www.youtube.com/embed/dQw4w9WgXcQ" frameborder="0" allowfullscreen></iframe>
+
+## 직접 파일 참조 (MDM에 없는 경우)
+
+<img src="example.jpg" width="500" class="align-center">
+
+<video src="demo.mp4" width="600" controls></video>
+</body>
+</html>
