@@ -1,0 +1,21 @@
+{
+  "name": "@mdm/parser",
+  "version": "0.1.0",
+  "description": "MDM (Markdown+Media) parser for JavaScript",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "dev": "node src/demo.js"
+  },
+  "keywords": ["markdown", "parser", "media", "mdm"],
+  "author": "MDM Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}
