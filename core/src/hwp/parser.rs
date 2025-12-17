@@ -212,10 +212,21 @@ mod tests {
 
     #[test]
     fn test_image_format_detection() {
-        let jpeg = vec![0xFF, 0xD8, 0xFF];
+        // JPEG needs at least 2 bytes but more for proper detection
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
         assert_eq!(detect_image_format(&jpeg), "jpeg");
         
         let png = vec![0x89, 0x50, 0x4E, 0x47];
         assert_eq!(detect_image_format(&png), "png");
+        
+        let gif = vec![0x47, 0x49, 0x46, 0x38];
+        assert_eq!(detect_image_format(&gif), "gif");
+        
+        let bmp = vec![0x42, 0x4D, 0x00, 0x00];
+        assert_eq!(detect_image_format(&bmp), "bmp");
+        
+        // Too short - should return empty
+        let short = vec![0xFF];
+        assert_eq!(detect_image_format(&short), "");
     }
 }

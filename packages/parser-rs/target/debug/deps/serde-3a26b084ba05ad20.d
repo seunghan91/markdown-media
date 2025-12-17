@@ -1,0 +1,14 @@
+/Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/deps/serde-3a26b084ba05ad20.d: /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/build/serde-2beb76a2a4a45d11/out/private.rs
+
+/Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/deps/libserde-3a26b084ba05ad20.rlib: /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/build/serde-2beb76a2a4a45d11/out/private.rs
+
+/Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/deps/libserde-3a26b084ba05ad20.rmeta: /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/build/serde-2beb76a2a4a45d11/out/private.rs
+
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/build/serde-2beb76a2a4a45d11/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/seunghan/MDM/markdown-media/packages/parser-rs/target/debug/build/serde-2beb76a2a4a45d11/out
