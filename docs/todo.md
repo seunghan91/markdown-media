@@ -59,7 +59,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
   ```
 - [x] HWP 바이너리 파서 (OLE 구조 분석 + 텍스트 추출)
 - [x] PDF 바이너리 파서 (텍스트 추출)
-- [ ] DOCX 파서 (XML 구조)
+- [x] DOCX 파서 (XML 구조)
 - [x] 텍스트 추출 엔진 (기본 구조)
 - [x] 이미지 추출 기능
 - [ ] 성능 벤치마크
@@ -74,15 +74,15 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
   ```
 - [x] `hwp_to_svg.py` - 표/차트를 SVG로 변환 (기본 구현)
 - [x] `pdf_processor.py` - PDF 텍스트/이미지 추출
-- [ ] OCR 통합 (Tesseract/EasyOCR)
+- [x] OCR 통합 (Tesseract/EasyOCR)
 - [ ] PyPI 패키지 준비 (`setup.py`)
 
 #### 1.3 Document Converters (`converters/`)
 
 - [x] HWP → MDX 변환기 (기본 구조)
-- [ ] HWPX → MDX 변환기
+- [x] HWPX → MDX 변환기
 - [x] PDF → MDX 변환기 (기본 구조)
-- [ ] DOCX → MDX 변환기
+- [x] DOCX → MDX 변환기
 - [x] 복잡한 표 → SVG 렌더러
 - [ ] 차트 → PNG 캡처
 - [ ] 메타데이터 추출기
@@ -120,8 +120,8 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [x] Convert 명령 구현
 - [x] Validate 명령 구현
 - [x] Serve 명령 구현
-- [ ] Watch 모드 (실시간 변환)
-- [ ] 배치 처리 지원
+- [x] Watch 모드 (실시간 변환)
+- [x] 배치 처리 지원
 
 ---
 

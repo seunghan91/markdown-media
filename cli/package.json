@@ -13,7 +13,8 @@
   "author": "beasthan2025",
   "license": "MIT",
   "dependencies": {
-    "commander": "^12.0.0",
-    "js-yaml": "^4.1.0"
+    "commander": "^11.0.0",
+    "js-yaml": "^4.1.0",
+    "glob": "^10.0.0"
   }
 }

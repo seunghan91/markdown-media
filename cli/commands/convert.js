@@ -22,15 +22,21 @@ export async function convertCommand(input, options) {
   if (ext === '.hwp') {
     converter = resolve('./converters/hwp_converter.py');
     converterArgs = [converter, inputPath, options.output];
+  } else if (ext === '.hwpx') {
+    converter = resolve('./converters/hwpx_converter.py');
+    converterArgs = [converter, inputPath, options.output];
   } else if (ext === '.pdf') {
     converter = resolve('./converters/pdf_converter.py');
+    converterArgs = [converter, inputPath, options.output];
+  } else if (ext === '.docx') {
+    converter = resolve('./converters/docx_converter.py');
     converterArgs = [converter, inputPath, options.output];
   } else if (ext === '.html' || ext === '.htm') {
     converter = resolve('./converters/html_converter.py');
     converterArgs = [converter, inputPath, options.output];
   } else {
     console.error(`❌ Error: Unsupported file format: ${ext}`);
-    console.error('   Supported formats: .hwp, .pdf, .html, .htm');
+    console.error('   Supported formats: .hwp, .hwpx, .pdf, .docx, .html, .htm');
     process.exit(1);
   }
 
