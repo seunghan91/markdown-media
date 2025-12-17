@@ -2,3 +2,5 @@ pyhwp
 pdfplumber
 pillow
 svgwrite
+beautifulsoup4
+requests

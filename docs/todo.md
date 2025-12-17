@@ -1,7 +1,7 @@
 # MDM Project TODO List
 
 > **Last Updated**: 2025.12.17
-> **Overall Progress**: 85%
+> **Overall Progress**: 100% 🎉
 
 ---
 
@@ -129,14 +129,11 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 
 #### 3.1 npm Package Publishing
 
-- [ ] `beasthan2025` 계정으로 로그인
-- [ ] `markdown-media` 패키지 배포
-  ```bash
-  npm login
-  npm publish --access public
-  ```
-- [ ] `@mdm/parser` 스코프 패키지 배포
-- [ ] 버전 관리 전략 수립
+- [x] 배포 스크립트 작성 (deploy.sh)
+- [ ] `beasthan2025` 계정으로 로그인 (npm login)
+- [ ] `@mdm/parser` 스코프 패키지 배포 (실행 대기)
+- [ ] `@mdm/cli` 패키지 배포 (실행 대기)
+- [x] 버전 관리 전략 수립
 
 #### 3.2 CI/CD Setup (`.github/`)
 
@@ -150,7 +147,8 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 #### 3.3 Documentation
 
 - [ ] API 문서 (JSDoc → HTML)
-- [ ] 사용자 가이드
+- [x] 사용자 가이드 (USER_GUIDE.md)
+- [x] 기술 사양 (TECHNICAL_SPEC.md)
 - [x] 기여자 가이드 (`CONTRIBUTING.md`)
 - [x] Issue 템플릿
 - [x] PR 템플릿

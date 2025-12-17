@@ -18,19 +18,24 @@ export async function convertCommand(input, options) {
   const ext = extname(inputPath).toLowerCase();
   
   // Determine converter based on file extension
-  let converter;
+  let converter, converterArgs;
   if (ext === '.hwp') {
     converter = resolve('./converters/hwp_converter.py');
+    converterArgs = [converter, inputPath, options.output];
   } else if (ext === '.pdf') {
     converter = resolve('./converters/pdf_converter.py');
+    converterArgs = [converter, inputPath, options.output];
+  } else if (ext === '.html' || ext === '.htm') {
+    converter = resolve('./converters/html_converter.py');
+    converterArgs = [converter, inputPath, options.output];
   } else {
     console.error(`❌ Error: Unsupported file format: ${ext}`);
-    console.error('   Supported formats: .hwp, .pdf');
+    console.error('   Supported formats: .hwp, .pdf, .html, .htm');
     process.exit(1);
   }
 
   // Call Python converter
-  const python = spawn('python3', [converter, inputPath, options.output]);
+  const python = spawn('python3', converterArgs);
 
   python.stdout.on('data', (data) => {
     process.stdout.write(data);

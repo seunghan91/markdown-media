@@ -211,21 +211,45 @@ See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for detailed deployment instruction
 
 ## ❓ FAQ
 
+### What file formats are supported?
+
+MDM converts the following formats to **Markdown+Media bundles**:
+
+✅ **HWP** (Hancom Office) - Korean government documents
+✅ **PDF** - Portable Document Format  
+✅ **HTML** - Web pages and blog posts (Naver, Tistory, WordPress)
+🔜 **DOCX** - Microsoft Word (planned)
+
 ### Is this an HTML-to-Markdown converter?
 
-**No.** MDM converts **document files (HWP, PDF) to Markdown+Media bundles**, not HTML to Markdown.
+**Partially yes!** MDM now supports:
+
+**HTML → MDM**: Convert HTML files (especially blog posts) to Markdown+Media bundles
+
+```bash
+mdm convert blog.html -o output/
+python converters/html_converter.py --url https://blog.naver.com/post/123 output/
+```
+
+**Supported blog platforms:**
+
+- Naver Blog (blog.naver.com)
+- Tistory
+- WordPress
+- Generic HTML
 
 **What it does:**
 
 ```
-HWP/PDF → Clean Markdown (.mdx) + Media Assets (SVG/PNG)
+HTML/HWP/PDF → Clean Markdown (.mdx) + Media Assets (SVG/PNG)
 ```
 
-**What it doesn't do:**
+### Use Cases
 
-```
-HTML → Markdown (use other tools like Pandoc)
-```
+1. **Blog Archive**: Save Naver/Tistory posts as Markdown
+2. **Government Documents**: Convert HWP files to web format
+3. **PDF Reports**: Extract text and images from PDFs
+4. **Personal Knowledge**: Import blogs into Obsidian/Logseq
 
 ### What's the output format?
 
@@ -233,11 +257,12 @@ A **Markdown-Media Bundle**:
 
 ```
 output/
-├── document.mdx     # Pure Markdown text
-├── document.mdm     # Resource metadata (JSON)
+├── index.mdx        # Pure Markdown text
+├── index.mdm        # Resource metadata (JSON)
 └── assets/
     ├── table_1.svg  # Tables as SVG
-    └── image_1.png  # Extracted images
+    ├── image_1.png  # Downloaded images
+    └── image_2.jpg
 ```
 
 ---
