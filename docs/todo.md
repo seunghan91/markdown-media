@@ -1,7 +1,7 @@
 # MDM Project TODO List
 
 > **Last Updated**: 2025.12.17
-> **Overall Progress**: 20%
+> **Overall Progress**: 85%
 
 ---
 
@@ -9,11 +9,12 @@
 
 ```
 JavaScript Parser:  ████████████████████ 100%
-Python Parser:      ████████░░░░░░░░░░░░  40%
-Rust Core:          ████████░░░░░░░░░░░░  40%
-HWP/PDF Converter:  ██████████░░░░░░░░░░  50%
+Python Parser:      ████████████████████ 100%
+Rust Core:          ████████████████░░░░  80%
+HWP/PDF Converter:  ████████████████░░░░  80%
 CLI Tool:           ████████████████████ 100%
 CI/CD:              ████████████████████ 100%
+WASM:               ████████████████████ 100%
 npm Publish:        ░░░░░░░░░░░░░░░░░░░░   0%
 ```
 
@@ -56,10 +57,11 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
   cargo init --name mdm-core
   cargo add cfb  # OLE 파싱용
   ```
-- [x] HWP 바이너리 파서 (OLE 구조 분석)
-- [ ] PDF 바이너리 파서
+- [x] HWP 바이너리 파서 (OLE 구조 분석 + 텍스트 추출)
+- [x] PDF 바이너리 파서 (텍스트 추출)
 - [ ] DOCX 파서 (XML 구조)
 - [x] 텍스트 추출 엔진 (기본 구조)
+- [x] 이미지 추출 기능
 - [ ] 성능 벤치마크
 
 #### 1.2 Python Converter (`packages/parser-py/`)
@@ -70,8 +72,8 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
   python -m venv venv
   pip install pyhwp pdfplumber pillow svgwrite
   ```
-- [ ] `hwp_to_svg.py` - 표/차트를 SVG로 변환
-- [ ] `pdf_processor.py` - PDF 텍스트/이미지 추출
+- [x] `hwp_to_svg.py` - 표/차트를 SVG로 변환 (기본 구현)
+- [x] `pdf_processor.py` - PDF 텍스트/이미지 추출
 - [ ] OCR 통합 (Tesseract/EasyOCR)
 - [ ] PyPI 패키지 준비 (`setup.py`)
 
@@ -101,10 +103,10 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 
 #### 2.2 Rust Parser (`packages/parser-rs/`)
 
-- [ ] Cargo 프로젝트 설정
-- [ ] JavaScript 로직 포팅
-- [ ] WASM 컴파일 설정 (wasm-bindgen)
-- [ ] JavaScript 바인딩
+- [x] Cargo 프로젝트 설정
+- [x] JavaScript 로직 포팅
+- [x] WASM 컴파일 설정 (wasm-bindgen)
+- [x] JavaScript 바인딩
 - [ ] 브라우저 호환성 테스트
 
 #### 2.3 CLI Tool
