@@ -184,6 +184,64 @@ MDM is an open-source project, and we welcome contributions of all kinds! Please
 
 ---
 
+## 📦 Deployment
+
+### npm Packages
+
+```bash
+# Login to npm
+npm login  # Use beasthan2025 account
+
+# Run deployment script
+./scripts/deploy.sh
+```
+
+### Python Package
+
+```bash
+# Deploy to PyPI
+./scripts/deploy-pypi.sh
+```
+
+### Manual Deployment
+
+See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for detailed deployment instructions.
+
+---
+
+## ❓ FAQ
+
+### Is this an HTML-to-Markdown converter?
+
+**No.** MDM converts **document files (HWP, PDF) to Markdown+Media bundles**, not HTML to Markdown.
+
+**What it does:**
+
+```
+HWP/PDF → Clean Markdown (.mdx) + Media Assets (SVG/PNG)
+```
+
+**What it doesn't do:**
+
+```
+HTML → Markdown (use other tools like Pandoc)
+```
+
+### What's the output format?
+
+A **Markdown-Media Bundle**:
+
+```
+output/
+├── document.mdx     # Pure Markdown text
+├── document.mdm     # Resource metadata (JSON)
+└── assets/
+    ├── table_1.svg  # Tables as SVG
+    └── image_1.png  # Extracted images
+```
+
+---
+
 ## 📜 License
 
 The MDM specification and documentation are licensed under Creative Commons BY-SA 4.0.
