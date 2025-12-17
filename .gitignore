@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.env
+
+# Build outputs
+/core/target/
+/packages/parser-js/dist/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
