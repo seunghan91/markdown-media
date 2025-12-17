@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "$lib/*": ["app/frontend/lib/*"],
+      "$components/*": ["app/frontend/components/*"],
+      "@/*": ["app/frontend/*"]
+    }
+  },
+  "include": ["app/frontend/**/*.ts", "app/frontend/**/*.svelte"]
+}

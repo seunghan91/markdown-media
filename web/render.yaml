@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: mdm-web
+    runtime: ruby
+    plan: starter
+    region: singapore
+    buildCommand: >-
+      bundle install --deployment --without development:test &&
+      pnpm install --frozen-lockfile &&
+      pnpm build &&
+      bundle exec rails db:migrate RAILS_ENV=production
+    startCommand: bundle exec puma -t 5:5 -p ${PORT:-3000}
+    envVars:
+      - key: RAILS_ENV
+        value: production
+      - key: RAILS_MASTER_KEY
+        sync: false
+      - key: SECRET_KEY_BASE
+        generateValue: true
+    healthCheckPath: /up
+    autoDeploy: true
