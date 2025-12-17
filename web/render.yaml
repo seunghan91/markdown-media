@@ -4,8 +4,10 @@ services:
     runtime: ruby
     plan: starter
     region: singapore
+    rootDir: web
     buildCommand: >-
       bundle install --deployment --without development:test &&
+      npm install -g pnpm &&
       pnpm install --frozen-lockfile &&
       pnpm build &&
       bundle exec rails db:migrate RAILS_ENV=production
