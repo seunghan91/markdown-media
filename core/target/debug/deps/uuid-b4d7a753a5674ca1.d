@@ -1,0 +1,13 @@
+/Users/seunghan/MDM/markdown-media/core/target/debug/deps/uuid-b4d7a753a5674ca1.d: /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/lib.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/macros.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/builder.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/error.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/non_nil.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/parser.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/fmt.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/timestamp.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/external.rs
+
+/Users/seunghan/MDM/markdown-media/core/target/debug/deps/libuuid-b4d7a753a5674ca1.rmeta: /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/lib.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/macros.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/builder.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/error.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/non_nil.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/parser.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/fmt.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/timestamp.rs /Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/external.rs
+
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/lib.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/macros.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/builder.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/error.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/non_nil.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/parser.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/fmt.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/timestamp.rs:
+/Users/seunghan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uuid-1.19.0/src/external.rs:

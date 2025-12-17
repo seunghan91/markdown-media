@@ -49,16 +49,16 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 
 #### 1.1 Rust Core Engine (`core/`)
 
-- [ ] Cargo 프로젝트 초기화
+- [x] Cargo 프로젝트 초기화
   ```bash
   cd core
   cargo init --name mdm-core
   cargo add cfb  # OLE 파싱용
   ```
-- [ ] HWP 바이너리 파서 (OLE 구조 분석)
+- [x] HWP 바이너리 파서 (OLE 구조 분석)
 - [ ] PDF 바이너리 파서
 - [ ] DOCX 파서 (XML 구조)
-- [ ] 텍스트 추출 엔진
+- [x] 텍스트 추출 엔진 (기본 구조)
 - [ ] 성능 벤치마크
 
 #### 1.2 Python Converter (`packages/parser-py/`)
@@ -76,11 +76,11 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 
 #### 1.3 Document Converters (`converters/`)
 
-- [ ] HWP → MDX 변환기
+- [x] HWP → MDX 변환기 (기본 구조)
 - [ ] HWPX → MDX 변환기
-- [ ] PDF → MDX 변환기
+- [x] PDF → MDX 변환기 (기본 구조)
 - [ ] DOCX → MDX 변환기
-- [ ] 복잡한 표 → SVG 렌더러
+- [x] 복잡한 표 → SVG 렌더러
 - [ ] 차트 → PNG 캡처
 - [ ] 메타데이터 추출기
 
