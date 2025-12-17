@@ -9,10 +9,11 @@
 
 ```
 JavaScript Parser:  ████████████████████ 100%
-Python Parser:      ░░░░░░░░░░░░░░░░░░░░   0%
-Rust Core:          ░░░░░░░░░░░░░░░░░░░░   0%
-HWP/PDF Converter:  ░░░░░░░░░░░░░░░░░░░░   0%
-CLI Tool:           ░░░░░░░░░░░░░░░░░░░░   0%
+Python Parser:      ████████░░░░░░░░░░░░  40%
+Rust Core:          ████████░░░░░░░░░░░░  40%
+HWP/PDF Converter:  ██████████░░░░░░░░░░  50%
+CLI Tool:           ████████████████████ 100%
+CI/CD:              ████████████████████ 100%
 npm Publish:        ░░░░░░░░░░░░░░░░░░░░   0%
 ```
 
@@ -108,14 +109,15 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 
 #### 2.3 CLI Tool
 
-- [ ] 명령어 구조 설계
+- [x] 명령어 구조 설계
   ```bash
   mdm convert input.hwp -o output/
   mdm validate bundle/
   mdm serve --port 3000
   ```
-- [ ] Convert 명령 구현
-- [ ] Validate 명령 구현
+- [x] Convert 명령 구현
+- [x] Validate 명령 구현
+- [x] Serve 명령 구현
 - [ ] Watch 모드 (실시간 변환)
 - [ ] 배치 처리 지원
 
@@ -136,10 +138,10 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 
 #### 3.2 CI/CD Setup (`.github/`)
 
-- [ ] GitHub Actions workflow
-  - [ ] 자동 테스트 (`test.yml`)
-  - [ ] 자동 빌드 (`build.yml`)
-  - [ ] 자동 배포 (`publish.yml`)
+- [x] GitHub Actions workflow
+  - [x] 자동 테스트 (`test.yml`)
+  - [x] 자동 빌드 (`build.yml`)
+  - [x] 자동 배포 (`publish.yml`)
 - [ ] 코드 커버리지 리포트
 - [ ] 자동 릴리스 노트
 
@@ -147,9 +149,9 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 
 - [ ] API 문서 (JSDoc → HTML)
 - [ ] 사용자 가이드
-- [ ] 기여자 가이드 (`CONTRIBUTING.md`)
-- [ ] Issue 템플릿
-- [ ] PR 템플릿
+- [x] 기여자 가이드 (`CONTRIBUTING.md`)
+- [x] Issue 템플릿
+- [x] PR 템플릿
 
 #### 3.4 Playground
 

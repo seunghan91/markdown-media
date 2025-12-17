@@ -53,14 +53,15 @@ To make responsive design intuitive, MDM includes built-in presets for common si
 ![[landscape.jpg | ratio=widescreen]]
 ```
 
-| Category | Preset Name | Representative Value |
-| :--- | :--- | :--- |
-| **Size** | `thumb`, `small`, `medium`, `large` | `150px`, `480px`, `768px`, `1024px` (width) |
-| **Ratio** | `square`, `standard`, `widescreen`, `portrait`, `story` | `1:1`, `4:3`, `16:9`, `3:4`, `9:16` |
+| Category  | Preset Name                                             | Representative Value                        |
+| :-------- | :------------------------------------------------------ | :------------------------------------------ |
+| **Size**  | `thumb`, `small`, `medium`, `large`                     | `150px`, `480px`, `768px`, `1024px` (width) |
+| **Ratio** | `square`, `standard`, `widescreen`, `portrait`, `story` | `1:1`, `4:3`, `16:9`, `3:4`, `9:16`         |
 
 ### 📁 Supported Image Formats
 
 Our goal is to support a wide range of image formats. The MVP will prioritize:
+
 - **Standard:** `jpg`, `jpeg`, `png`, `gif`
 - **Modern:** `webp`, `svg`
 
@@ -78,11 +79,11 @@ Our goal is to support a wide range of image formats. The MVP will prioritize:
 
 ## 🛠 Tech Stack
 
-| Component | Language | Role | Description |
-|-----------|----------|------|-------------|
-| **Core Engine** | **Rust** 🦀 | Parsing & Speed | C언어에 준하는 속도로 HWP(OLE), PDF 바이너리를 고속 분석합니다. |
-| **Converter** | **Python** 🐍 | Bridge & OCR | 방대한 라이브러리를 활용하여 차트/표를 이미지로 변환하거나 OCR을 수행합니다. |
-| **Viewer** | **JS/TS** ⚡ | Rendering | 변환된 MDX 파일을 웹 환경에서 완벽하게 시각화하는 단일 HTML 뷰어입니다. |
+| Component       | Language      | Role            | Description                                                                  |
+| --------------- | ------------- | --------------- | ---------------------------------------------------------------------------- |
+| **Core Engine** | **Rust** 🦀   | Parsing & Speed | C언어에 준하는 속도로 HWP(OLE), PDF 바이너리를 고속 분석합니다.              |
+| **Converter**   | **Python** 🐍 | Bridge & OCR    | 방대한 라이브러리를 활용하여 차트/표를 이미지로 변환하거나 OCR을 수행합니다. |
+| **Viewer**      | **JS/TS** ⚡  | Rendering       | 변환된 MDX 파일을 웹 환경에서 완벽하게 시각화하는 단일 HTML 뷰어입니다.      |
 
 ---
 
@@ -114,18 +115,26 @@ npm install markdown-media
 
 Our immediate goal is to deliver a stable JavaScript parser as the foundation of the MDM ecosystem. Future phases will include Python and Rust implementations.
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✅ COMPLETE
+
 - [x] 프로젝트 아키텍처 수립
-- [ ] Rust 기반 HWP 바이너리 파싱 프로토타입 (OLE structure analysis)
-- [ ] Python 기반 표(Table) → SVG 렌더링 스크립트 작성
+- [x] JavaScript Parser 구현 (Tokenizer, Parser, Renderer)
+- [x] Rust 기반 HWP 바이너리 파싱 프로토타입 (OLE structure analysis)
+- [x] Python 기반 표(Table) → SVG 렌더링 스크립트 작성
+- [x] 프리셋 시스템 구현 (size, ratio presets)
 
-### Phase 2: Core Implementation
-- [ ] 텍스트 추출 정확도 개선 (인코딩 이슈 해결)
-- [ ] 이미지/표 자동 분리 알고리즘 적용 (Heuristic Analysis)
+### Phase 2: Core Implementation ✅ COMPLETE
 
-### Phase 3: Viewer & Deploy
-- [ ] Single HTML Viewer 개발 (MDX Support)
-- [ ] CLI Tool 배포 (Convert command)
+- [x] HWP/PDF → MDX 변환기 구현 (기본 구조)
+- [x] CLI 도구 구현 (convert, validate, serve commands)
+- [x] CI/CD 설정 (GitHub Actions)
+
+### Phase 3: Deployment 🚧 IN PROGRESS
+
+- [x] Single HTML Viewer 개발
+- [ ] npm 패키지 배포 (@mdm/parser, @mdm/cli)
+- [ ] PyPI 패키지 배포
+- [ ] 완전한 HWP 바이너리 파싱 (format spec 기반)
 
 ---
 

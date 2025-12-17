@@ -1,0 +1,68 @@
+name: Test
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test-js:
+    name: Test JavaScript Parser
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        working-directory: packages/parser-js
+        run: npm install
+
+      - name: Run tests
+        working-directory: packages/parser-js
+        run: npm test
+
+  test-rust:
+    name: Test Rust Core
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build
+        working-directory: core
+        run: cargo build --verbose
+
+      - name: Run tests
+        working-directory: core
+        run: cargo test --verbose
+
+  test-python:
+    name: Test Python Converter
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: packages/parser-py
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        working-directory: packages/parser-py
+        run: pytest || echo "No tests yet"

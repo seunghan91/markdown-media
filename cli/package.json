@@ -1,0 +1,19 @@
+{
+  "name": "@mdm/cli",
+  "version": "0.1.0",
+  "description": "MDM CLI tool for converting and managing Markdown+Media documents",
+  "type": "module",
+  "bin": {
+    "mdm": "./index.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["mdm", "markdown", "media", "cli", "converter"],
+  "author": "beasthan2025",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.0.0",
+    "js-yaml": "^4.1.0"
+  }
+}
