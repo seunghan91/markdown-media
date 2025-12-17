@@ -1,0 +1,31 @@
+{
+  "name": "markdown-media",
+  "version": "0.0.1",
+  "description": "The Universal Standard for integrating Rich Media (SVG, Images, Video) into Markdown. Core engine for HWP/PDF conversion.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "markdown",
+    "media",
+    "hwp",
+    "converter",
+    "mdx",
+    "svg",
+    "pdf",
+    "document",
+    "korea",
+    "government"
+  ],
+  "author": "beasthan2025",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seunghan91/markdown-media.git"
+  },
+  "bugs": {
+    "url": "https://github.com/seunghan91/markdown-media/issues"
+  },
+  "homepage": "https://github.com/seunghan91/markdown-media#readme"
+}

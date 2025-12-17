@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Markdown Media Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.7;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: #252525;
+            padding: 40px 50px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+
+        /* Typography */
+        h1, h2, h3, h4, h5, h6 {
+            color: #ffffff;
+            margin: 1.5em 0 0.5em;
+            font-weight: 600;
+        }
+
+        h1 { font-size: 2em; border-bottom: 2px solid #58a6ff; padding-bottom: 0.3em; }
+        h2 { font-size: 1.5em; border-bottom: 1px solid #333; padding-bottom: 0.3em; }
+        h3 { font-size: 1.25em; }
+
+        p {
+            margin: 1em 0;
+        }
+
+        /* Links */
+        a {
+            color: #58a6ff;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        a:hover {
+            color: #79b8ff;
+            text-decoration: underline;
+        }
+
+        /* Media Styles */
+        img, video {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin: 20px 0;
+            display: block;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        img:hover {
+            transform: scale(1.02);
+        }
+
+        /* Code Blocks */
+        pre {
+            background: #1e1e1e;
+            padding: 16px 20px;
+            overflow-x: auto;
+            border-radius: 8px;
+            margin: 1em 0;
+            border: 1px solid #333;
+        }
+
+        code {
+            font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+            font-size: 0.9em;
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        pre code {
+            background: transparent;
+            padding: 0;
+        }
+
+        /* Blockquotes */
+        blockquote {
+            border-left: 4px solid #58a6ff;
+            margin: 1em 0;
+            padding: 0.5em 0 0.5em 20px;
+            color: #aaa;
+            background: #1e1e1e;
+            border-radius: 0 8px 8px 0;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1em 0;
+        }
+
+        th, td {
+            border: 1px solid #444;
+            padding: 12px;
+            text-align: left;
+        }
+
+        th {
+            background: #333;
+            font-weight: 600;
+        }
+
+        tr:nth-child(even) {
+            background: #2a2a2a;
+        }
+
+        /* Lists */
+        ul, ol {
+            margin: 1em 0;
+            padding-left: 2em;
+        }
+
+        li {
+            margin: 0.5em 0;
+        }
+
+        /* Horizontal Rule */
+        hr {
+            border: none;
+            border-top: 1px solid #444;
+            margin: 2em 0;
+        }
+
+        /* Loading State */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+
+        .loading::after {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #58a6ff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Error State */
+        .error {
+            background: #3d1f1f;
+            border: 1px solid #ff4444;
+            border-radius: 8px;
+            padding: 20px;
+            color: #ff8888;
+        }
+
+        .error h3 {
+            color: #ff6666;
+            margin-top: 0;
+        }
+
+        /* Lightbox */
+        .lightbox {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+            cursor: pointer;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .lightbox.active {
+            display: flex;
+        }
+
+        .lightbox img {
+            max-width: 90%;
+            max-height: 90%;
+            object-fit: contain;
+            cursor: default;
+        }
+
+        .lightbox-close {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            color: white;
+            font-size: 40px;
+            cursor: pointer;
+        }
+
+        /* File Selector */
+        .file-selector {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #1e1e1e;
+            border-radius: 8px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .file-selector input[type="text"] {
+            flex: 1;
+            padding: 10px 15px;
+            border: 1px solid #444;
+            border-radius: 6px;
+            background: #252525;
+            color: #e0e0e0;
+            font-size: 14px;
+        }
+
+        .file-selector button {
+            padding: 10px 20px;
+            background: #58a6ff;
+            color: #000;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .file-selector button:hover {
+            background: #79b8ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="file-selector">
+            <input type="text" id="fileInput" placeholder="Enter markdown file path (e.g., README.md)" value="README.md">
+            <button onclick="loadMarkdown()">Load</button>
+        </div>
+        <div id="content" class="loading">Loading content...</div>
+    </div>
+
+    <!-- Lightbox for images -->
+    <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+        <span class="lightbox-close">&times;</span>
+        <img id="lightbox-img" src="" alt="Enlarged image">
+    </div>
+
+    <!-- Marked.js for Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <script>
+        // Configure marked options
+        marked.setOptions({
+            breaks: true,
+            gfm: true,
+            headerIds: true
+        });
+
+        // Load markdown file
+        async function loadMarkdown() {
+            const fileInput = document.getElementById('fileInput');
+            const contentDiv = document.getElementById('content');
+            const markdownFile = fileInput.value.trim() || 'README.md';
+
+            contentDiv.innerHTML = '<div class="loading">Loading content...</div>';
+
+            try {
+                const response = await fetch(markdownFile);
+
+                if (!response.ok) {
+                    throw new Error(`File not found: ${markdownFile}`);
+                }
+
+                const text = await response.text();
+                contentDiv.innerHTML = marked.parse(text);
+
+                // Add click handlers for images (lightbox)
+                contentDiv.querySelectorAll('img').forEach(img => {
+                    img.addEventListener('click', () => openLightbox(img.src));
+                });
+
+            } catch (error) {
+                contentDiv.innerHTML = `
+                    <div class="error">
+                        <h3>Error: ${error.message}</h3>
+                        <p>Possible solutions:</p>
+                        <ul>
+                            <li>If running locally, use VS Code's <strong>Live Server</strong> extension</li>
+                            <li>Or upload to <strong>GitHub Pages</strong> for web hosting</li>
+                            <li>Check if the file path is correct</li>
+                        </ul>
+                    </div>
+                `;
+            }
+        }
+
+        // Lightbox functions
+        function openLightbox(src) {
+            const lightbox = document.getElementById('lightbox');
+            const lightboxImg = document.getElementById('lightbox-img');
+            lightboxImg.src = src;
+            lightbox.classList.add('active');
+        }
+
+        function closeLightbox() {
+            const lightbox = document.getElementById('lightbox');
+            lightbox.classList.remove('active');
+        }
+
+        // Close lightbox with Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeLightbox();
+        });
+
+        // Load on page load
+        window.addEventListener('DOMContentLoaded', loadMarkdown);
+    </script>
+</body>
+</html>
