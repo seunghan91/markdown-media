@@ -73,14 +73,19 @@ export class Renderer {
   getPresetAttributes(resource, preset) {
     if (!preset) return {};
     
-    // 리소스별 프리셋
+    // 1. 리소스별 프리셋
     if (resource.presets?.[preset]) {
       return resource.presets[preset];
     }
     
-    // 전역 프리셋
+    // 2. 전역 프리셋 (사용자 정의)
     if (this.mdmData?.presets?.[preset]) {
       return this.mdmData.presets[preset];
+    }
+
+    // 3. 내장 기본 프리셋
+    if (DEFAULT_PRESETS[preset]) {
+      return DEFAULT_PRESETS[preset];
     }
     
     return {};

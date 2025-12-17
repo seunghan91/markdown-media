@@ -1,0 +1,4 @@
+pyhwp
+pdfplumber
+pillow
+svgwrite

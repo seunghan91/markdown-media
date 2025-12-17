@@ -21,6 +21,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 ## ✅ Completed
 
 ### JavaScript Parser (`packages/parser-js/`)
+
 - [x] Tokenizer 구현 (`src/tokenizer.js`)
 - [x] Parser 클래스 구현 (`src/parser.js`)
 - [x] Renderer 구현 (`src/renderer.js`)
@@ -29,6 +30,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [x] 기본 테스트 케이스 (8개 통과)
 
 ### Documentation (`plan/`)
+
 - [x] 프로젝트 아키텍처 수립
 - [x] 구현 가이드 작성 (`implementation-guide.md`)
 - [x] 테스트 전략 수립 (`testing-strategy.md`)
@@ -36,6 +38,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [x] 로드맵 작성 (`roadmap.md`)
 
 ### Viewer (`viewer/`)
+
 - [x] 단일 HTML 뷰어 (`index.html`)
 
 ---
@@ -45,6 +48,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 ### Phase 1: Core Infrastructure (High Priority)
 
 #### 1.1 Rust Core Engine (`core/`)
+
 - [ ] Cargo 프로젝트 초기화
   ```bash
   cd core
@@ -58,7 +62,8 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [ ] 성능 벤치마크
 
 #### 1.2 Python Converter (`packages/parser-py/`)
-- [ ] 프로젝트 구조 설정
+
+- [x] 프로젝트 구조 설정
   ```bash
   cd packages/parser-py
   python -m venv venv
@@ -70,6 +75,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [ ] PyPI 패키지 준비 (`setup.py`)
 
 #### 1.3 Document Converters (`converters/`)
+
 - [ ] HWP → MDX 변환기
 - [ ] HWPX → MDX 변환기
 - [ ] PDF → MDX 변환기
@@ -83,15 +89,17 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 ### Phase 2: Enhanced Features (Medium Priority)
 
 #### 2.1 JavaScript Parser 확장
-- [ ] 프리셋 시스템 구현
-  - [ ] Size 프리셋: `thumb`, `small`, `medium`, `large`
-  - [ ] Ratio 프리셋: `square`, `standard`, `widescreen`, `portrait`, `story`
+
+- [x] 프리셋 시스템 구현
+  - [x] Size 프리셋: `thumb`, `small`, `medium`, `large`
+  - [x] Ratio 프리셋: `square`, `standard`, `widescreen`, `portrait`, `story`
 - [ ] WebP/SVG 포맷 지원 확장
 - [ ] Sidecar 파일 (.mdm) 완전 지원
 - [ ] 에러 핸들링 강화
 - [ ] 성능 최적화
 
 #### 2.2 Rust Parser (`packages/parser-rs/`)
+
 - [ ] Cargo 프로젝트 설정
 - [ ] JavaScript 로직 포팅
 - [ ] WASM 컴파일 설정 (wasm-bindgen)
@@ -99,6 +107,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [ ] 브라우저 호환성 테스트
 
 #### 2.3 CLI Tool
+
 - [ ] 명령어 구조 설계
   ```bash
   mdm convert input.hwp -o output/
@@ -115,6 +124,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 ### Phase 3: Deployment & Integration (Lower Priority)
 
 #### 3.1 npm Package Publishing
+
 - [ ] `beasthan2025` 계정으로 로그인
 - [ ] `markdown-media` 패키지 배포
   ```bash
@@ -125,6 +135,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [ ] 버전 관리 전략 수립
 
 #### 3.2 CI/CD Setup (`.github/`)
+
 - [ ] GitHub Actions workflow
   - [ ] 자동 테스트 (`test.yml`)
   - [ ] 자동 빌드 (`build.yml`)
@@ -133,6 +144,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [ ] 자동 릴리스 노트
 
 #### 3.3 Documentation
+
 - [ ] API 문서 (JSDoc → HTML)
 - [ ] 사용자 가이드
 - [ ] 기여자 가이드 (`CONTRIBUTING.md`)
@@ -140,6 +152,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 - [ ] PR 템플릿
 
 #### 3.4 Playground
+
 - [ ] 웹 기반 데모 사이트
 - [ ] 실시간 미리보기
 - [ ] 코드 에디터 통합
@@ -149,7 +162,9 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
 ## 🎯 Immediate Action Items
 
 ### This Week
+
 1. **Rust Core 초기화**
+
    ```bash
    cd core
    cargo init --name mdm-core
@@ -157,6 +172,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
    ```
 
 2. **Python 환경 설정**
+
    ```bash
    cd packages/parser-py
    touch __init__.py
@@ -171,6 +187,7 @@ npm Publish:        ░░░░░░░░░░░░░░░░░░░░
    ```
 
 ### Next Week
+
 1. HWP 바이너리 파싱 프로토타입
 2. 표 → SVG 변환 스크립트
 3. CLI 도구 기본 구조
