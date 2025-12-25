@@ -1,5 +1,10 @@
 use super::ole::OleReader;
-use std::io::{self, Read};
+use super::record::{
+    HwpRecord, RecordParser, extract_para_text, parse_table_info,
+    HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE,
+    HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA,
+};
+use std::io::{self};
 use std::path::Path;
 
 /// HWP 파일 파서
@@ -17,91 +22,100 @@ impl HwpParser {
     /// HWP 파일 구조를 분석합니다
     pub fn analyze(&self) -> FileStructure {
         let streams = self.ole_reader.list_streams();
+        let section_count = self.ole_reader.section_count();
+        let bin_data = self.ole_reader.list_bin_data();
+        let flags = self.ole_reader.flags();
         
         FileStructure {
             total_streams: streams.len(),
             streams,
+            section_count,
+            bin_data_count: bin_data.len(),
+            compressed: flags.compressed,
+            encrypted: flags.encrypted,
         }
     }
 
     /// 텍스트를 추출합니다
     pub fn extract_text(&mut self) -> io::Result<String> {
         let mut all_text = Vec::new();
+        let section_count = self.ole_reader.section_count();
         
-        // Try to read multiple sections
-        for section_num in 0..10 {
+        if section_count == 0 {
+            return Ok("No BodyText sections found.".to_string());
+        }
+        
+        for section_num in 0..section_count {
             match self.ole_reader.read_body_text(section_num) {
                 Ok(data) => {
-                    // HWP uses zlib compression for BodyText
-                    // For now, we'll extract what we can from the raw data
-                    let section_text = self.parse_section_data(&data);
+                    // Parse records from decompressed data
+                    let section_text = self.parse_section_records(&data);
                     if !section_text.is_empty() {
-                        all_text.push(format!("=== Section {} ===\n{}", section_num, section_text));
+                        if section_count > 1 {
+                            all_text.push(format!("=== Section {} ===\n{}", section_num, section_text));
+                        } else {
+                            all_text.push(section_text);
+                        }
                     }
                 }
-                Err(_) => break, // No more sections
+                Err(e) => {
+                    // Log error but continue with other sections
+                    eprintln!("Warning: Could not read Section{}: {}", section_num, e);
+                }
             }
         }
         
         if all_text.is_empty() {
-            Ok("No text extracted. File may be compressed or encrypted.".to_string())
+            Ok("No text extracted. File may be encrypted or have unsupported format.".to_string())
         } else {
             Ok(all_text.join("\n\n"))
         }
     }
 
-    /// 섹션 데이터에서 텍스트 파싱 (단순 ASCII 추출)
-    fn parse_section_data(&self, data: &[u8]) -> String {
-        // Simple text extraction: find printable ASCII/UTF-8 sequences
-        let mut result = String::new();
-        let mut current_word = Vec::new();
+    /// Parse records from decompressed section data
+    fn parse_section_records(&self, data: &[u8]) -> String {
+        let mut parser = RecordParser::new(data);
+        let records = parser.parse_all();
         
-        for &byte in data {
-            if byte >= 32 && byte < 127 {
-                // Printable ASCII
-                current_word.push(byte);
-            } else if byte == 0x0A || byte == 0x0D {
-                // Newline
-                if !current_word.is_empty() {
-                    if let Ok(s) = String::from_utf8(current_word.clone()) {
-                        result.push_str(&s);
-                        result.push('\n');
-                    }
-                    current_word.clear();
+        let mut paragraphs = Vec::new();
+        
+        for record in records {
+            if record.tag_id == HWPTAG_PARA_TEXT {
+                let text = extract_para_text(&record.data);
+                if !text.trim().is_empty() {
+                    paragraphs.push(text);
                 }
-            } else if !current_word.is_empty() && (byte == 0 || byte > 127) {
-                // End of word
-                if let Ok(s) = String::from_utf8(current_word.clone()) {
-                    if s.len() > 2 {
-                        result.push_str(&s);
-                        result.push(' ');
-                    }
-                }
-                current_word.clear();
             }
         }
         
-        result.trim().to_string()
+        paragraphs.join("\n")
     }
 
     /// 이미지를 추출합니다
     pub fn extract_images(&mut self) -> io::Result<Vec<ImageData>> {
         let mut images = Vec::new();
         
-        // Try to read BinData streams
-        let streams = self.ole_reader.list_streams();
-        for stream in streams {
-            if stream.contains("BinData") {
-                if let Ok(data) = self.ole_reader.read_stream(&stream) {
-                    // Detect image format from magic bytes
-                    let format = detect_image_format(&data);
-                    if !format.is_empty() {
-                        images.push(ImageData {
-                            name: stream,
-                            format,
-                            data,
-                        });
-                    }
+        // Get list of BinData streams
+        let bin_data_names = self.ole_reader.list_bin_data();
+        
+        for name in bin_data_names {
+            if let Ok(data) = self.ole_reader.read_bin_data(&name) {
+                // Detect image format from magic bytes
+                let format = detect_image_format(&data);
+                if !format.is_empty() {
+                    // Generate proper filename
+                    let filename = if name.ends_with(&format!(".{}", format)) {
+                        name.clone()
+                    } else {
+                        format!("{}.{}", name, format)
+                    };
+                    
+                    images.push(ImageData {
+                        name: filename,
+                        original_name: name,
+                        format,
+                        data,
+                    });
                 }
             }
         }
@@ -111,12 +125,69 @@ impl HwpParser {
 
     /// 표 구조를 추출합니다
     pub fn extract_tables(&mut self) -> io::Result<Vec<TableData>> {
-        // Basic table detection: look for structured data patterns
-        // Real implementation would parse HWP table records
-        let tables = Vec::new();
+        let mut tables = Vec::new();
+        let section_count = self.ole_reader.section_count();
         
-        // Placeholder: would need to parse table control records
-        // from the BodyText sections
+        for section_num in 0..section_count {
+            if let Ok(data) = self.ole_reader.read_body_text(section_num) {
+                let mut parser = RecordParser::new(&data);
+                let records = parser.parse_all();
+                
+                // Find TABLE records and associated text
+                let mut current_table: Option<TableData> = None;
+                let mut current_cells: Vec<String> = Vec::new();
+                let mut in_table = false;
+                let mut table_info: Option<(u16, u16)> = None;
+                
+                for record in &records {
+                    match record.tag_id {
+                        HWPTAG_TABLE => {
+                            // Finish previous table if any
+                            if let Some(mut table) = current_table.take() {
+                                table.cells = organize_cells(&current_cells, table.cols);
+                                tables.push(table);
+                                current_cells.clear();
+                            }
+                            
+                            // Start new table
+                            if let Some(info) = parse_table_info(&record.data) {
+                                current_table = Some(TableData {
+                                    rows: info.rows as usize,
+                                    cols: info.cols as usize,
+                                    cells: Vec::new(),
+                                });
+                                table_info = Some((info.rows, info.cols));
+                                in_table = true;
+                            }
+                        }
+                        HWPTAG_PARA_TEXT if in_table => {
+                            let text = extract_para_text(&record.data);
+                            current_cells.push(text);
+                            
+                            // Check if we've collected all cells
+                            if let Some((rows, cols)) = table_info {
+                                if current_cells.len() >= (rows * cols) as usize {
+                                    if let Some(mut table) = current_table.take() {
+                                        table.cells = organize_cells(&current_cells, table.cols);
+                                        tables.push(table);
+                                        current_cells.clear();
+                                        in_table = false;
+                                        table_info = None;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                
+                // Handle last table
+                if let Some(mut table) = current_table.take() {
+                    table.cells = organize_cells(&current_cells, table.cols);
+                    tables.push(table);
+                }
+            }
+        }
         
         Ok(tables)
     }
@@ -125,27 +196,57 @@ impl HwpParser {
     pub fn extract_metadata(&mut self) -> io::Result<Metadata> {
         match self.ole_reader.read_file_header() {
             Ok(header_data) => {
-                // Parse basic metadata from FileHeader
+                let version = parse_version(&header_data);
+                let flags = self.ole_reader.flags();
+                
                 Ok(Metadata {
-                    version: parse_version(&header_data),
-                    author: parse_metadata_field(&header_data, "author"),
-                    title: parse_metadata_field(&header_data, "title"),
-                    created: parse_metadata_field(&header_data, "created"),
+                    version,
+                    compressed: flags.compressed,
+                    encrypted: flags.encrypted,
+                    section_count: self.ole_reader.section_count(),
+                    bin_data_count: self.ole_reader.list_bin_data().len(),
                 })
             }
             Err(e) => Err(e),
         }
     }
+
+    /// MDM 형식으로 변환합니다
+    pub fn to_mdm(&mut self) -> io::Result<MdmDocument> {
+        let text = self.extract_text()?;
+        let images = self.extract_images()?;
+        let tables = self.extract_tables()?;
+        let metadata = self.extract_metadata()?;
+        
+        Ok(MdmDocument {
+            content: text,
+            images,
+            tables,
+            metadata,
+        })
+    }
+}
+
+/// Organize flat cell list into rows
+fn organize_cells(cells: &[String], cols: usize) -> Vec<Vec<String>> {
+    if cols == 0 {
+        return Vec::new();
+    }
+    
+    cells
+        .chunks(cols)
+        .map(|chunk| chunk.to_vec())
+        .collect()
 }
 
 /// 이미지 포맷 감지
 fn detect_image_format(data: &[u8]) -> String {
-    if data.len() < 4 {
+    if data.len() < 8 {
         return String::new();
     }
     
     // Check magic bytes
-    if data[0] == 0xFF && data[1] == 0xD8 {
+    if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
         "jpeg".to_string()
     } else if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
         "png".to_string()
@@ -153,6 +254,12 @@ fn detect_image_format(data: &[u8]) -> String {
         "gif".to_string()
     } else if data[0] == 0x42 && data[1] == 0x4D {
         "bmp".to_string()
+    } else if data[0] == 0xD7 && data[1] == 0xCD && data[2] == 0xC6 && data[3] == 0x9A {
+        "wmf".to_string()
+    } else if data[0] == 0x01 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x00 {
+        "emf".to_string()
+    } else if &data[0..4] == b"RIFF" && data.len() >= 12 && &data[8..12] == b"WEBP" {
+        "webp".to_string()
     } else {
         String::new()
     }
@@ -160,18 +267,16 @@ fn detect_image_format(data: &[u8]) -> String {
 
 /// 버전 파싱
 fn parse_version(data: &[u8]) -> String {
+    // HWP FileHeader: 32-byte signature + 4-byte version
     if data.len() >= 36 {
-        // HWP version is typically at offset 0-31
-        format!("HWP {}.{}", data[0], data[1])
+        let major = data[35] as u32;
+        let minor = data[34] as u32;
+        let build = data[33] as u32;
+        let revision = data[32] as u32;
+        format!("HWP {}.{}.{}.{}", major, minor, build, revision)
     } else {
         "Unknown".to_string()
     }
-}
-
-/// 메타데이터 필드 파싱 (간단한 구현)
-fn parse_metadata_field(_data: &[u8], _field: &str) -> String {
-    // Simplified: would need proper parsing of HWP metadata structures
-    String::new()
 }
 
 /// HWP 파일 구조 정보
@@ -179,31 +284,97 @@ fn parse_metadata_field(_data: &[u8], _field: &str) -> String {
 pub struct FileStructure {
     pub total_streams: usize,
     pub streams: Vec<String>,
+    pub section_count: usize,
+    pub bin_data_count: usize,
+    pub compressed: bool,
+    pub encrypted: bool,
 }
 
 /// 이미지 데이터
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageData {
     pub name: String,
+    pub original_name: String,
     pub format: String,
     pub data: Vec<u8>,
 }
 
 /// 표 데이터
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TableData {
     pub rows: usize,
     pub cols: usize,
     pub cells: Vec<Vec<String>>,
 }
 
+impl TableData {
+    /// Convert table to Markdown format
+    pub fn to_markdown(&self) -> String {
+        if self.cells.is_empty() || self.cols == 0 {
+            return String::new();
+        }
+        
+        let mut md = String::new();
+        
+        for (i, row) in self.cells.iter().enumerate() {
+            md.push_str("| ");
+            for cell in row {
+                md.push_str(&cell.replace('\n', " ").trim().to_string());
+                md.push_str(" | ");
+            }
+            md.push('\n');
+            
+            // Header separator after first row
+            if i == 0 {
+                md.push_str("| ");
+                for _ in 0..self.cols {
+                    md.push_str("--- | ");
+                }
+                md.push('\n');
+            }
+        }
+        
+        md
+    }
+}
+
 /// 메타데이터
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Metadata {
     pub version: String,
-    pub author: String,
-    pub title: String,
-    pub created: String,
+    pub compressed: bool,
+    pub encrypted: bool,
+    pub section_count: usize,
+    pub bin_data_count: usize,
+}
+
+/// MDM 문서 (변환 결과)
+#[derive(Debug)]
+pub struct MdmDocument {
+    pub content: String,
+    pub images: Vec<ImageData>,
+    pub tables: Vec<TableData>,
+    pub metadata: Metadata,
+}
+
+impl MdmDocument {
+    /// Generate MDX content
+    pub fn to_mdx(&self) -> String {
+        let mut mdx = String::new();
+        
+        // Frontmatter
+        mdx.push_str("---\n");
+        mdx.push_str(&format!("version: \"{}\"\n", self.metadata.version));
+        mdx.push_str(&format!("sections: {}\n", self.metadata.section_count));
+        mdx.push_str(&format!("images: {}\n", self.images.len()));
+        mdx.push_str(&format!("tables: {}\n", self.tables.len()));
+        mdx.push_str("---\n\n");
+        
+        // Content
+        mdx.push_str(&self.content);
+        
+        mdx
+    }
 }
 
 #[cfg(test)]
@@ -212,21 +383,56 @@ mod tests {
 
     #[test]
     fn test_image_format_detection() {
-        // JPEG needs at least 2 bytes but more for proper detection
-        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(detect_image_format(&jpeg), "jpeg");
         
-        let png = vec![0x89, 0x50, 0x4E, 0x47];
+        let png = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         assert_eq!(detect_image_format(&png), "png");
         
-        let gif = vec![0x47, 0x49, 0x46, 0x38];
+        let gif = vec![0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x00, 0x00];
         assert_eq!(detect_image_format(&gif), "gif");
         
-        let bmp = vec![0x42, 0x4D, 0x00, 0x00];
+        let bmp = vec![0x42, 0x4D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         assert_eq!(detect_image_format(&bmp), "bmp");
         
-        // Too short - should return empty
-        let short = vec![0xFF];
+        let wmf = vec![0xD7, 0xCD, 0xC6, 0x9A, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(detect_image_format(&wmf), "wmf");
+        
+        // WebP (needs 12 bytes: RIFF + size + WEBP)
+        let webp = b"RIFF\x00\x00\x00\x00WEBP";
+        assert_eq!(detect_image_format(webp), "webp");
+        
+        // Too short
+        let short = vec![0xFF, 0xD8];
         assert_eq!(detect_image_format(&short), "");
+    }
+
+    #[test]
+    fn test_table_to_markdown() {
+        let table = TableData {
+            rows: 2,
+            cols: 2,
+            cells: vec![
+                vec!["Header 1".to_string(), "Header 2".to_string()],
+                vec!["Cell 1".to_string(), "Cell 2".to_string()],
+            ],
+        };
+        
+        let md = table.to_markdown();
+        assert!(md.contains("| Header 1 |"));
+        assert!(md.contains("| --- |"));
+        assert!(md.contains("| Cell 1 |"));
+    }
+
+    #[test]
+    fn test_organize_cells() {
+        let cells = vec![
+            "A".to_string(), "B".to_string(),
+            "C".to_string(), "D".to_string(),
+        ];
+        let organized = organize_cells(&cells, 2);
+        assert_eq!(organized.len(), 2);
+        assert_eq!(organized[0], vec!["A", "B"]);
+        assert_eq!(organized[1], vec!["C", "D"]);
     }
 }
