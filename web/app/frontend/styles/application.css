@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles */
+body {
+  @apply antialiased bg-gray-50 text-gray-900;
+}
+
+/* File drop zone */
+.drop-zone {
+  @apply border-2 border-dashed border-gray-300 rounded-xl p-8 text-center transition-colors;
+}
+
+.drop-zone:hover,
+.drop-zone.active {
+  @apply border-primary-500 bg-primary-50;
+}
+
+/* Loading spinner */
+.spinner {
+  @apply animate-spin h-5 w-5 border-2 border-current border-t-transparent rounded-full;
+}
