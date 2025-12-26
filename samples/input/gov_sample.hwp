@@ -1,0 +1,128 @@
+
+<!DOCTYPE HTML>
+<html lang="ko">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<title>국가기록원 &gt; Service Failure</title>
+	<style type="text/css">
+		html{font-size:10px;}
+		@media screen and (min-width:1025px){
+			html{font-size:10px;}
+		}
+		@media screen and (max-width:1024px){
+			html{font-size:10px;}
+		}
+		@media screen and (max-width:768px){
+			html{font-size:9px;}
+			.errorWrap .header, .errorWrap .contents{
+				padding:1.5rem 2.0rem;
+			}
+		}
+		@media screen and (max-width:480px){
+		html{font-size:8px;}
+		}
+		.errorWrap{
+			width:100%;
+			color:#ccc;
+			font-size:1.6rem;
+		}
+		.errorWrap .header, .errorWrap .contents{
+			display: block;
+			position: relative;
+			/* text-align: center; */
+			overflow: hidden;
+			padding:3.0rem 4.0rem;
+			text-align: left;
+		}
+		.errorWrap .header{
+			border-bottom:1px solid #ccc;
+			height:67px;
+		}
+		.errorWrap .header .inner,
+		.errorWrap .contents .inner{
+			display:block;
+			position: relative;
+			margin:0 auto;
+			width: 100%;
+			max-width: 1024px;
+		}
+		.errorWrap .header .logo{
+			display: inline-block;
+			overflow: hidden;
+			width:200px;
+			max-width: 100%;
+			height:67px;
+			line-height: 67px;
+			background: url('../images/top_logo.png') no-repeat 0 50%;
+			background-size: 100% auto;
+			text-indent: 999999999999999999999999999999999px;
+		}
+		.errorWrap h2{
+			display: block;
+			margin:5.5rem 0 9.5rem 0;
+			text-align: left;
+			font-family: '';
+			font-weight: bold;
+			color: #275da7;
+			font-size: 3.5rem;
+		}
+		.errorWrap .contents .inner h2 strong{display: block;font-size: 4.5rem;}
+		.errorWrap .error-desc{color:#666;font-size:1.6rem;line-height:150%;}
+		.errorWrap .error-desc p{padding-bottom: 3rem;}
+		.errorWrap .btn-go{display: inline-block;max-width: 100%;height:50px;border:3px solid #555;border-radius:4px;padding:0 32px;box-sizing:border-box;font-size:16px;line-height:44px;vertical-align:middle;color:#333;text-decoration: none;}
+		.errorWrap .btn-go span{display: inline-block;padding-right:36px;background:url(../images/bl_go_ling_black.png)
+		no-repeat 100% 50%;}
+		@media screen and (min-width:1025px){
+			.errorWrap .contents .inner{
+				padding-left:14rem;padding-right:14rem;box-sizing:border-box;
+			}
+		}
+		@media screen and (max-width:768px){
+			.errorWrap .header,
+			.errorWrap .contents{
+				padding:1.5rem 2rem;
+			}
+			.errorWrap h2{
+				margin:2.5rem 0 4.5rem 0;
+			}
+			.errorWrap .error-desc p{padding-bottom:1.5rem;}
+			.errorWrap .btn-go{padding:0 10px;}
+		}
+		@media screen and (max-width:320px){
+			.errorWrap .btn-go {height:auto;padding:10px;}
+			.errorWrap .btn-go span{background:none;padding-right:0;line-height:120%;}
+		}
+	</style>
+</head>
+<body>
+	
+
+	<div class="errorWrap">
+		<header class="header">
+			<div class="inner">
+				<a href="" class="logo"></a>
+			</div>
+		</header>
+		<main class="contents">
+			<div class="inner">
+				<h2><strong>죄송합니다.</strong>서비스 이용에 불편을 드려 죄송합니다.</h2>
+				<div class="error-desc">
+					<p><strong>국가기록포털을 이용해 주셔서 감사합니다.<br>현재 시스템 점검 중으로 인해 서비스 이용이 불가능합니다. </strong></p>
+					<p>최대한 신속히 점검을 완료하여 서비스가 정상화되도록 하겠습니다. <br>
+					이용에 불편을 드려 죄송합니다.<br>
+					국가기록원은 보다 나은 서비스 제공을 위해 항상 노력하고 있습니다.<br>
+					추가 문의사항이 있으시면 아래 연락처로 문의해 주시기 바랍니다.<br>
+					국가기록포털 담당자 연락처: 031-750-2021
+					</p>
+				</div>
+
+				<a href="http://www.archives.go.kr" class="btn-go" onclick="javascript:history.back();return false;"><span>이전
+						페이지로</span></a>
+				<a href="http://www.archives.go.kr" class="btn-go"><span>메인 페이지로</span></a>
+				
+			</div>
+		</main>
+	</div>
+</body>
+</html>

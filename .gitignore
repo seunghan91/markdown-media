@@ -25,3 +25,10 @@ coverage/
 # Logs
 *.log
 npm-debug.log*
+
+# Test & build outputs
+/core/output/
+/core/test_output/
+/core/hwp_test/
+/samples/output/
+/packages/parser-rs/target/

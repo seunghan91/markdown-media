@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdm-parser"
+version = "0.1.0"
+description = "Python helpers for MDM (Markdown+Media) document conversion"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "seunghan91", email = "seunghan91@users.noreply.github.com"}
+]
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup",
+]
+keywords = ["markdown", "media", "hwp", "pdf", "document", "conversion"]
+dependencies = [
+    "pdfplumber>=0.10.0",
+    "pillow>=9.0.0",
+    "svgwrite>=1.4.0",
+]
+
+[project.optional-dependencies]
+hwp = ["pyhwp>=0.1b12"]
+ocr = ["pytesseract>=0.3.10", "easyocr>=1.7.0"]
+all = [
+    "pyhwp>=0.1b12",
+    "pytesseract>=0.3.10",
+    "easyocr>=1.7.0",
+]
+
+[project.scripts]
+mdm-pdf = "pdf_processor:main"
+mdm-hwp-svg = "hwp_to_svg:main"
+mdm-ocr = "ocr_processor:main"
+
+[project.urls]
+Homepage = "https://github.com/seunghan91/markdown-media"
+Documentation = "https://github.com/seunghan91/markdown-media#readme"
+Repository = "https://github.com/seunghan91/markdown-media.git"
+Issues = "https://github.com/seunghan91/markdown-media/issues"
+
+[tool.setuptools]
+packages = ["mdm_parser"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.md"]
