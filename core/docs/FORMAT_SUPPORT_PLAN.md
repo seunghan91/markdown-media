@@ -51,7 +51,7 @@
 ---
 
 ### PDF
-**Status: 🟡 Basic Support**
+**Status: ✅ Full Support**
 
 | Feature | Status | Details |
 |---------|--------|---------|
@@ -61,8 +61,8 @@
 | Metadata extraction | ✅ | Title, Author, Subject, Creator, Producer |
 | **Image extraction** | ✅ | XObject extraction (JPEG, FlateDecode) |
 | **Font detection** | ✅ | Font name analysis for bold/italic |
-| Table extraction | ❌ | Not implemented |
-| MDX output | ✅ | With frontmatter, page markers, image list, font styles |
+| **Table detection** | ✅ | Text position heuristics (row/column alignment) |
+| MDX output | ✅ | With frontmatter, page markers, images, fonts, tables |
 
 **Implemented (2024-12-26):**
 1. [x] Use `pdf-extract` for text extraction
@@ -85,10 +85,12 @@
 10. [x] Font extraction from PDF font dictionaries
 11. [x] Font style detection from BaseFont names (bold, italic, black, oblique, etc.)
 12. [x] Font styles section in MDX output
+13. [x] Table detection from positioned text (content stream parsing)
+14. [x] Row/column alignment detection with tolerance
+15. [x] Markdown table output in MDX
 
 **TODO (Phase 3 - Advanced):**
-1. [ ] Table detection using text positioning heuristics
-2. [ ] Handle encrypted PDFs
+1. [ ] Handle encrypted PDFs
 
 **Used Crates:**
 - `lopdf` - Page count, metadata extraction, image XObject parsing, font extraction
@@ -99,6 +101,10 @@
 - `parser.rs`: `extract_fonts()` - Iterates PDF objects for Font dictionaries
 - `parser.rs`: `detect_font_style()` - Analyzes BaseFont names for bold/italic indicators
 - Font name patterns: Bold, Italic, Oblique, Black, Heavy, SemiBold, etc.
+- `parser.rs`: `detect_tables()` - Main table detection entry point
+- `parser.rs`: `extract_positioned_text()` - Parses PDF content streams (BT/ET, Tm, Td, Tj, TJ operators)
+- `parser.rs`: `detect_table_from_positions()` - Groups text by Y position (rows), X position (columns)
+- Table heuristics: Y tolerance (5pt), X tolerance (20pt), min 2x2 cells, 50%+ row alignment
 
 ---
 
@@ -186,7 +192,9 @@ pub struct PdfDocument {
     pub page_count: usize,
     pub pages: Vec<PageContent>,
     pub metadata: PdfMetadata,
-    pub images: Vec<PdfImage>,  // Phase 3: Image extraction
+    pub images: Vec<PdfImage>,   // Phase 3: Image extraction
+    pub fonts: Vec<PdfFont>,     // Phase 3: Font detection
+    pub tables: Vec<PdfTable>,   // Phase 3: Table detection
 }
 
 pub struct PageContent {
@@ -216,6 +224,21 @@ pub enum ImageFormat {
     Jpeg,      // DCTDecode filter
     Png,       // Future support
     Raw,       // Uncompressed or unknown
+}
+
+// Phase 3: Font detection
+pub struct PdfFont {
+    pub name: String,
+    pub base_font: String,
+    pub is_bold: bool,
+    pub is_italic: bool,
+}
+
+// Phase 3: Table detection
+pub struct PdfTable {
+    pub page: usize,
+    pub rows: Vec<Vec<String>>,
+    pub column_count: usize,
 }
 ```
 

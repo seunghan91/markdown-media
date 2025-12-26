@@ -288,6 +288,137 @@ impl PdfParser {
         fonts
     }
 
+    /// Detect tables in PDF using text position heuristics
+    pub fn detect_tables(&self) -> Vec<PdfTable> {
+        let mut tables = Vec::new();
+
+        let doc = match lopdf::Document::load_mem(&self.data) {
+            Ok(d) => d,
+            Err(_) => return tables,
+        };
+
+        // Extract positioned text from each page
+        for (page_num, page_id) in doc.get_pages() {
+            let positioned_texts = self.extract_positioned_text(&doc, page_id);
+
+            if positioned_texts.is_empty() {
+                continue;
+            }
+
+            // Detect tables from positioned text
+            if let Some(table) = detect_table_from_positions(&positioned_texts, page_num as usize) {
+                tables.push(table);
+            }
+        }
+
+        tables
+    }
+
+    /// Extract text with position from a PDF page
+    fn extract_positioned_text(&self, doc: &lopdf::Document, page_id: lopdf::ObjectId) -> Vec<PositionedText> {
+        let mut texts = Vec::new();
+
+        // Get page content stream
+        let content = match doc.get_page_content(page_id) {
+            Ok(c) => c,
+            Err(_) => return texts,
+        };
+
+        // Decompress if needed
+        let content_str = match String::from_utf8(content.clone()) {
+            Ok(s) => s,
+            Err(_) => {
+                // Try to decompress
+                match decompress_flate(&content) {
+                    Ok(decompressed) => String::from_utf8_lossy(&decompressed).to_string(),
+                    Err(_) => return texts,
+                }
+            }
+        };
+
+        // Parse content stream for text operators
+        // This is a simplified parser for common text positioning patterns
+        let mut current_x = 0.0;
+        let mut current_y = 0.0;
+        let mut in_text_block = false;
+
+        for line in content_str.lines() {
+            let line = line.trim();
+
+            // Text block markers
+            if line == "BT" {
+                in_text_block = true;
+                continue;
+            }
+            if line == "ET" {
+                in_text_block = false;
+                continue;
+            }
+
+            if !in_text_block {
+                continue;
+            }
+
+            // Text matrix (Tm) - sets position directly
+            if line.ends_with(" Tm") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 6 {
+                    if let (Ok(x), Ok(y)) = (
+                        parts[4].parse::<f64>(),
+                        parts[5].parse::<f64>(),
+                    ) {
+                        current_x = x;
+                        current_y = y;
+                    }
+                }
+            }
+
+            // Text positioning (Td) - relative move
+            if line.ends_with(" Td") || line.ends_with(" TD") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let (Ok(dx), Ok(dy)) = (
+                        parts[0].parse::<f64>(),
+                        parts[1].parse::<f64>(),
+                    ) {
+                        current_x += dx;
+                        current_y += dy;
+                    }
+                }
+            }
+
+            // Show text (Tj) - simple string
+            if line.ends_with(" Tj") {
+                if let Some(text) = extract_pdf_string(line) {
+                    if !text.trim().is_empty() {
+                        texts.push(PositionedText {
+                            text,
+                            x: current_x,
+                            y: current_y,
+                            page: 0, // Will be set by caller
+                        });
+                    }
+                }
+            }
+
+            // Show text array (TJ)
+            if line.ends_with(" TJ") {
+                if let Some(text) = extract_pdf_text_array(line) {
+                    if !text.trim().is_empty() {
+                        texts.push(PositionedText {
+                            text,
+                            x: current_x,
+                            y: current_y,
+                            page: 0,
+                        });
+                    }
+                }
+            }
+        }
+
+        texts
+    }
+
     /// Extract PDF version from header
     fn extract_version(&self) -> String {
         if let Some(newline_pos) = self.data.iter().position(|&b| b == b'\n' || b == b'\r') {
@@ -419,6 +550,226 @@ fn detect_font_style(font_name: &str) -> FontStyle {
     }
 }
 
+/// Extract text from Tj operator (simple string)
+fn extract_pdf_string(line: &str) -> Option<String> {
+    // Format: (text) Tj or <hex> Tj
+    let line = line.trim();
+
+    if line.starts_with('(') {
+        // Literal string
+        if let Some(end) = line.rfind(") Tj") {
+            let content = &line[1..end];
+            // Handle escape sequences
+            return Some(unescape_pdf_string(content));
+        }
+    } else if line.starts_with('<') {
+        // Hex string
+        if let Some(end) = line.rfind("> Tj") {
+            let hex = &line[1..end];
+            return decode_hex_string(hex);
+        }
+    }
+
+    None
+}
+
+/// Extract text from TJ operator (text array)
+fn extract_pdf_text_array(line: &str) -> Option<String> {
+    // Format: [(text) -kern (text2)] TJ
+    let line = line.trim();
+
+    if !line.starts_with('[') {
+        return None;
+    }
+
+    let mut result = String::new();
+    let mut in_string = false;
+    let mut current_string = String::new();
+    let mut is_hex = false;
+
+    for ch in line.chars() {
+        if !in_string {
+            if ch == '(' {
+                in_string = true;
+                is_hex = false;
+                current_string.clear();
+            } else if ch == '<' {
+                in_string = true;
+                is_hex = true;
+                current_string.clear();
+            }
+        } else {
+            if !is_hex && ch == ')' {
+                result.push_str(&unescape_pdf_string(&current_string));
+                in_string = false;
+            } else if is_hex && ch == '>' {
+                if let Some(decoded) = decode_hex_string(&current_string) {
+                    result.push_str(&decoded);
+                }
+                in_string = false;
+            } else if !is_hex && ch == '\\' {
+                // Handle escape - simplified
+                current_string.push(ch);
+            } else {
+                current_string.push(ch);
+            }
+        }
+    }
+
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+/// Unescape PDF literal string escape sequences
+fn unescape_pdf_string(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('b') => result.push('\x08'),
+                Some('f') => result.push('\x0C'),
+                Some('(') => result.push('('),
+                Some(')') => result.push(')'),
+                Some('\\') => result.push('\\'),
+                Some(c) if c.is_ascii_digit() => {
+                    // Octal escape
+                    let mut octal = String::new();
+                    octal.push(c);
+                    for _ in 0..2 {
+                        if let Some(&next) = chars.peek() {
+                            if next.is_ascii_digit() {
+                                octal.push(chars.next().unwrap());
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    if let Ok(val) = u8::from_str_radix(&octal, 8) {
+                        result.push(val as char);
+                    }
+                }
+                Some(c) => result.push(c),
+                None => {}
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+/// Decode hex string from PDF
+fn decode_hex_string(hex: &str) -> Option<String> {
+    let hex = hex.replace(' ', "");
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .filter_map(|i| {
+            let end = (i + 2).min(hex.len());
+            u8::from_str_radix(&hex[i..end], 16).ok()
+        })
+        .collect();
+
+    Some(String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// Detect table structure from positioned text elements
+fn detect_table_from_positions(texts: &[PositionedText], page: usize) -> Option<PdfTable> {
+    if texts.len() < 4 {
+        return None; // Need at least 2x2 cells
+    }
+
+    // Group texts by Y position (rows) with tolerance
+    const Y_TOLERANCE: f64 = 5.0;
+    let mut rows: Vec<Vec<&PositionedText>> = Vec::new();
+
+    for text in texts {
+        let mut found_row = false;
+        for row in &mut rows {
+            if let Some(first) = row.first() {
+                if (first.y - text.y).abs() < Y_TOLERANCE {
+                    row.push(text);
+                    found_row = true;
+                    break;
+                }
+            }
+        }
+        if !found_row {
+            rows.push(vec![text]);
+        }
+    }
+
+    // Sort rows by Y position (descending for PDF coordinate system)
+    rows.sort_by(|a, b| {
+        let y_a = a.first().map(|t| t.y).unwrap_or(0.0);
+        let y_b = b.first().map(|t| t.y).unwrap_or(0.0);
+        y_b.partial_cmp(&y_a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Sort each row by X position
+    for row in &mut rows {
+        row.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    // Check if we have consistent column structure (table heuristic)
+
+    // Need at least 2 rows with 2+ columns
+    let valid_rows: Vec<&Vec<&PositionedText>> = rows.iter()
+        .filter(|r| r.len() >= 2)
+        .collect();
+
+    if valid_rows.len() < 2 {
+        return None;
+    }
+
+    // Check column alignment (within tolerance)
+    const X_TOLERANCE: f64 = 20.0;
+    let first_row_x: Vec<f64> = valid_rows[0].iter().map(|t| t.x).collect();
+
+    let mut aligned_count = 0;
+    for row in &valid_rows[1..] {
+        let row_x: Vec<f64> = row.iter().map(|t| t.x).collect();
+        if row_x.len() == first_row_x.len() {
+            let is_aligned = row_x.iter()
+                .zip(first_row_x.iter())
+                .all(|(x1, x2)| (x1 - x2).abs() < X_TOLERANCE);
+            if is_aligned {
+                aligned_count += 1;
+            }
+        }
+    }
+
+    // At least 50% of rows should be aligned
+    if aligned_count * 2 < valid_rows.len() - 1 {
+        return None;
+    }
+
+    // Build table structure
+    let column_count = valid_rows[0].len();
+    let table_rows: Vec<Vec<String>> = valid_rows.iter()
+        .filter(|r| r.len() == column_count)
+        .map(|r| r.iter().map(|t| t.text.clone()).collect())
+        .collect();
+
+    if table_rows.len() < 2 {
+        return None;
+    }
+
+    Some(PdfTable {
+        page,
+        rows: table_rows,
+        column_count,
+    })
+}
+
 impl ImageFormat {
     /// Get file extension for this format
     pub fn extension(&self) -> &'static str {
@@ -437,6 +788,40 @@ impl PdfImage {
     }
 }
 
+impl PdfTable {
+    /// Convert table to Markdown format
+    pub fn to_markdown(&self) -> String {
+        if self.rows.is_empty() {
+            return String::new();
+        }
+
+        let mut md = String::new();
+
+        // Header row
+        if let Some(header) = self.rows.first() {
+            md.push_str("| ");
+            md.push_str(&header.join(" | "));
+            md.push_str(" |\n");
+
+            // Separator row
+            md.push_str("|");
+            for _ in 0..self.column_count {
+                md.push_str(" --- |");
+            }
+            md.push('\n');
+        }
+
+        // Data rows
+        for row in self.rows.iter().skip(1) {
+            md.push_str("| ");
+            md.push_str(&row.join(" | "));
+            md.push_str(" |\n");
+        }
+
+        md
+    }
+}
+
 impl PdfDocument {
     /// Convert to MDX format
     pub fn to_mdx(&self) -> String {
@@ -449,6 +834,7 @@ impl PdfDocument {
         mdx.push_str(&format!("pages: {}\n", self.page_count));
         mdx.push_str(&format!("images: {}\n", self.images.len()));
         mdx.push_str(&format!("fonts: {}\n", self.fonts.len()));
+        mdx.push_str(&format!("tables: {}\n", self.tables.len()));
         if !self.metadata.title.is_empty() {
             mdx.push_str(&format!("title: \"{}\"\n", self.metadata.title.replace('"', "\\\"")));
         }
@@ -495,6 +881,19 @@ impl PdfDocument {
                     (false, false) => "Regular",
                 };
                 mdx.push_str(&format!("- {} ({})\n", font.base_font, style));
+            }
+            mdx.push('\n');
+        }
+
+        // Tables (if any detected)
+        if !self.tables.is_empty() {
+            mdx.push_str("## Tables\n\n");
+            for (i, table) in self.tables.iter().enumerate() {
+                if self.tables.len() > 1 {
+                    mdx.push_str(&format!("### Table {} (Page {})\n\n", i + 1, table.page));
+                }
+                mdx.push_str(&table.to_markdown());
+                mdx.push('\n');
             }
         }
 
@@ -577,6 +976,7 @@ mod tests {
                 page: None,
             }],
             fonts: vec![],
+            tables: vec![],
         };
 
         let mdx = doc.to_mdx();
@@ -662,6 +1062,7 @@ mod tests {
                     is_italic: true,
                 },
             ],
+            tables: vec![],
         };
 
         let mdx = doc.to_mdx();
@@ -669,5 +1070,98 @@ mod tests {
         assert!(mdx.contains("## Font Styles"));
         assert!(mdx.contains("Arial-Bold (Bold)"));
         assert!(mdx.contains("Arial-Italic (Italic)"));
+    }
+
+    #[test]
+    fn test_table_to_markdown() {
+        let table = PdfTable {
+            page: 1,
+            rows: vec![
+                vec!["Name".to_string(), "Age".to_string(), "City".to_string()],
+                vec!["Alice".to_string(), "30".to_string(), "NYC".to_string()],
+                vec!["Bob".to_string(), "25".to_string(), "LA".to_string()],
+            ],
+            column_count: 3,
+        };
+
+        let md = table.to_markdown();
+        assert!(md.contains("| Name | Age | City |"));
+        assert!(md.contains("| --- | --- | --- |"));
+        assert!(md.contains("| Alice | 30 | NYC |"));
+        assert!(md.contains("| Bob | 25 | LA |"));
+    }
+
+    #[test]
+    fn test_table_detection_from_positions() {
+        let texts = vec![
+            PositionedText { text: "Name".to_string(), x: 100.0, y: 700.0, page: 1 },
+            PositionedText { text: "Age".to_string(), x: 200.0, y: 700.0, page: 1 },
+            PositionedText { text: "Alice".to_string(), x: 100.0, y: 680.0, page: 1 },
+            PositionedText { text: "30".to_string(), x: 200.0, y: 680.0, page: 1 },
+            PositionedText { text: "Bob".to_string(), x: 100.0, y: 660.0, page: 1 },
+            PositionedText { text: "25".to_string(), x: 200.0, y: 660.0, page: 1 },
+        ];
+
+        let table = detect_table_from_positions(&texts, 1);
+        assert!(table.is_some());
+        let table = table.unwrap();
+        assert_eq!(table.column_count, 2);
+        assert_eq!(table.rows.len(), 3);
+        assert_eq!(table.rows[0], vec!["Name", "Age"]);
+        assert_eq!(table.rows[1], vec!["Alice", "30"]);
+        assert_eq!(table.rows[2], vec!["Bob", "25"]);
+    }
+
+    #[test]
+    fn test_no_table_with_insufficient_data() {
+        let texts = vec![
+            PositionedText { text: "Hello".to_string(), x: 100.0, y: 700.0, page: 1 },
+            PositionedText { text: "World".to_string(), x: 100.0, y: 680.0, page: 1 },
+        ];
+
+        let table = detect_table_from_positions(&texts, 1);
+        assert!(table.is_none());
+    }
+
+    #[test]
+    fn test_pdf_string_extraction() {
+        assert_eq!(extract_pdf_string("(Hello) Tj"), Some("Hello".to_string()));
+        assert_eq!(extract_pdf_string("(Hello\\nWorld) Tj"), Some("Hello\nWorld".to_string()));
+        assert_eq!(extract_pdf_string("<48656C6C6F> Tj"), Some("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_pdf_text_array_extraction() {
+        assert_eq!(extract_pdf_text_array("[(Hello) -10 (World)] TJ"), Some("HelloWorld".to_string()));
+        assert_eq!(extract_pdf_text_array("[(Test)] TJ"), Some("Test".to_string()));
+    }
+
+    #[test]
+    fn test_mdx_with_tables() {
+        let doc = PdfDocument {
+            version: "1.7".to_string(),
+            page_count: 1,
+            pages: vec![PageContent {
+                page_number: 1,
+                text: "Hello".to_string(),
+            }],
+            metadata: PdfMetadata::default(),
+            images: vec![],
+            fonts: vec![],
+            tables: vec![PdfTable {
+                page: 1,
+                rows: vec![
+                    vec!["A".to_string(), "B".to_string()],
+                    vec!["1".to_string(), "2".to_string()],
+                ],
+                column_count: 2,
+            }],
+        };
+
+        let mdx = doc.to_mdx();
+        assert!(mdx.contains("tables: 1"));
+        assert!(mdx.contains("## Tables"));
+        assert!(mdx.contains("| A | B |"));
+        assert!(mdx.contains("| 1 | 2 |"));
     }
 }
