@@ -23,6 +23,7 @@ pub struct PdfDocument {
     pub metadata: PdfMetadata,
     pub images: Vec<PdfImage>,
     pub fonts: Vec<PdfFont>,
+    pub tables: Vec<PdfTable>,
 }
 
 /// Extracted image from PDF
@@ -58,6 +59,23 @@ pub struct PdfFont {
 pub struct FontStyle {
     pub bold: bool,
     pub italic: bool,
+}
+
+/// Text element with position information
+#[derive(Debug, Clone)]
+pub struct PositionedText {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub page: usize,
+}
+
+/// Detected table from PDF
+#[derive(Debug, Clone)]
+pub struct PdfTable {
+    pub page: usize,
+    pub rows: Vec<Vec<String>>,
+    pub column_count: usize,
 }
 
 /// Content of a single PDF page
@@ -116,6 +134,9 @@ impl PdfParser {
         // Extract fonts
         let fonts = self.extract_fonts();
 
+        // Detect tables
+        let tables = self.detect_tables();
+
         Ok(PdfDocument {
             version,
             page_count,
@@ -123,6 +144,7 @@ impl PdfParser {
             metadata,
             images,
             fonts,
+            tables,
         })
     }
 

@@ -41,9 +41,10 @@ impl DocxParser {
     fn read_relationships(archive: &mut zip::ZipArchive<BufReader<File>>) -> io::Result<HashMap<String, String>> {
         let mut rels = HashMap::new();
         
-        if let Ok(mut rels_file) = archive.by_name("word/_rels/document.xml.rels") {
+        if let Ok(rels_file) = archive.by_name("word/_rels/document.xml.rels") {
             let mut content = String::new();
-            rels_file.read_to_string(&mut content)?;
+            let mut reader = std::io::BufReader::new(rels_file);
+            reader.read_to_string(&mut content)?;
             
             // Simple parsing of relationships (would use XML parser in production)
             for line in content.lines() {
