@@ -1,3 +1,3 @@
 pub mod parser;
 
-pub use parser::PdfParser;
+pub use parser::{PdfParser, PdfDocument};

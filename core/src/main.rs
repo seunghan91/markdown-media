@@ -1,4 +1,4 @@
-//! hwp2mdm - HWP/HWPX to MDM converter CLI tool
+//! hwp2mdm - HWP/HWPX/PDF to MDM converter CLI tool
 
 mod hwp;
 mod hwpx;
@@ -7,6 +7,7 @@ mod pdf;
 use clap::{Parser, Subcommand};
 use hwp::HwpParser;
 use hwpx::HwpxParser;
+use pdf::PdfParser;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -149,9 +150,15 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
 
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    // Handle HWPX (ZIP-based) vs HWP (OLE-based)
+    // Handle HWPX (ZIP-based)
     if ext.eq_ignore_ascii_case("hwpx") {
         convert_hwpx(input, output, format, extract_images, verbose);
+        return;
+    }
+
+    // Handle PDF
+    if ext.eq_ignore_ascii_case("pdf") {
+        convert_pdf(input, output, format, verbose);
         return;
     }
 
@@ -394,6 +401,84 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, extract_images: bool,
             }
         }
         Err(e) => eprintln!("❌ Error opening HWPX file: {}", e),
+    }
+}
+
+fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match PdfParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "pdf",
+                                "metadata": {
+                                    "pdf_version": doc.version,
+                                    "pages": doc.page_count,
+                                    "title": doc.metadata.title,
+                                    "author": doc.metadata.author,
+                                },
+                                "content": doc.full_text(),
+                                "pages": doc.pages.iter().map(|p| json!({
+                                    "page": p.page_number,
+                                    "text": p.text,
+                                })).collect::<Vec<_>>(),
+                            });
+
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  ✓ Created: {}", json_path.display());
+                        }
+                        _ => {
+                            // MDX format
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx()).expect("Failed to write MDX");
+                            println!("  ✓ Created: {}", mdx_path.display());
+
+                            // MDM manifest
+                            let mdm_path = output.join(format!("{}.mdm", stem));
+                            let mdm_manifest = json!({
+                                "version": "1.0",
+                                "format": "pdf",
+                                "source": input.file_name().unwrap_or_default().to_string_lossy(),
+                                "metadata": {
+                                    "pdf_version": doc.version,
+                                    "pages": doc.page_count,
+                                    "title": doc.metadata.title,
+                                    "author": doc.metadata.author,
+                                },
+                            });
+
+                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                                .expect("Failed to write MDM manifest");
+                            println!("  ✓ Created: {}", mdm_path.display());
+                        }
+                    }
+
+                    if verbose {
+                        println!("\n📊 Summary:");
+                        println!("  - Format: PDF");
+                        println!("  - Version: {}", doc.version);
+                        println!("  - Pages: {}", doc.page_count);
+                        if !doc.metadata.title.is_empty() {
+                            println!("  - Title: {}", doc.metadata.title);
+                        }
+                        println!("  - Text length: {} chars", doc.full_text().len());
+                    }
+
+                    println!("✅ Conversion complete!");
+                }
+                Err(e) => eprintln!("❌ Error parsing PDF: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error opening PDF file: {}", e),
     }
 }
 

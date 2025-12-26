@@ -1,22 +1,50 @@
 use super::ole::OleReader;
 use super::record::{
     HwpRecord, RecordParser, extract_para_text, parse_table_info,
+    parse_char_shape, parse_para_char_shape, extract_para_text_formatted,
+    CharShape, ParaCharShapeMapping,
     HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE,
+    HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE,
     HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA,
 };
+use std::collections::HashMap;
 use std::io::{self};
 use std::path::Path;
 
 /// HWP 파일 파서
 pub struct HwpParser {
     ole_reader: OleReader,
+    /// Character shape definitions from DocInfo
+    char_shapes: HashMap<u32, CharShape>,
 }
 
 impl HwpParser {
     /// HWP 파일을 엽니다
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let ole_reader = OleReader::open(path)?;
-        Ok(HwpParser { ole_reader })
+        Ok(HwpParser {
+            ole_reader,
+            char_shapes: HashMap::new(),
+        })
+    }
+
+    /// Parse DocInfo stream to extract character shapes
+    fn parse_doc_info(&mut self) -> io::Result<()> {
+        let data = self.ole_reader.read_doc_info()?;
+        let mut parser = RecordParser::new(&data);
+        let records = parser.parse_all();
+
+        let mut shape_index: u32 = 0;
+        for record in records {
+            if record.tag_id == HWPTAG_CHAR_SHAPE {
+                if let Some(shape) = parse_char_shape(&record.data) {
+                    self.char_shapes.insert(shape_index, shape);
+                }
+                shape_index += 1;
+            }
+        }
+
+        Ok(())
     }
 
     /// HWP 파일 구조를 분석합니다
@@ -38,18 +66,23 @@ impl HwpParser {
 
     /// 텍스트를 추출합니다
     pub fn extract_text(&mut self) -> io::Result<String> {
+        // First, parse DocInfo to get character shapes
+        if self.char_shapes.is_empty() {
+            let _ = self.parse_doc_info();
+        }
+
         let mut all_text = Vec::new();
         let section_count = self.ole_reader.section_count();
-        
+
         if section_count == 0 {
             return Ok("No BodyText sections found.".to_string());
         }
-        
+
         for section_num in 0..section_count {
             match self.ole_reader.read_body_text(section_num) {
                 Ok(data) => {
-                    // Parse records from decompressed data
-                    let section_text = self.parse_section_records(&data);
+                    // Parse records from decompressed data with formatting
+                    let section_text = self.parse_section_records_formatted(&data);
                     if !section_text.is_empty() {
                         if section_count > 1 {
                             all_text.push(format!("=== Section {} ===\n{}", section_num, section_text));
@@ -64,7 +97,7 @@ impl HwpParser {
                 }
             }
         }
-        
+
         if all_text.is_empty() {
             Ok("No text extracted. File may be encrypted or have unsupported format.".to_string())
         } else {
@@ -72,13 +105,13 @@ impl HwpParser {
         }
     }
 
-    /// Parse records from decompressed section data
+    /// Parse records from decompressed section data (without formatting - for compatibility)
     fn parse_section_records(&self, data: &[u8]) -> String {
         let mut parser = RecordParser::new(data);
         let records = parser.parse_all();
-        
+
         let mut paragraphs = Vec::new();
-        
+
         for record in records {
             if record.tag_id == HWPTAG_PARA_TEXT {
                 let text = extract_para_text(&record.data);
@@ -87,7 +120,59 @@ impl HwpParser {
                 }
             }
         }
-        
+
+        paragraphs.join("\n")
+    }
+
+    /// Parse records from decompressed section data with formatting
+    fn parse_section_records_formatted(&self, data: &[u8]) -> String {
+        let mut parser = RecordParser::new(data);
+        let records = parser.parse_all();
+
+        let mut paragraphs = Vec::new();
+
+        // Group records by paragraph: PARA_HEADER -> PARA_TEXT, PARA_CHAR_SHAPE, etc.
+        let mut current_text_data: Option<Vec<u8>> = None;
+        let mut current_char_shape_mapping: Option<ParaCharShapeMapping> = None;
+
+        for record in &records {
+            match record.tag_id {
+                HWPTAG_PARA_HEADER => {
+                    // New paragraph starts - flush previous if any
+                    if let Some(text_data) = current_text_data.take() {
+                        let text = extract_para_text_formatted(
+                            &text_data,
+                            current_char_shape_mapping.as_ref(),
+                            &self.char_shapes,
+                        );
+                        if !text.trim().is_empty() {
+                            paragraphs.push(text);
+                        }
+                        current_char_shape_mapping = None;
+                    }
+                }
+                HWPTAG_PARA_TEXT => {
+                    current_text_data = Some(record.data.clone());
+                }
+                HWPTAG_PARA_CHAR_SHAPE => {
+                    current_char_shape_mapping = parse_para_char_shape(&record.data);
+                }
+                _ => {}
+            }
+        }
+
+        // Flush last paragraph
+        if let Some(text_data) = current_text_data {
+            let text = extract_para_text_formatted(
+                &text_data,
+                current_char_shape_mapping.as_ref(),
+                &self.char_shapes,
+            );
+            if !text.trim().is_empty() {
+                paragraphs.push(text);
+            }
+        }
+
         paragraphs.join("\n")
     }
 

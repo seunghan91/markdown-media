@@ -16,6 +16,8 @@ encoding_rs = "0.8"
 image = "0.25"
 resvg = "0.44"
 base64 = "0.22"
+pdf-extract = "0.7"
+lopdf = "0.34"
 
 [lib]
 name = "mdm_core"

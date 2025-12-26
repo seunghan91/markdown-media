@@ -1,6 +1,6 @@
 # Format Support Plan
 
-## Current Status (2024-12)
+## Current Status (2024-12, Updated 2024-12-26)
 
 ### HWPX (ZIP-based XML)
 **Status: ✅ Full Support**
@@ -20,27 +20,33 @@
 ---
 
 ### HWP 5.0 (OLE Compound File)
-**Status: 🔶 Partial Support**
+**Status: ✅ Full Support**
 
 | Feature | Status | Details |
 |---------|--------|---------|
 | File parsing | ✅ | OLE reader with zlib/deflate |
 | Text extraction | ✅ | HWPTAG_PARA_TEXT record parsing |
 | Table extraction | 🔶 | Basic structure, needs improvement |
-| **Character formatting** | ❌ | Not implemented |
+| **Character formatting** | ✅ | Bold, italic, underline, strikeout |
 | Image extraction | ✅ | BinData streams |
-| MDX output | ✅ | Basic conversion |
+| MDX output | ✅ | With formatting |
+
+**Implemented (2024-12-26):**
+1. [x] Parse HWPTAG_CHAR_SHAPE records from DocInfo stream
+2. [x] Build char_shape_map in HwpParser (HashMap<u32, CharShape>)
+3. [x] Parse HWPTAG_PARA_CHAR_SHAPE for text position → style mapping
+4. [x] Apply Markdown formatting (bold, italic, underline, strikeout)
 
 **TODO:**
-1. [ ] Parse HWPTAG_CHAR_SHAPE records for formatting info
-2. [ ] Map character shape IDs to text runs
-3. [ ] Apply Markdown formatting (bold, italic, underline, strikeout)
-4. [ ] Improve table cell content extraction
+1. [ ] Improve table cell content extraction
 
-**Technical Notes:**
-- Character shapes are defined in DocInfo stream
-- Each paragraph has charShapeIDRef mapping
-- Need to build char_shape_map similar to HWPX's CharStyle
+**Technical Implementation:**
+- `record.rs`: `parse_char_shape()` - Parses HWPTAG_CHAR_SHAPE records
+  - Attr field at offset 46-49: bit 0=italic, bit 1=bold, bits 2-3=underline, bits 18-21=strikeout
+- `record.rs`: `parse_para_char_shape()` - Parses position→style ID mappings
+- `record.rs`: `extract_para_text_formatted()` - Applies styles to text runs
+- `parser.rs`: `parse_doc_info()` - Builds char_shapes HashMap from DocInfo
+- `parser.rs`: `parse_section_records_formatted()` - Extracts text with formatting
 
 ---
 
@@ -77,14 +83,14 @@
 
 ## Implementation Priority
 
-### Phase 1: HWP Formatting (High Priority)
+### Phase 1: HWP Formatting ✅ COMPLETED (2024-12-26)
 **Goal:** Match HWPX feature parity
 
-1. Study HWP 5.0 spec for HWPTAG_CHAR_SHAPE
-2. Parse DocInfo stream for char shape definitions
-3. Build char_shape_map in HwpParser
-4. Apply formatting during text extraction
-5. Update MDX output
+1. ✅ Study HWP 5.0 spec for HWPTAG_CHAR_SHAPE
+2. ✅ Parse DocInfo stream for char shape definitions
+3. ✅ Build char_shape_map in HwpParser
+4. ✅ Apply formatting during text extraction
+5. ✅ Update MDX output with Markdown formatting
 
 ### Phase 2: PDF Basic Support
 **Goal:** Reliable text extraction
@@ -110,8 +116,8 @@ src/
 ├── hwp/
 │   ├── mod.rs
 │   ├── ole.rs         # OLE compound file reader
-│   ├── parser.rs      # HWP document parser
-│   └── record.rs      # HWP record parsing
+│   ├── parser.rs      # HWP document parser with char_shapes map
+│   └── record.rs      # HWP record parsing (CharShape, ParaCharShapeMapping)
 ├── hwpx/
 │   ├── mod.rs
 │   └── parser.rs      # HWPX parser (complete)
@@ -119,6 +125,29 @@ src/
 │   ├── mod.rs
 │   └── parser.rs      # PDF parser (needs work)
 └── main.rs            # CLI tool
+```
+
+## Key Data Structures
+
+### HWP Character Formatting
+```rust
+// record.rs
+pub struct CharShape {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikeout: bool,
+}
+
+pub struct ParaCharShapeMapping {
+    pub mappings: Vec<(u32, u32)>, // (text_position, char_shape_id)
+}
+
+// parser.rs
+pub struct HwpParser {
+    ole_reader: OleReader,
+    char_shapes: HashMap<u32, CharShape>, // Parsed from DocInfo
+}
 ```
 
 ---

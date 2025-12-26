@@ -1,10 +1,11 @@
 //! HWP Record parsing utilities
-//! 
+//!
 //! HWP 5.0 uses a tag-based record structure where each record has:
 //! - Tag ID (10 bits): identifies the type of record
 //! - Level (10 bits): nesting level
 //! - Size (12 bits): data size (or 0xFFF for extended size)
 
+use std::collections::HashMap;
 use std::io::{self, Read, Cursor};
 
 /// HWPTAG constants - Document Info section
@@ -238,6 +239,270 @@ pub fn parse_table_info(data: &[u8]) -> Option<TableInfo> {
     })
 }
 
+/// Character style properties (matching HWPX CharStyle)
+#[derive(Debug, Clone, Default)]
+pub struct CharShape {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikeout: bool,
+}
+
+/// Parse HWPTAG_CHAR_SHAPE record to extract character formatting
+///
+/// HWP 5.0 CHAR_SHAPE structure (simplified):
+/// - FaceNameId[7]: 14 bytes (7 x WORD for each language)
+/// - Width[7]: 14 bytes (7 x BYTE ratios)
+/// - Spacing[7]: 14 bytes (7 x BYTE)
+/// - RelSize[7]: 14 bytes (7 x BYTE)
+/// - Position[7]: 14 bytes (7 x BYTE)
+/// - BaseSize: 4 bytes (INT32, in HWP units)
+/// - Attr: 4 bytes (UINT32, formatting flags)
+///   - Bit 0: Italic
+///   - Bit 1: Bold
+///   - Bit 2: Underline type (bits 2-3)
+///   - Bit 4-5: Outline type
+///   - Bit 6-8: Shadow type
+///   - Bit 9: Emboss
+///   - Bit 10: Engrave
+///   - Bit 11: Superscript
+///   - Bit 12: Subscript
+///   - Bits 18-21: Strikeout type
+/// - ShadowGap: 2 bytes
+/// - ... more fields
+pub fn parse_char_shape(data: &[u8]) -> Option<CharShape> {
+    // Minimum size: 7*2 + 7*1*4 + 4 + 4 = 14 + 28 + 8 = 50 bytes for basic fields
+    // But we need at least up to Attr field
+    // Offset calculation:
+    // - FaceNameId: 7 * 2 = 14 bytes (offset 0-13)
+    // - Width ratios: 7 * 1 = 7 bytes (offset 14-20) - but spec says UINT8[7]
+    // Actually, let's use simpler offset based on observed data
+
+    // HWP 5.0 spec:
+    // Offset 0-13: FaceNameId (7 WORDs)
+    // Offset 14-20: Width ratio (7 BYTEs)
+    // Offset 21-27: Spacing (7 BYTEs)
+    // Offset 28-34: RelSize (7 BYTEs)
+    // Offset 35-41: Position (7 BYTEs)
+    // Offset 42-45: BaseSize (INT32)
+    // Offset 46-49: Attr (UINT32) <- formatting flags here
+
+    if data.len() < 50 {
+        return None;
+    }
+
+    // Read Attr field at offset 46
+    let attr = u32::from_le_bytes([data[46], data[47], data[48], data[49]]);
+
+    // Parse formatting flags
+    let italic = (attr & 0x01) != 0;      // Bit 0
+    let bold = (attr & 0x02) != 0;         // Bit 1
+    let underline_type = (attr >> 2) & 0x03; // Bits 2-3
+    let strikeout_type = (attr >> 18) & 0x0F; // Bits 18-21
+
+    Some(CharShape {
+        bold,
+        italic,
+        underline: underline_type != 0,
+        strikeout: strikeout_type != 0,
+    })
+}
+
+/// Character shape mapping for a paragraph
+/// Maps text positions to character shape IDs
+#[derive(Debug, Clone)]
+pub struct ParaCharShapeMapping {
+    pub mappings: Vec<(u32, u32)>, // (position, char_shape_id)
+}
+
+/// Parse HWPTAG_PARA_CHAR_SHAPE record
+///
+/// Structure: Array of (Position: UINT32, CharShapeID: UINT32) pairs
+/// Position is the character position in the paragraph text
+/// CharShapeID references the DocInfo CHAR_SHAPE records
+pub fn parse_para_char_shape(data: &[u8]) -> Option<ParaCharShapeMapping> {
+    if data.len() < 8 {
+        return None;
+    }
+
+    let mut mappings = Vec::new();
+    let mut pos = 0;
+
+    while pos + 8 <= data.len() {
+        let text_pos = u32::from_le_bytes([data[pos], data[pos+1], data[pos+2], data[pos+3]]);
+        let shape_id = u32::from_le_bytes([data[pos+4], data[pos+5], data[pos+6], data[pos+7]]);
+        mappings.push((text_pos, shape_id));
+        pos += 8;
+    }
+
+    Some(ParaCharShapeMapping { mappings })
+}
+
+/// Apply Markdown formatting based on CharShape
+pub fn apply_markdown_formatting(text: &str, style: &CharShape) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let mut result = text.to_string();
+
+    // Apply formatting in order: strikeout, bold, italic, underline
+    if style.strikeout {
+        result = format!("~~{}~~", result);
+    }
+    if style.bold && style.italic {
+        result = format!("***{}***", result);
+    } else if style.bold {
+        result = format!("**{}**", result);
+    } else if style.italic {
+        result = format!("*{}*", result);
+    }
+    if style.underline {
+        // Markdown doesn't have native underline, use HTML
+        result = format!("<u>{}</u>", result);
+    }
+
+    result
+}
+
+/// Extract text from PARA_TEXT with formatting applied
+pub fn extract_para_text_formatted(
+    text_data: &[u8],
+    char_shape_mapping: Option<&ParaCharShapeMapping>,
+    char_shapes: &HashMap<u32, CharShape>,
+) -> String {
+    // First, extract raw text with positions
+    let text_with_positions = extract_para_text_with_positions(text_data);
+
+    if text_with_positions.is_empty() {
+        return String::new();
+    }
+
+    // If no char shape mapping, return plain text
+    let mapping = match char_shape_mapping {
+        Some(m) if !m.mappings.is_empty() => m,
+        _ => return text_with_positions.iter().map(|(_, c)| c).collect(),
+    };
+
+    // Build formatted text by applying styles to text runs
+    let mut result = String::new();
+    let mut current_style_id: Option<u32> = None;
+    let mut current_run = String::new();
+
+    for (pos, ch) in &text_with_positions {
+        // Find the style for this position
+        let style_id = find_style_for_position(*pos, mapping);
+
+        // If style changed, flush current run
+        if current_style_id != style_id && !current_run.is_empty() {
+            let formatted = if let Some(id) = current_style_id {
+                if let Some(style) = char_shapes.get(&id) {
+                    apply_markdown_formatting(&current_run, style)
+                } else {
+                    current_run.clone()
+                }
+            } else {
+                current_run.clone()
+            };
+            result.push_str(&formatted);
+            current_run.clear();
+        }
+
+        current_style_id = style_id;
+        current_run.push(*ch);
+    }
+
+    // Flush final run
+    if !current_run.is_empty() {
+        let formatted = if let Some(id) = current_style_id {
+            if let Some(style) = char_shapes.get(&id) {
+                apply_markdown_formatting(&current_run, style)
+            } else {
+                current_run.clone()
+            }
+        } else {
+            current_run.clone()
+        };
+        result.push_str(&formatted);
+    }
+
+    result
+}
+
+/// Find the style ID for a given text position
+fn find_style_for_position(pos: u32, mapping: &ParaCharShapeMapping) -> Option<u32> {
+    // The mappings are sorted by position
+    // Find the last mapping where position <= pos
+    let mut current_id = None;
+    for (map_pos, shape_id) in &mapping.mappings {
+        if *map_pos <= pos {
+            current_id = Some(*shape_id);
+        } else {
+            break;
+        }
+    }
+    current_id
+}
+
+/// Extract text with character positions from PARA_TEXT record
+fn extract_para_text_with_positions(data: &[u8]) -> Vec<(u32, char)> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut char_pos: u32 = 0;
+
+    while i + 1 < data.len() {
+        // Read UTF-16LE character
+        let char_code = u16::from_le_bytes([data[i], data[i + 1]]);
+        i += 2;
+
+        match char_code {
+            // Skip control characters and inline controls
+            0..=8 | 0x10..=0x1F => {
+                // Extended control characters take 16 bytes total
+                if char_code == CHAR_INLINE_CTRL_START
+                    || char_code == CHAR_SECTION_DEF
+                    || char_code == CHAR_FIELD_START
+                    || char_code == CHAR_TABLE
+                    || char_code == CHAR_DRAWING
+                {
+                    // Skip 14 more bytes (16 total for inline control)
+                    i += 14;
+                }
+                char_pos += 1;
+            }
+            CHAR_TAB => {
+                result.push((char_pos, '\t'));
+                char_pos += 1;
+            }
+            CHAR_LINE_BREAK => {
+                result.push((char_pos, '\n'));
+                char_pos += 1;
+            }
+            CHAR_PARA_BREAK => {
+                result.push((char_pos, '\n'));
+                char_pos += 1;
+            }
+            CHAR_SPACE => {
+                result.push((char_pos, ' '));
+                char_pos += 1;
+            }
+            CHAR_HYPHEN => {
+                result.push((char_pos, '-'));
+                char_pos += 1;
+            }
+            // Normal character
+            code => {
+                if let Some(c) = char::from_u32(code as u32) {
+                    result.push((char_pos, c));
+                }
+                char_pos += 1;
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +543,121 @@ mod tests {
         ];
         let text = extract_para_text(&data);
         assert_eq!(text, "안녕");
+    }
+
+    #[test]
+    fn test_parse_char_shape() {
+        // Create a minimal CHAR_SHAPE record data (50 bytes)
+        let mut data = vec![0u8; 50];
+        // Set Bold + Italic flags at offset 46-49
+        // Bold = bit 1 (0x02), Italic = bit 0 (0x01)
+        data[46] = 0x03; // Bold + Italic
+        data[47] = 0x00;
+        data[48] = 0x00;
+        data[49] = 0x00;
+
+        let shape = parse_char_shape(&data).unwrap();
+        assert!(shape.bold);
+        assert!(shape.italic);
+        assert!(!shape.underline);
+        assert!(!shape.strikeout);
+    }
+
+    #[test]
+    fn test_parse_char_shape_underline() {
+        let mut data = vec![0u8; 50];
+        // Underline type 1 at bits 2-3 (0x04)
+        data[46] = 0x04;
+        data[47] = 0x00;
+        data[48] = 0x00;
+        data[49] = 0x00;
+
+        let shape = parse_char_shape(&data).unwrap();
+        assert!(!shape.bold);
+        assert!(!shape.italic);
+        assert!(shape.underline);
+        assert!(!shape.strikeout);
+    }
+
+    #[test]
+    fn test_parse_char_shape_strikeout() {
+        let mut data = vec![0u8; 50];
+        // Strikeout type at bits 18-21 (0x00040000 = bit 18 set)
+        data[46] = 0x00;
+        data[47] = 0x00;
+        data[48] = 0x04; // 0x04 << 16 = 0x00040000
+        data[49] = 0x00;
+
+        let shape = parse_char_shape(&data).unwrap();
+        assert!(!shape.bold);
+        assert!(!shape.italic);
+        assert!(!shape.underline);
+        assert!(shape.strikeout);
+    }
+
+    #[test]
+    fn test_parse_para_char_shape() {
+        // Create mapping: position 0 -> shape 0, position 5 -> shape 1
+        let data = vec![
+            0x00, 0x00, 0x00, 0x00, // position 0
+            0x00, 0x00, 0x00, 0x00, // shape_id 0
+            0x05, 0x00, 0x00, 0x00, // position 5
+            0x01, 0x00, 0x00, 0x00, // shape_id 1
+        ];
+
+        let mapping = parse_para_char_shape(&data).unwrap();
+        assert_eq!(mapping.mappings.len(), 2);
+        assert_eq!(mapping.mappings[0], (0, 0));
+        assert_eq!(mapping.mappings[1], (5, 1));
+    }
+
+    #[test]
+    fn test_apply_markdown_formatting() {
+        // Test bold
+        let style = CharShape { bold: true, italic: false, underline: false, strikeout: false };
+        assert_eq!(apply_markdown_formatting("테스트", &style), "**테스트**");
+
+        // Test italic
+        let style = CharShape { bold: false, italic: true, underline: false, strikeout: false };
+        assert_eq!(apply_markdown_formatting("테스트", &style), "*테스트*");
+
+        // Test bold+italic
+        let style = CharShape { bold: true, italic: true, underline: false, strikeout: false };
+        assert_eq!(apply_markdown_formatting("테스트", &style), "***테스트***");
+
+        // Test underline
+        let style = CharShape { bold: false, italic: false, underline: true, strikeout: false };
+        assert_eq!(apply_markdown_formatting("테스트", &style), "<u>테스트</u>");
+
+        // Test strikeout
+        let style = CharShape { bold: false, italic: false, underline: false, strikeout: true };
+        assert_eq!(apply_markdown_formatting("테스트", &style), "~~테스트~~");
+
+        // Test combined: bold + strikeout
+        let style = CharShape { bold: true, italic: false, underline: false, strikeout: true };
+        assert_eq!(apply_markdown_formatting("테스트", &style), "**~~테스트~~**");
+    }
+
+    #[test]
+    fn test_extract_para_text_formatted() {
+        // UTF-16LE "Hello World"
+        let text_data = vec![
+            b'H', 0, b'e', 0, b'l', 0, b'l', 0, b'o', 0,
+            b' ', 0,
+            b'W', 0, b'o', 0, b'r', 0, b'l', 0, b'd', 0,
+        ];
+
+        // Create char shapes: 0 = normal, 1 = bold
+        let mut char_shapes = HashMap::new();
+        char_shapes.insert(0, CharShape::default());
+        char_shapes.insert(1, CharShape { bold: true, italic: false, underline: false, strikeout: false });
+
+        // Mapping: position 0-5 = shape 0 (normal), position 6+ = shape 1 (bold)
+        let mapping = ParaCharShapeMapping {
+            mappings: vec![(0, 0), (6, 1)],
+        };
+
+        let result = extract_para_text_formatted(&text_data, Some(&mapping), &char_shapes);
+        assert_eq!(result, "Hello **World**");
     }
 }
