@@ -59,10 +59,10 @@
 | Text extraction | ✅ | pdf-extract with page support |
 | Page organization | ✅ | Form feed / line-based splitting |
 | Metadata extraction | ✅ | Title, Author, Subject, Creator, Producer |
+| **Image extraction** | ✅ | XObject extraction (JPEG, FlateDecode) |
 | Table extraction | ❌ | Not implemented |
 | Character formatting | ❌ | Not implemented |
-| Image extraction | ❌ | Not implemented |
-| MDX output | ✅ | With frontmatter and page markers |
+| MDX output | ✅ | With frontmatter, page markers, image list |
 
 **Implemented (2024-12-26):**
 1. [x] Use `pdf-extract` for text extraction
@@ -77,15 +77,21 @@
 - `parser.rs`: `extract_metadata()` - lopdf for PDF Info dictionary
 - `parser.rs`: `PdfDocument::to_mdx()` - MDX generation with frontmatter
 
+**Implemented (2024-12-26 - Phase 3):**
+6. [x] Image extraction from XObjects (Subtype=Image)
+7. [x] DCTDecode (JPEG) and FlateDecode (compressed) format support
+8. [x] Image metadata (width, height, format) extraction
+9. [x] Image list in MDX output
+
 **TODO (Phase 3 - Advanced):**
 1. [ ] Table detection using text positioning heuristics
-2. [ ] Image extraction (embedded images)
-3. [ ] Font-based formatting detection (bold/italic)
-4. [ ] Handle encrypted PDFs
+2. [ ] Font-based formatting detection (bold/italic)
+3. [ ] Handle encrypted PDFs
 
 **Used Crates:**
-- `lopdf` - Page count, metadata extraction
+- `lopdf` - Page count, metadata extraction, image XObject parsing
 - `pdf-extract` - Text extraction
+- `flate2` - FlateDecode (zlib) decompression for images
 
 ---
 
@@ -173,6 +179,7 @@ pub struct PdfDocument {
     pub page_count: usize,
     pub pages: Vec<PageContent>,
     pub metadata: PdfMetadata,
+    pub images: Vec<PdfImage>,  // Phase 3: Image extraction
 }
 
 pub struct PageContent {
@@ -186,6 +193,22 @@ pub struct PdfMetadata {
     pub subject: String,
     pub creator: String,
     pub producer: String,
+}
+
+// Phase 3: Image extraction
+pub struct PdfImage {
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub format: ImageFormat,  // Jpeg, Png, Raw
+    pub data: Vec<u8>,
+    pub page: Option<usize>,
+}
+
+pub enum ImageFormat {
+    Jpeg,      // DCTDecode filter
+    Png,       // Future support
+    Raw,       // Uncompressed or unknown
 }
 ```
 
