@@ -60,9 +60,9 @@
 | Page organization | ✅ | Form feed / line-based splitting |
 | Metadata extraction | ✅ | Title, Author, Subject, Creator, Producer |
 | **Image extraction** | ✅ | XObject extraction (JPEG, FlateDecode) |
+| **Font detection** | ✅ | Font name analysis for bold/italic |
 | Table extraction | ❌ | Not implemented |
-| Character formatting | ❌ | Not implemented |
-| MDX output | ✅ | With frontmatter, page markers, image list |
+| MDX output | ✅ | With frontmatter, page markers, image list, font styles |
 
 **Implemented (2024-12-26):**
 1. [x] Use `pdf-extract` for text extraction
@@ -82,16 +82,23 @@
 7. [x] DCTDecode (JPEG) and FlateDecode (compressed) format support
 8. [x] Image metadata (width, height, format) extraction
 9. [x] Image list in MDX output
+10. [x] Font extraction from PDF font dictionaries
+11. [x] Font style detection from BaseFont names (bold, italic, black, oblique, etc.)
+12. [x] Font styles section in MDX output
 
 **TODO (Phase 3 - Advanced):**
 1. [ ] Table detection using text positioning heuristics
-2. [ ] Font-based formatting detection (bold/italic)
-3. [ ] Handle encrypted PDFs
+2. [ ] Handle encrypted PDFs
 
 **Used Crates:**
-- `lopdf` - Page count, metadata extraction, image XObject parsing
+- `lopdf` - Page count, metadata extraction, image XObject parsing, font extraction
 - `pdf-extract` - Text extraction
 - `flate2` - FlateDecode (zlib) decompression for images
+
+**Technical Implementation (Phase 3):**
+- `parser.rs`: `extract_fonts()` - Iterates PDF objects for Font dictionaries
+- `parser.rs`: `detect_font_style()` - Analyzes BaseFont names for bold/italic indicators
+- Font name patterns: Bold, Italic, Oblique, Black, Heavy, SemiBold, etc.
 
 ---
 

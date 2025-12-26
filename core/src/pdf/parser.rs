@@ -22,6 +22,7 @@ pub struct PdfDocument {
     pub pages: Vec<PageContent>,
     pub metadata: PdfMetadata,
     pub images: Vec<PdfImage>,
+    pub fonts: Vec<PdfFont>,
 }
 
 /// Extracted image from PDF
@@ -41,6 +42,22 @@ pub enum ImageFormat {
     Jpeg,
     Png,
     Raw,  // Uncompressed or unknown format
+}
+
+/// Font information extracted from PDF
+#[derive(Debug, Clone)]
+pub struct PdfFont {
+    pub name: String,
+    pub base_font: String,
+    pub is_bold: bool,
+    pub is_italic: bool,
+}
+
+/// Font style detected from font name analysis
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FontStyle {
+    pub bold: bool,
+    pub italic: bool,
 }
 
 /// Content of a single PDF page
@@ -96,12 +113,16 @@ impl PdfParser {
         // Extract images
         let images = self.extract_images();
 
+        // Extract fonts
+        let fonts = self.extract_fonts();
+
         Ok(PdfDocument {
             version,
             page_count,
             pages,
             metadata,
             images,
+            fonts,
         })
     }
 
@@ -183,6 +204,66 @@ impl PdfParser {
         }
 
         images
+    }
+
+    /// Extract all fonts from PDF
+    pub fn extract_fonts(&self) -> Vec<PdfFont> {
+        let mut fonts = Vec::new();
+
+        let doc = match lopdf::Document::load_mem(&self.data) {
+            Ok(d) => d,
+            Err(_) => return fonts,
+        };
+
+        // Iterate through all objects looking for Font dictionaries
+        for (_object_id, object) in doc.objects.iter() {
+            if let Ok(dict) = object.as_dict() {
+                // Check if this is a Font dictionary
+                let is_font = dict.get(b"Type")
+                    .ok()
+                    .and_then(|t| t.as_name().ok())
+                    .map(|n| n == b"Font")
+                    .unwrap_or(false);
+
+                if !is_font {
+                    continue;
+                }
+
+                // Get font name (key used in content streams)
+                let name = dict.get(b"Name")
+                    .ok()
+                    .and_then(|n| n.as_name().ok())
+                    .map(|n| String::from_utf8_lossy(n).to_string())
+                    .unwrap_or_default();
+
+                // Get BaseFont (actual font name with style info)
+                let base_font = dict.get(b"BaseFont")
+                    .ok()
+                    .and_then(|bf| bf.as_name().ok())
+                    .map(|n| String::from_utf8_lossy(n).to_string())
+                    .unwrap_or_default();
+
+                if base_font.is_empty() {
+                    continue;
+                }
+
+                // Detect bold/italic from font name
+                let style = detect_font_style(&base_font);
+
+                fonts.push(PdfFont {
+                    name,
+                    base_font: base_font.clone(),
+                    is_bold: style.bold,
+                    is_italic: style.italic,
+                });
+            }
+        }
+
+        // Remove duplicates based on base_font
+        fonts.sort_by(|a, b| a.base_font.cmp(&b.base_font));
+        fonts.dedup_by(|a, b| a.base_font == b.base_font);
+
+        fonts
     }
 
     /// Extract PDF version from header
@@ -284,6 +365,38 @@ fn decompress_flate(data: &[u8]) -> io::Result<Vec<u8>> {
     Ok(decompressed)
 }
 
+/// Detect font style (bold/italic) from font name
+fn detect_font_style(font_name: &str) -> FontStyle {
+    let name_lower = font_name.to_lowercase();
+
+    // Common bold indicators in font names
+    let is_bold = name_lower.contains("bold")
+        || name_lower.contains("-bd")
+        || name_lower.contains("_bd")
+        || name_lower.contains("-b,")
+        || name_lower.ends_with("-b")
+        || name_lower.contains("black")
+        || name_lower.contains("heavy")
+        || name_lower.contains("semibold")
+        || name_lower.contains("demibold")
+        || name_lower.contains("extrabold")
+        || name_lower.contains("ultrabold");
+
+    // Common italic/oblique indicators in font names
+    let is_italic = name_lower.contains("italic")
+        || name_lower.contains("oblique")
+        || name_lower.contains("-it")
+        || name_lower.contains("_it")
+        || name_lower.contains("-i,")
+        || name_lower.ends_with("-i")
+        || name_lower.contains("slanted");
+
+    FontStyle {
+        bold: is_bold,
+        italic: is_italic,
+    }
+}
+
 impl ImageFormat {
     /// Get file extension for this format
     pub fn extension(&self) -> &'static str {
@@ -313,6 +426,7 @@ impl PdfDocument {
         mdx.push_str(&format!("version: \"{}\"\n", self.version));
         mdx.push_str(&format!("pages: {}\n", self.page_count));
         mdx.push_str(&format!("images: {}\n", self.images.len()));
+        mdx.push_str(&format!("fonts: {}\n", self.fonts.len()));
         if !self.metadata.title.is_empty() {
             mdx.push_str(&format!("title: \"{}\"\n", self.metadata.title.replace('"', "\\\"")));
         }
@@ -341,6 +455,24 @@ impl PdfDocument {
                     image.height,
                     image.format.extension().to_uppercase()
                 ));
+            }
+            mdx.push('\n');
+        }
+
+        // Font information (if any have styling)
+        let styled_fonts: Vec<_> = self.fonts.iter()
+            .filter(|f| f.is_bold || f.is_italic)
+            .collect();
+        if !styled_fonts.is_empty() {
+            mdx.push_str("## Font Styles\n\n");
+            for font in styled_fonts {
+                let style = match (font.is_bold, font.is_italic) {
+                    (true, true) => "Bold Italic",
+                    (true, false) => "Bold",
+                    (false, true) => "Italic",
+                    (false, false) => "Regular",
+                };
+                mdx.push_str(&format!("- {} ({})\n", font.base_font, style));
             }
         }
 
@@ -422,11 +554,98 @@ mod tests {
                 data: vec![],
                 page: None,
             }],
+            fonts: vec![],
         };
 
         let mdx = doc.to_mdx();
         assert!(mdx.contains("images: 1"));
         assert!(mdx.contains("## Images"));
         assert!(mdx.contains("image_1.jpg (800x600, JPG)"));
+    }
+
+    #[test]
+    fn test_font_style_detection_bold() {
+        let style = detect_font_style("Arial-Bold");
+        assert!(style.bold);
+        assert!(!style.italic);
+
+        let style = detect_font_style("TimesNewRoman-BoldMT");
+        assert!(style.bold);
+        assert!(!style.italic);
+
+        let style = detect_font_style("Helvetica-Black");
+        assert!(style.bold);
+        assert!(!style.italic);
+    }
+
+    #[test]
+    fn test_font_style_detection_italic() {
+        let style = detect_font_style("Arial-Italic");
+        assert!(!style.bold);
+        assert!(style.italic);
+
+        let style = detect_font_style("TimesNewRoman-ItalicMT");
+        assert!(!style.bold);
+        assert!(style.italic);
+
+        let style = detect_font_style("Helvetica-Oblique");
+        assert!(!style.bold);
+        assert!(style.italic);
+    }
+
+    #[test]
+    fn test_font_style_detection_bold_italic() {
+        let style = detect_font_style("Arial-BoldItalic");
+        assert!(style.bold);
+        assert!(style.italic);
+
+        let style = detect_font_style("TimesNewRoman-BoldItalicMT");
+        assert!(style.bold);
+        assert!(style.italic);
+    }
+
+    #[test]
+    fn test_font_style_detection_regular() {
+        let style = detect_font_style("Arial");
+        assert!(!style.bold);
+        assert!(!style.italic);
+
+        let style = detect_font_style("TimesNewRomanPSMT");
+        assert!(!style.bold);
+        assert!(!style.italic);
+    }
+
+    #[test]
+    fn test_mdx_with_fonts() {
+        let doc = PdfDocument {
+            version: "1.7".to_string(),
+            page_count: 1,
+            pages: vec![PageContent {
+                page_number: 1,
+                text: "Hello".to_string(),
+            }],
+            metadata: PdfMetadata::default(),
+            images: vec![],
+            fonts: vec![
+                PdfFont {
+                    name: "F1".to_string(),
+                    base_font: "Arial-Bold".to_string(),
+                    is_bold: true,
+                    is_italic: false,
+                },
+                PdfFont {
+                    name: "F2".to_string(),
+                    base_font: "Arial-Italic".to_string(),
+                    is_bold: false,
+                    is_italic: true,
+                },
+            ],
+        };
+
+        let mdx = doc.to_mdx();
+        assert!(mdx.contains("fonts: 2"));
+        assert!(mdx.contains("## Font Styles"));
+        assert!(mdx.contains("Arial-Bold (Bold)"));
+        assert!(mdx.contains("Arial-Italic (Italic)"));
     }
 }
