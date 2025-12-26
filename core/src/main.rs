@@ -1,10 +1,12 @@
-//! hwp2mdm - HWP to MDM converter CLI tool
+//! hwp2mdm - HWP/HWPX to MDM converter CLI tool
 
 mod hwp;
+mod hwpx;
 mod pdf;
 
 use clap::{Parser, Subcommand};
 use hwp::HwpParser;
+use hwpx::HwpxParser;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -144,7 +146,15 @@ fn main() {
 
 fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool) {
     println!("📄 Converting: {}", input.display());
-    
+
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Handle HWPX (ZIP-based) vs HWP (OLE-based)
+    if ext.eq_ignore_ascii_case("hwpx") {
+        convert_hwpx(input, output, format, extract_images, verbose);
+        return;
+    }
+
     match HwpParser::open(input) {
         Ok(mut parser) => {
             // Create output directory
@@ -251,9 +261,151 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
     }
 }
 
+fn convert_hwpx(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool) {
+    match HwpxParser::open(input) {
+        Ok(mut parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+
+                    // Extract and save images if requested
+                    let mut saved_images = Vec::new();
+                    if extract_images && !doc.image_info.is_empty() {
+                        let assets_dir = output.join("assets");
+                        fs::create_dir_all(&assets_dir).expect("Failed to create assets directory");
+                        
+                        for img in &doc.image_info {
+                            // Get filename from path
+                            let filename = img.path.split('/').last().unwrap_or(&img.id);
+                            let img_path = assets_dir.join(filename);
+                            
+                            if let Err(e) = fs::write(&img_path, &img.data) {
+                                eprintln!("  ⚠️  Failed to save {}: {}", filename, e);
+                            } else {
+                                if verbose {
+                                    println!("  📷 Saved: {} ({} bytes)", filename, img.data.len());
+                                }
+                                saved_images.push((img.id.clone(), filename.to_string(), img.media_type.clone(), img.data.len()));
+                            }
+                        }
+                        println!("  ✓ Extracted {} images to assets/", saved_images.len());
+                    }
+
+                    // Use sections (with embedded tables) instead of preview text
+                    let content = if doc.sections.iter().any(|s| !s.is_empty()) {
+                        doc.sections.join("\n\n---\n\n")
+                    } else if !doc.preview_text.is_empty() {
+                        doc.preview_text.clone()
+                    } else {
+                        String::new()
+                    };
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "hwpx",
+                                "metadata": {
+                                    "hwpx_version": doc.version,
+                                    "sections": doc.sections.len(),
+                                },
+                                "content": content,
+                                "images": doc.image_info.iter().map(|i| json!({
+                                    "id": i.id,
+                                    "path": i.path,
+                                    "mediaType": i.media_type,
+                                    "size": i.data.len(),
+                                })).collect::<Vec<_>>(),
+                            });
+
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  ✓ Created: {}", json_path.display());
+                        }
+                        _ => {
+                            // MDX format with image references
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            
+                            // Build image list for frontmatter
+                            let image_yaml = if !saved_images.is_empty() {
+                                let imgs: Vec<String> = saved_images.iter()
+                                    .map(|(id, name, _, _)| format!("  - id: {}\n    src: ./assets/{}", id, name))
+                                    .collect();
+                                format!("\nimages:\n{}", imgs.join("\n"))
+                            } else {
+                                String::new()
+                            };
+                            
+                            let mdx_content = format!(
+                                "---\nformat: hwpx\nversion: \"{}\"\nsections: {}{}\n---\n\n{}",
+                                doc.version,
+                                doc.sections.len(),
+                                image_yaml,
+                                content
+                            );
+
+                            fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
+                            println!("  ✓ Created: {}", mdx_path.display());
+
+                            // MDM manifest with full media information
+                            let mdm_path = output.join(format!("{}.mdm", stem));
+                            
+                            // Build resources map
+                            let resources: serde_json::Map<String, serde_json::Value> = saved_images.iter()
+                                .map(|(id, name, media_type, size)| {
+                                    (id.clone(), json!({
+                                        "type": "image",
+                                        "format": media_type.split('/').last().unwrap_or("unknown"),
+                                        "mediaType": media_type,
+                                        "src": format!("assets/{}", name),
+                                        "size": size,
+                                    }))
+                                })
+                                .collect();
+                            
+                            let mdm_manifest = json!({
+                                "version": "1.0",
+                                "format": "hwpx",
+                                "source": input.file_name().unwrap_or_default().to_string_lossy(),
+                                "resources": resources,
+                            });
+
+                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                                .expect("Failed to write MDM manifest");
+                            println!("  ✓ Created: {}", mdm_path.display());
+                        }
+                    }
+
+                    if verbose {
+                        println!("\n📊 Summary:");
+                        println!("  - Format: HWPX (ZIP-based)");
+                        println!("  - Sections: {}", doc.sections.len());
+                        println!("  - Tables: {}", doc.tables.len());
+                        println!("  - Images: {} (extracted: {})", doc.image_info.len(), saved_images.len());
+                        println!("  - Text length: {} chars", content.len());
+                    }
+
+                    println!("✅ Conversion complete!");
+                }
+                Err(e) => eprintln!("❌ Error parsing HWPX: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error opening HWPX file: {}", e),
+    }
+}
+
 fn analyze_file(input: &Path) {
     println!("🔍 Analyzing: {}", input.display());
-    
+
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("hwpx") {
+        analyze_hwpx(input);
+        return;
+    }
+
     match HwpParser::open(input) {
         Ok(parser) => {
             let structure = parser.analyze();
@@ -276,7 +428,40 @@ fn analyze_file(input: &Path) {
     }
 }
 
+fn analyze_hwpx(input: &Path) {
+    match HwpxParser::open(input) {
+        Ok(parser) => {
+            println!("\n📊 File Structure:");
+            println!("  - Format: HWPX (ZIP-based XML)");
+            println!("  - Sections: {}", parser.section_count());
+            println!("  - Compressed: Yes (ZIP)");
+            println!("  - Encrypted: {}", if parser.is_encrypted() { "Yes ⚠️" } else { "No" });
+        }
+        Err(e) => eprintln!("❌ Error: {}", e),
+    }
+}
+
 fn extract_text(input: &Path) {
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("hwpx") {
+        match HwpxParser::open(input) {
+            Ok(mut parser) => match parser.parse() {
+                Ok(doc) => {
+                    if !doc.preview_text.is_empty() {
+                        println!("{}", doc.preview_text);
+                    } else {
+                        for section in &doc.sections {
+                            println!("{}", section);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("❌ Error: {}", e),
+            },
+            Err(e) => eprintln!("❌ Error: {}", e),
+        }
+        return;
+    }
+
     match HwpParser::open(input) {
         Ok(mut parser) => {
             match parser.extract_text() {

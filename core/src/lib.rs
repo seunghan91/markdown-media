@@ -1,17 +1,20 @@
 //! MDM Core Engine - High-performance media rendering for Markdown Media
 //!
 //! This crate provides core functionality for:
-//! - HWP document parsing
+//! - HWP document parsing (HWP 5.0 and HWPX)
 //! - SVG generation from media descriptions
 //! - Image optimization and caching
 //! - Placeholder generation
 
 pub mod hwp;
+pub mod hwpx;
+pub mod pdf;
 pub mod renderer;
 pub mod optimizer;
 pub mod cache;
 
 pub use hwp::HwpParser;
+pub use hwpx::HwpxParser;
 pub use renderer::Renderer;
 pub use optimizer::Optimizer;
 pub use cache::Cache;

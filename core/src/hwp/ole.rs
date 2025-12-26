@@ -204,9 +204,18 @@ impl OleReader {
     }
 }
 
-/// Decompress zlib-compressed data
+/// Decompress zlib-compressed data (tries zlib first, then raw deflate)
 pub fn decompress_zlib(data: &[u8]) -> io::Result<Vec<u8>> {
+    // First try zlib (with header)
     let mut decoder = ZlibDecoder::new(data);
+    let mut decompressed = Vec::new();
+    if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
+        return Ok(decompressed);
+    }
+
+    // Try raw deflate (without zlib header) - HWP uses this
+    use flate2::read::DeflateDecoder;
+    let mut decoder = DeflateDecoder::new(data);
     let mut decompressed = Vec::new();
     decoder.read_to_end(&mut decompressed)?;
     Ok(decompressed)
