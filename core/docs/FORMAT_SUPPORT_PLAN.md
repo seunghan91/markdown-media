@@ -51,33 +51,41 @@
 ---
 
 ### PDF
-**Status: 🔴 Minimal Support**
+**Status: 🟡 Basic Support**
 
 | Feature | Status | Details |
 |---------|--------|---------|
-| File parsing | ✅ | Basic binary read |
-| Text extraction | 🔴 | Very basic (BT/ET operators only) |
+| File parsing | ✅ | lopdf + pdf-extract |
+| Text extraction | ✅ | pdf-extract with page support |
+| Page organization | ✅ | Form feed / line-based splitting |
+| Metadata extraction | ✅ | Title, Author, Subject, Creator, Producer |
 | Table extraction | ❌ | Not implemented |
 | Character formatting | ❌ | Not implemented |
 | Image extraction | ❌ | Not implemented |
-| MDX output | ❌ | Not implemented |
+| MDX output | ✅ | With frontmatter and page markers |
 
-**TODO (Phase 1 - Basic):**
-1. [ ] Use `pdf-extract` or `lopdf` crate for proper PDF parsing
-2. [ ] Implement proper text extraction with positioning
-3. [ ] Add page-by-page text organization
-4. [ ] Create MDX output with page markers
+**Implemented (2024-12-26):**
+1. [x] Use `pdf-extract` for text extraction
+2. [x] Use `lopdf` for page count and metadata
+3. [x] Page-by-page text organization (form feed / line heuristics)
+4. [x] MDX output with page markers (`<!-- Page N -->`)
+5. [x] Metadata in frontmatter (title, author, version, pages)
 
-**TODO (Phase 2 - Advanced):**
+**Technical Implementation:**
+- `parser.rs`: `PdfParser::parse()` - Main parsing using pdf-extract
+- `parser.rs`: `split_into_pages()` - Form feed or line-based page splitting
+- `parser.rs`: `extract_metadata()` - lopdf for PDF Info dictionary
+- `parser.rs`: `PdfDocument::to_mdx()` - MDX generation with frontmatter
+
+**TODO (Phase 3 - Advanced):**
 1. [ ] Table detection using text positioning heuristics
 2. [ ] Image extraction (embedded images)
 3. [ ] Font-based formatting detection (bold/italic)
 4. [ ] Handle encrypted PDFs
 
-**Recommended Crates:**
-- `lopdf` - Low-level PDF manipulation
+**Used Crates:**
+- `lopdf` - Page count, metadata extraction
 - `pdf-extract` - Text extraction
-- `pdfium-render` - High-fidelity rendering (if needed)
 
 ---
 
@@ -92,20 +100,22 @@
 4. ✅ Apply formatting during text extraction
 5. ✅ Update MDX output with Markdown formatting
 
-### Phase 2: PDF Basic Support
+### Phase 2: PDF Basic Support ✅ COMPLETED (2024-12-26)
 **Goal:** Reliable text extraction
 
-1. Add `lopdf` dependency
-2. Implement proper PDF structure parsing
-3. Extract text with positioning info
-4. Generate MDX with page breaks
+1. ✅ Add `lopdf` and `pdf-extract` dependencies
+2. ✅ Implement proper PDF structure parsing
+3. ✅ Extract text with page-by-page organization
+4. ✅ Generate MDX with frontmatter and page markers
+5. ✅ Extract metadata (title, author, etc.)
 
-### Phase 3: PDF Advanced
-**Goal:** Tables and images
+### Phase 3: PDF Advanced (Next)
+**Goal:** Tables, images, and formatting
 
-1. Implement table detection algorithm
-2. Extract embedded images
-3. Detect formatting from font info
+1. [ ] Implement table detection algorithm (text positioning heuristics)
+2. [ ] Extract embedded images
+3. [ ] Detect formatting from font info (bold/italic)
+4. [ ] Handle encrypted PDFs
 
 ---
 
@@ -123,7 +133,7 @@ src/
 │   └── parser.rs      # HWPX parser (complete)
 ├── pdf/
 │   ├── mod.rs
-│   └── parser.rs      # PDF parser (needs work)
+│   └── parser.rs      # PDF parser (pdf-extract + lopdf)
 └── main.rs            # CLI tool
 ```
 
@@ -147,6 +157,35 @@ pub struct ParaCharShapeMapping {
 pub struct HwpParser {
     ole_reader: OleReader,
     char_shapes: HashMap<u32, CharShape>, // Parsed from DocInfo
+}
+```
+
+### PDF Document Structure
+```rust
+// pdf/parser.rs
+pub struct PdfParser {
+    path: PathBuf,
+    data: Vec<u8>,
+}
+
+pub struct PdfDocument {
+    pub version: String,
+    pub page_count: usize,
+    pub pages: Vec<PageContent>,
+    pub metadata: PdfMetadata,
+}
+
+pub struct PageContent {
+    pub page_number: usize,
+    pub text: String,
+}
+
+pub struct PdfMetadata {
+    pub title: String,
+    pub author: String,
+    pub subject: String,
+    pub creator: String,
+    pub producer: String,
 }
 ```
 
