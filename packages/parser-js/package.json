@@ -1,21 +1,101 @@
 {
   "name": "@mdm/parser",
   "version": "0.1.0",
-  "description": "MDM (Markdown+Media) parser for JavaScript",
-  "main": "src/index.js",
+  "description": "MDM (Markdown+Media) parser for JavaScript - Parse and render media-rich markdown documents",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "browser": "dist/index.browser.mjs",
+  "unpkg": "dist/index.umd.js",
+  "types": "dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "browser": "./dist/index.browser.mjs",
+      "types": "./dist/index.d.ts"
+    },
+    "./presets": {
+      "import": "./src/presets.js",
+      "require": "./dist/presets.cjs"
+    },
+    "./loader": {
+      "import": "./src/mdm-loader.js",
+      "require": "./dist/mdm-loader.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "rollup -c",
+    "build:prod": "NODE_ENV=production rollup -c",
+    "dev": "rollup -c -w",
     "test": "node --test",
     "test:watch": "node --test --watch",
-    "dev": "node src/demo.js"
+    "lint": "eslint src/",
+    "demo": "node src/demo.js",
+    "prepublishOnly": "npm run lint && npm run build:prod && npm test",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
   },
-  "keywords": ["markdown", "parser", "media", "mdm"],
-  "author": "MDM Team",
+  "keywords": [
+    "markdown",
+    "parser",
+    "media",
+    "mdm",
+    "mdx",
+    "images",
+    "video",
+    "responsive",
+    "content"
+  ],
+  "author": {
+    "name": "MDM Team",
+    "url": "https://github.com/seunghan91"
+  },
   "license": "MIT",
+  "homepage": "https://github.com/seunghan91/markdown-media#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seunghan91/markdown-media.git",
+    "directory": "packages/parser-js"
+  },
+  "bugs": {
+    "url": "https://github.com/seunghan91/markdown-media/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": ">=16.0.0"
   },
+  "sideEffects": false,
   "dependencies": {
     "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.0",
+    "@rollup/plugin-node-resolve": "^16.0.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "eslint": "^8.57.0",
+    "rollup": "^4.28.0",
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "remark": ">=14.0.0",
+    "unified": ">=10.0.0"
+  },
+  "peerDependenciesMeta": {
+    "remark": {
+      "optional": true
+    },
+    "unified": {
+      "optional": true
+    }
   }
 }

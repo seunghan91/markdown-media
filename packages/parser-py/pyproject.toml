@@ -1,3 +1,10 @@
+# ============================================================================
+# 🚧 업데이트됨 - 병렬 작업 팀
+# ============================================================================
+# 작업 상태: Phase 3.2 PyPI 패키지 준비
+# 추가 내용: dev dependencies, pytest 설정, ruff 설정
+# ============================================================================
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -5,15 +12,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mdm-parser"
 version = "0.1.0"
-description = "Python helpers for MDM (Markdown+Media) document conversion"
+description = "Python helpers for MDM (Markdown+Media) document conversion - HWP, PDF, DOCX parser and media renderer"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
     {name = "seunghan91", email = "seunghan91@users.noreply.github.com"}
 ]
+maintainers = [
+    {name = "seunghan91", email = "seunghan91@users.noreply.github.com"}
+]
 requires-python = ">=3.8"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
@@ -24,36 +34,225 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Text Processing :: Markup",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+    "Typing :: Typed",
 ]
-keywords = ["markdown", "media", "hwp", "pdf", "document", "conversion"]
+keywords = [
+    "markdown", 
+    "media", 
+    "hwp", 
+    "pdf", 
+    "docx",
+    "document", 
+    "conversion",
+    "parser",
+    "ocr",
+    "table",
+    "chart"
+]
 dependencies = [
     "pdfplumber>=0.10.0",
     "pillow>=9.0.0",
     "svgwrite>=1.4.0",
+    "typing-extensions>=4.0.0;python_version<'3.10'",
 ]
 
 [project.optional-dependencies]
 hwp = ["pyhwp>=0.1b12"]
 ocr = ["pytesseract>=0.3.10", "easyocr>=1.7.0"]
+charts = ["matplotlib>=3.8.0", "numpy>=1.24.0"]
 all = [
     "pyhwp>=0.1b12",
     "pytesseract>=0.3.10",
     "easyocr>=1.7.0",
+    "matplotlib>=3.8.0",
+    "numpy>=1.24.0",
+    "cairosvg>=2.7.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-xdist>=3.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "isort>=5.12.0",
+    "pre-commit>=3.0.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+]
+docs = [
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=2.0.0",
+    "myst-parser>=2.0.0",
 ]
 
 [project.scripts]
-mdm-pdf = "pdf_processor:main"
-mdm-hwp-svg = "hwp_to_svg:main"
-mdm-ocr = "ocr_processor:main"
+mdm-pdf = "mdm_parser.pdf_processor:main"
+mdm-hwp-svg = "mdm_parser.hwp_to_svg:main"
+mdm-ocr = "mdm_parser.ocr_bridge:main"
+mdm-table = "mdm_parser.table_to_svg:main"
+mdm-chart = "mdm_parser.chart_to_png:main"
 
 [project.urls]
 Homepage = "https://github.com/seunghan91/markdown-media"
 Documentation = "https://github.com/seunghan91/markdown-media#readme"
 Repository = "https://github.com/seunghan91/markdown-media.git"
 Issues = "https://github.com/seunghan91/markdown-media/issues"
+Changelog = "https://github.com/seunghan91/markdown-media/releases"
 
 [tool.setuptools]
 packages = ["mdm_parser"]
+package-dir = {"mdm_parser" = "."}
 
 [tool.setuptools.package-data]
-"*" = ["*.json", "*.md"]
+"*" = ["*.json", "*.md", "py.typed"]
+
+# =============================================================================
+# pytest 설정
+# =============================================================================
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "-q",
+    "--strict-markers",
+    "--strict-config",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "ocr: marks tests requiring OCR dependencies",
+    "hwp: marks tests requiring HWP dependencies",
+]
+
+# =============================================================================
+# coverage 설정
+# =============================================================================
+[tool.coverage.run]
+source = ["."]
+branch = true
+omit = [
+    "tests/*",
+    "setup.py",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+fail_under = 70
+show_missing = true
+
+# =============================================================================
+# ruff 설정 (린터/포매터)
+# =============================================================================
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+exclude = [
+    ".git",
+    ".ruff_cache",
+    ".mypy_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip() without an explicit strict= parameter
+    "ARG001", # unused function argument
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "S101"]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mdm_parser"]
+
+# =============================================================================
+# black 설정 (포매터)
+# =============================================================================
+[tool.black]
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+line-length = 100
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.mypy_cache
+  | \.ruff_cache
+  | __pycache__
+  | build
+  | dist
+)/
+'''
+
+# =============================================================================
+# mypy 설정 (타입 체커)
+# =============================================================================
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pdfplumber.*",
+    "svgwrite.*",
+    "pytesseract.*",
+    "easyocr.*",
+    "matplotlib.*",
+    "cairosvg.*",
+    "pyhwp.*",
+]
+ignore_missing_imports = true
+
+# =============================================================================
+# isort 설정
+# =============================================================================
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["mdm_parser"]
+skip = [".git", "__pycache__", "build", "dist"]

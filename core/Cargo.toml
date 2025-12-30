@@ -2,8 +2,26 @@
 name = "mdm-core"
 version = "0.1.0"
 edition = "2021"
-description = "Markdown Media Core Engine - HWP Parser & Media Rendering"
+description = "Markdown Media Core Engine - HWP/PDF/DOCX Parser & Media Rendering"
 license = "MIT"
+authors = ["seunghan91"]
+homepage = "https://github.com/seunghan91/markdown-media"
+repository = "https://github.com/seunghan91/markdown-media"
+documentation = "https://docs.rs/mdm-core"
+keywords = ["markdown", "media", "hwp", "pdf", "docx", "converter"]
+categories = ["parsing", "text-processing", "encoding"]
+readme = "README.md"
+rust-version = "1.70"
+
+[features]
+default = ["hwp", "hwpx", "pdf", "docx", "image-processing"]
+hwp = []
+hwpx = []
+pdf = []
+docx = []
+image-processing = []
+wasm = ["wasm-bindgen", "console_error_panic_hook", "js-sys"]
+full = ["hwp", "hwpx", "pdf", "docx", "image-processing"]
 
 [dependencies]
 cfb = "0.12.1"
@@ -18,11 +36,40 @@ resvg = "0.44"
 base64 = "0.22"
 pdf-extract = "0.7"
 lopdf = "0.34"
+quick-xml = "0.31"
+thiserror = "2.0"
+
+# WASM dependencies (optional)
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+js-sys = { version = "0.3", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [lib]
 name = "mdm_core"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "hwp2mdm"
 path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--enable-mutable-globals"]
