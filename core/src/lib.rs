@@ -9,12 +9,15 @@
 pub mod hwp;
 pub mod hwpx;
 pub mod pdf;
+pub mod docx;
 pub mod renderer;
 pub mod optimizer;
 pub mod cache;
 
 pub use hwp::HwpParser;
 pub use hwpx::HwpxParser;
+pub use docx::DocxParser;
+pub use docx::DocxDocument;
 pub use renderer::Renderer;
 pub use optimizer::Optimizer;
 pub use cache::Cache;

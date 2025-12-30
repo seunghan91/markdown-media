@@ -93,6 +93,16 @@ enum Commands {
         #[arg(short, long, default_value = "./output")]
         output: PathBuf,
     },
+    
+    /// Show file information and metadata
+    Info {
+        /// Input file (HWP, HWPX, PDF)
+        input: PathBuf,
+        
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() {
@@ -113,6 +123,9 @@ fn main() {
         }
         Some(Commands::Batch { pattern, output }) => {
             batch_convert(&pattern, &output);
+        }
+        Some(Commands::Info { input, format }) => {
+            show_info(&input, &format);
         }
         None => {
             // Quick conversion mode
@@ -624,4 +637,173 @@ fn batch_convert(pattern: &str, output: &Path) {
     }
     
     println!("\n📊 Batch complete: {} converted, {} errors", count, errors);
+}
+
+fn show_info(input: &Path, format: &str) {
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
+    
+    // Get file metadata
+    let file_size = fs::metadata(input)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    
+    let file_size_str = if file_size >= 1024 * 1024 {
+        format!("{:.2} MB", file_size as f64 / (1024.0 * 1024.0))
+    } else if file_size >= 1024 {
+        format!("{:.2} KB", file_size as f64 / 1024.0)
+    } else {
+        format!("{} bytes", file_size)
+    };
+    
+    match ext.to_lowercase().as_str() {
+        "hwpx" => show_hwpx_info(input, format, &file_size_str),
+        "pdf" => show_pdf_info(input, format, &file_size_str),
+        _ => show_hwp_info(input, format, &file_size_str),
+    }
+}
+
+fn show_hwp_info(input: &Path, format: &str, file_size: &str) {
+    match HwpParser::open(input) {
+        Ok(parser) => {
+            let structure = parser.analyze();
+            
+            if format == "json" {
+                let info = json!({
+                    "file": {
+                        "name": input.file_name().unwrap_or_default().to_string_lossy(),
+                        "path": input.display().to_string(),
+                        "size": file_size,
+                        "format": "hwp",
+                    },
+                    "document": {
+                        "sections": structure.section_count,
+                        "streams": structure.total_streams,
+                        "bin_data_count": structure.bin_data_count,
+                        "compressed": structure.compressed,
+                        "encrypted": structure.encrypted,
+                    },
+                    "streams": structure.streams,
+                });
+                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+            } else {
+                println!("📄 File Information");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("  Name:       {}", input.file_name().unwrap_or_default().to_string_lossy());
+                println!("  Path:       {}", input.display());
+                println!("  Size:       {}", file_size);
+                println!("  Format:     HWP (OLE Compound Document)");
+                println!();
+                println!("📊 Document Structure");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("  Sections:     {}", structure.section_count);
+                println!("  Streams:      {}", structure.total_streams);
+                println!("  BinData:      {} items", structure.bin_data_count);
+                println!("  Compressed:   {}", if structure.compressed { "Yes" } else { "No" });
+                println!("  Encrypted:    {}", if structure.encrypted { "Yes ⚠️" } else { "No" });
+                println!();
+                println!("📁 Streams ({}):", structure.streams.len());
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                for stream in &structure.streams {
+                    println!("  • {}", stream);
+                }
+            }
+        }
+        Err(e) => eprintln!("❌ Error: {}", e),
+    }
+}
+
+fn show_hwpx_info(input: &Path, format: &str, file_size: &str) {
+    match HwpxParser::open(input) {
+        Ok(parser) => {
+            let section_count = parser.section_count();
+            let encrypted = parser.is_encrypted();
+            
+            if format == "json" {
+                let info = json!({
+                    "file": {
+                        "name": input.file_name().unwrap_or_default().to_string_lossy(),
+                        "path": input.display().to_string(),
+                        "size": file_size,
+                        "format": "hwpx",
+                    },
+                    "document": {
+                        "sections": section_count,
+                        "compressed": true,
+                        "encrypted": encrypted,
+                    },
+                });
+                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+            } else {
+                println!("📄 File Information");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("  Name:       {}", input.file_name().unwrap_or_default().to_string_lossy());
+                println!("  Path:       {}", input.display());
+                println!("  Size:       {}", file_size);
+                println!("  Format:     HWPX (ZIP-based XML)");
+                println!();
+                println!("📊 Document Structure");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("  Sections:     {}", section_count);
+                println!("  Compressed:   Yes (ZIP container)");
+                println!("  Encrypted:    {}", if encrypted { "Yes ⚠️" } else { "No" });
+            }
+        }
+        Err(e) => eprintln!("❌ Error: {}", e),
+    }
+}
+
+fn show_pdf_info(input: &Path, format: &str, file_size: &str) {
+    match PdfParser::open(input) {
+        Ok(parser) => {
+            match parser.parse() {
+                Ok(doc) => {
+                    if format == "json" {
+                        let info = json!({
+                            "file": {
+                                "name": input.file_name().unwrap_or_default().to_string_lossy(),
+                                "path": input.display().to_string(),
+                                "size": file_size,
+                                "format": "pdf",
+                            },
+                            "document": {
+                                "version": doc.version,
+                                "pages": doc.page_count,
+                                "title": doc.metadata.title,
+                                "author": doc.metadata.author,
+                                "creator": doc.metadata.creator,
+                                "producer": doc.metadata.producer,
+                            },
+                        });
+                        println!("{}", serde_json::to_string_pretty(&info).unwrap());
+                    } else {
+                        println!("📄 File Information");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        println!("  Name:       {}", input.file_name().unwrap_or_default().to_string_lossy());
+                        println!("  Path:       {}", input.display());
+                        println!("  Size:       {}", file_size);
+                        println!("  Format:     PDF");
+                        println!();
+                        println!("📊 Document Properties");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        println!("  PDF Version:  {}", doc.version);
+                        println!("  Pages:        {}", doc.page_count);
+                        if !doc.metadata.title.is_empty() {
+                            println!("  Title:        {}", doc.metadata.title);
+                        }
+                        if !doc.metadata.author.is_empty() {
+                            println!("  Author:       {}", doc.metadata.author);
+                        }
+                        if !doc.metadata.creator.is_empty() {
+                            println!("  Creator:      {}", doc.metadata.creator);
+                        }
+                        if !doc.metadata.producer.is_empty() {
+                            println!("  Producer:     {}", doc.metadata.producer);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("❌ Error parsing PDF: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error: {}", e),
+    }
 }
