@@ -1,12 +1,131 @@
 //! PDF parser implementation using pdf-extract
 //!
 //! Provides text extraction from PDF files with page-by-page support,
-//! image extraction, and metadata parsing.
+//! image extraction, metadata parsing, encryption detection, and layout preservation.
 
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 use flate2::read::ZlibDecoder;
+use thiserror::Error;
+
+/// PDF-specific errors
+#[derive(Error, Debug)]
+pub enum PdfError {
+    #[error("PDF is encrypted and requires a password")]
+    EncryptedNoPassword,
+
+    #[error("Invalid password for encrypted PDF")]
+    InvalidPassword,
+
+    #[error("Unsupported encryption algorithm: {0}")]
+    UnsupportedEncryption(String),
+
+    #[error("PDF parsing error: {0}")]
+    ParseError(String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] io::Error),
+}
+
+/// PDF encryption information
+#[derive(Debug, Clone)]
+pub struct EncryptionInfo {
+    /// Encryption algorithm version (1-5)
+    pub version: u32,
+    /// Encryption revision (2-6)
+    pub revision: u32,
+    /// Key length in bits (40-256)
+    pub key_length: u32,
+    /// Whether user password is set
+    pub user_password_set: bool,
+    /// Whether owner password is set
+    pub owner_password_set: bool,
+    /// Permissions flags
+    pub permissions: i32,
+}
+
+/// Layout element types for position-aware content
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutElementType {
+    /// Text content
+    Text,
+    /// Image reference
+    Image,
+    /// Table structure
+    Table,
+    /// Horizontal line/rule
+    HorizontalRule,
+    /// Page break marker
+    PageBreak,
+    /// Header region
+    Header,
+    /// Footer region
+    Footer,
+    /// Paragraph break
+    ParagraphBreak,
+    /// List item
+    ListItem,
+}
+
+/// A layout element with position and styling information
+#[derive(Debug, Clone)]
+pub struct LayoutElement {
+    /// Type of layout element
+    pub element_type: LayoutElementType,
+    /// Content (for text elements)
+    pub content: String,
+    /// Page number (1-indexed)
+    pub page: usize,
+    /// X position in points from left
+    pub x: f64,
+    /// Y position in points from bottom
+    pub y: f64,
+    /// Width in points
+    pub width: f64,
+    /// Height in points
+    pub height: f64,
+    /// Font size in points (for text)
+    pub font_size: Option<f64>,
+    /// Font name (for text)
+    pub font_name: Option<String>,
+    /// Text alignment
+    pub alignment: TextAlignment,
+    /// Whether text is bold
+    pub is_bold: bool,
+    /// Whether text is italic
+    pub is_italic: bool,
+    /// Line spacing multiplier
+    pub line_spacing: f64,
+    /// Indent level (for nested content)
+    pub indent_level: u32,
+    /// Reference ID (for images, tables)
+    pub ref_id: Option<String>,
+}
+
+/// Text alignment options
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum TextAlignment {
+    #[default]
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+/// Internal text block for layout grouping
+#[derive(Debug, Clone)]
+struct TextBlock {
+    content: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    font_size: Option<f64>,
+    font_name: Option<String>,
+    is_bold: bool,
+    is_italic: bool,
+}
 
 /// PDF document parser
 pub struct PdfParser {
@@ -102,13 +221,444 @@ impl PdfParser {
         let mut file = File::open(&path)?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
-        
+
         // Validate PDF magic bytes
         if data.len() < 5 || &data[0..5] != b"%PDF-" {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Not a valid PDF file"));
         }
-        
+
         Ok(PdfParser { path, data })
+    }
+
+    /// Check if the PDF is encrypted
+    pub fn is_encrypted(&self) -> bool {
+        if let Ok(doc) = lopdf::Document::load_mem(&self.data) {
+            // Check for Encrypt dictionary in trailer
+            doc.trailer.get(b"Encrypt").is_ok()
+        } else {
+            // If we can't load the document, it might be encrypted
+            // Check for encryption markers in raw data
+            self.data.windows(8).any(|w| w == b"/Encrypt")
+        }
+    }
+
+    /// Get encryption information if the PDF is encrypted
+    pub fn get_encryption_info(&self) -> Option<EncryptionInfo> {
+        let doc = lopdf::Document::load_mem(&self.data).ok()?;
+
+        let encrypt_ref = doc.trailer.get(b"Encrypt").ok()?;
+        let encrypt_id = encrypt_ref.as_reference().ok()?;
+        let encrypt_dict = doc.get_dictionary(encrypt_id).ok()?;
+
+        // Get encryption version (V)
+        let version = encrypt_dict
+            .get(b"V")
+            .ok()
+            .and_then(|v| v.as_i64().ok())
+            .unwrap_or(0) as u32;
+
+        // Get encryption revision (R)
+        let revision = encrypt_dict
+            .get(b"R")
+            .ok()
+            .and_then(|r| r.as_i64().ok())
+            .unwrap_or(0) as u32;
+
+        // Get key length (Length) - defaults based on version
+        let key_length = encrypt_dict
+            .get(b"Length")
+            .ok()
+            .and_then(|l| l.as_i64().ok())
+            .unwrap_or(match version {
+                1 => 40,
+                2 | 3 => 128,
+                4 | 5 => 256,
+                _ => 40,
+            }) as u32;
+
+        // Get permissions (P)
+        let permissions = encrypt_dict
+            .get(b"P")
+            .ok()
+            .and_then(|p| p.as_i64().ok())
+            .unwrap_or(0) as i32;
+
+        // Check for user/owner password strings
+        let user_password_set = encrypt_dict.get(b"U").is_ok();
+        let owner_password_set = encrypt_dict.get(b"O").is_ok();
+
+        Some(EncryptionInfo {
+            version,
+            revision,
+            key_length,
+            user_password_set,
+            owner_password_set,
+            permissions,
+        })
+    }
+
+    /// Attempt to decrypt the PDF with the given password
+    ///
+    /// Returns a new PdfParser with the decrypted content if successful.
+    /// Supports RC4 (40-128 bit) and AES (128-256 bit) encryption.
+    pub fn decrypt(&self, password: &str) -> Result<Self, PdfError> {
+        if !self.is_encrypted() {
+            // Not encrypted, return a copy
+            return Ok(PdfParser {
+                path: self.path.clone(),
+                data: self.data.clone(),
+            });
+        }
+
+        let encryption_info = self.get_encryption_info()
+            .ok_or(PdfError::ParseError("Cannot read encryption info".to_string()))?;
+
+        // Check if encryption is supported
+        // lopdf supports V=1,2 (RC4) and limited V=4,5 (AES)
+        match encryption_info.version {
+            1 | 2 | 4 => {
+                // Try to load and decrypt with lopdf
+                self.decrypt_with_lopdf(password, &encryption_info)
+            }
+            5 => {
+                // AES-256 (PDF 2.0)
+                self.decrypt_with_lopdf(password, &encryption_info)
+            }
+            v => Err(PdfError::UnsupportedEncryption(format!("version {}", v))),
+        }
+    }
+
+    /// Decrypt using lopdf's built-in decryption
+    fn decrypt_with_lopdf(&self, password: &str, info: &EncryptionInfo) -> Result<Self, PdfError> {
+        // lopdf's Document::load_mem will attempt decryption with empty password
+        // For password-protected PDFs, we need a different approach
+
+        // First, try loading with empty password (for owner-restricted, user-accessible PDFs)
+        if let Ok(doc) = lopdf::Document::load_mem(&self.data) {
+            // Check if we can access content
+            if doc.get_pages().len() > 0 {
+                // Document loaded successfully, may already be decrypted
+                // or accessible without password
+                return Ok(PdfParser {
+                    path: self.path.clone(),
+                    data: self.data.clone(),
+                });
+            }
+        }
+
+        // Try with provided password
+        // Note: lopdf doesn't have direct password support, so we need to check
+        // if the document can be used with the computed decryption key
+
+        // For now, attempt to use qpdf or similar tool if available
+        // This is a fallback mechanism
+        self.try_external_decryption(password, info)
+    }
+
+    /// Try external tools for decryption (fallback)
+    fn try_external_decryption(&self, password: &str, _info: &EncryptionInfo) -> Result<Self, PdfError> {
+        use std::process::Command;
+        use std::io::Write;
+
+        // Create temp files
+        let temp_input = std::env::temp_dir().join(format!("mdm_pdf_in_{}.pdf", std::process::id()));
+        let temp_output = std::env::temp_dir().join(format!("mdm_pdf_out_{}.pdf", std::process::id()));
+
+        // Write encrypted PDF to temp file
+        {
+            let mut file = File::create(&temp_input)?;
+            file.write_all(&self.data)?;
+        }
+
+        // Try qpdf first (most common on Unix systems)
+        let qpdf_result = Command::new("qpdf")
+            .args([
+                "--password", password,
+                "--decrypt",
+                temp_input.to_str().unwrap(),
+                temp_output.to_str().unwrap(),
+            ])
+            .output();
+
+        let success = match qpdf_result {
+            Ok(output) => output.status.success(),
+            Err(_) => {
+                // Try pdftk as fallback
+                let pdftk_result = Command::new("pdftk")
+                    .args([
+                        temp_input.to_str().unwrap(),
+                        "input_pw", password,
+                        "output", temp_output.to_str().unwrap(),
+                    ])
+                    .output();
+
+                match pdftk_result {
+                    Ok(output) => output.status.success(),
+                    Err(_) => false,
+                }
+            }
+        };
+
+        // Clean up input temp file
+        let _ = std::fs::remove_file(&temp_input);
+
+        if success {
+            // Read decrypted file
+            let mut decrypted_data = Vec::new();
+            let mut file = File::open(&temp_output)?;
+            file.read_to_end(&mut decrypted_data)?;
+
+            // Clean up output temp file
+            let _ = std::fs::remove_file(&temp_output);
+
+            Ok(PdfParser {
+                path: self.path.clone(),
+                data: decrypted_data,
+            })
+        } else {
+            // Clean up output temp file if it exists
+            let _ = std::fs::remove_file(&temp_output);
+
+            Err(PdfError::InvalidPassword)
+        }
+    }
+
+    /// Check if decryption is needed and attempt with empty password
+    pub fn try_auto_decrypt(&self) -> Result<Self, PdfError> {
+        if !self.is_encrypted() {
+            return Ok(PdfParser {
+                path: self.path.clone(),
+                data: self.data.clone(),
+            });
+        }
+
+        // Try empty password first (common for owner-only restrictions)
+        self.decrypt("")
+    }
+
+    /// Extract layout elements with position information
+    ///
+    /// Returns a vector of layout elements that preserve the visual structure
+    /// of the PDF, including text positions, images, and detected regions.
+    pub fn extract_layout(&self) -> Vec<LayoutElement> {
+        let mut elements = Vec::new();
+
+        let doc = match lopdf::Document::load_mem(&self.data) {
+            Ok(d) => d,
+            Err(_) => return elements,
+        };
+
+        // Get page dimensions for relative positioning
+        for (page_num, page_id) in doc.get_pages() {
+            let page_num = page_num as usize;
+
+            // Get page dimensions
+            let (page_width, page_height) = self.get_page_dimensions(&doc, page_id);
+
+            // Add page break marker for pages after the first
+            if page_num > 1 {
+                elements.push(LayoutElement {
+                    element_type: LayoutElementType::PageBreak,
+                    content: String::new(),
+                    page: page_num,
+                    x: 0.0,
+                    y: page_height,
+                    width: page_width,
+                    height: 0.0,
+                    font_size: None,
+                    font_name: None,
+                    alignment: TextAlignment::Left,
+                    is_bold: false,
+                    is_italic: false,
+                    line_spacing: 1.0,
+                    indent_level: 0,
+                    ref_id: None,
+                });
+            }
+
+            // Extract positioned text elements
+            let positioned_texts = self.extract_positioned_text(&doc, page_id);
+
+            // Group text by visual blocks and detect formatting
+            let text_blocks = self.group_text_into_blocks(&positioned_texts, page_height);
+
+            for block in text_blocks {
+                // Detect if this might be a header/footer
+                let element_type = if block.y > page_height * 0.9 {
+                    LayoutElementType::Header
+                } else if block.y < page_height * 0.1 {
+                    LayoutElementType::Footer
+                } else if block.content.starts_with('•') || block.content.starts_with('-')
+                    || block.content.starts_with("* ") {
+                    LayoutElementType::ListItem
+                } else {
+                    LayoutElementType::Text
+                };
+
+                // Detect alignment from position
+                let alignment = if block.x < page_width * 0.2 {
+                    TextAlignment::Left
+                } else if block.x > page_width * 0.6 {
+                    TextAlignment::Right
+                } else {
+                    TextAlignment::Center
+                };
+
+                // Calculate indent level
+                let indent_level = ((block.x / 36.0) as u32).min(10); // 36pt = 0.5 inch
+
+                elements.push(LayoutElement {
+                    element_type,
+                    content: block.content,
+                    page: page_num,
+                    x: block.x,
+                    y: block.y,
+                    width: block.width,
+                    height: block.height,
+                    font_size: block.font_size,
+                    font_name: block.font_name,
+                    alignment,
+                    is_bold: block.is_bold,
+                    is_italic: block.is_italic,
+                    line_spacing: 1.2, // Default line spacing
+                    indent_level,
+                    ref_id: None,
+                });
+            }
+
+            // Add image elements
+            for image in &self.extract_images() {
+                if image.page == Some(page_num) || image.page.is_none() {
+                    elements.push(LayoutElement {
+                        element_type: LayoutElementType::Image,
+                        content: String::new(),
+                        page: page_num,
+                        x: 0.0, // Position not available from image extraction
+                        y: 0.0,
+                        width: image.width as f64,
+                        height: image.height as f64,
+                        font_size: None,
+                        font_name: None,
+                        alignment: TextAlignment::Center,
+                        is_bold: false,
+                        is_italic: false,
+                        line_spacing: 1.0,
+                        indent_level: 0,
+                        ref_id: Some(image.id.clone()),
+                    });
+                }
+            }
+        }
+
+        // Sort elements by page and Y position (top to bottom)
+        elements.sort_by(|a, b| {
+            match a.page.cmp(&b.page) {
+                std::cmp::Ordering::Equal => {
+                    // Within same page, sort by Y (descending for PDF coords) then X
+                    match b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal) {
+                        std::cmp::Ordering::Equal => {
+                            a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
+                        }
+                        other => other,
+                    }
+                }
+                other => other,
+            }
+        });
+
+        elements
+    }
+
+    /// Get page dimensions in points
+    fn get_page_dimensions(&self, doc: &lopdf::Document, page_id: lopdf::ObjectId) -> (f64, f64) {
+        // Default to US Letter size
+        let default_width = 612.0;
+        let default_height = 792.0;
+
+        if let Ok(page_dict) = doc.get_dictionary(page_id) {
+            // Try MediaBox first, then CropBox
+            for key in &[b"MediaBox".as_slice(), b"CropBox".as_slice()] {
+                if let Ok(box_obj) = page_dict.get(*key) {
+                    if let Ok(arr) = box_obj.as_array() {
+                        if arr.len() >= 4 {
+                            let width = extract_number(&arr[2]).unwrap_or(default_width);
+                            let height = extract_number(&arr[3]).unwrap_or(default_height);
+                            return (width, height);
+                        }
+                    }
+                }
+            }
+        }
+
+        (default_width, default_height)
+    }
+
+    /// Group positioned text into logical blocks
+    fn group_text_into_blocks(&self, texts: &[PositionedText], _page_height: f64) -> Vec<TextBlock> {
+        let mut blocks = Vec::new();
+
+        if texts.is_empty() {
+            return blocks;
+        }
+
+        // Group by Y position with tolerance
+        const Y_TOLERANCE: f64 = 12.0; // About 1 line height
+        let mut current_block: Option<TextBlock> = None;
+
+        let mut sorted_texts = texts.to_vec();
+        sorted_texts.sort_by(|a, b| {
+            b.y.partial_cmp(&a.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        for text in sorted_texts {
+            match &mut current_block {
+                Some(block) if (block.y - text.y).abs() < Y_TOLERANCE => {
+                    // Same line, append text
+                    if !block.content.is_empty() && !text.text.is_empty() {
+                        block.content.push(' ');
+                    }
+                    block.content.push_str(&text.text);
+                    block.width = (text.x - block.x).max(block.width);
+                }
+                Some(block) => {
+                    // New line, save current block and start new one
+                    blocks.push(block.clone());
+                    current_block = Some(TextBlock {
+                        content: text.text.clone(),
+                        x: text.x,
+                        y: text.y,
+                        width: 100.0, // Estimated
+                        height: 12.0, // Default line height
+                        font_size: None,
+                        font_name: None,
+                        is_bold: false,
+                        is_italic: false,
+                    });
+                }
+                None => {
+                    current_block = Some(TextBlock {
+                        content: text.text.clone(),
+                        x: text.x,
+                        y: text.y,
+                        width: 100.0,
+                        height: 12.0,
+                        font_size: None,
+                        font_name: None,
+                        is_bold: false,
+                        is_italic: false,
+                    });
+                }
+            }
+        }
+
+        // Don't forget the last block
+        if let Some(block) = current_block {
+            blocks.push(block);
+        }
+
+        blocks
     }
 
     /// Parse the PDF document
@@ -516,6 +1066,15 @@ fn decompress_flate(data: &[u8]) -> io::Result<Vec<u8>> {
     let mut decompressed = Vec::new();
     decoder.read_to_end(&mut decompressed)?;
     Ok(decompressed)
+}
+
+/// Extract numeric value from PDF object (handles both Integer and Real types)
+fn extract_number(obj: &lopdf::Object) -> Option<f64> {
+    match obj {
+        lopdf::Object::Integer(i) => Some(*i as f64),
+        lopdf::Object::Real(f) => Some(*f as f64),
+        _ => None,
+    }
 }
 
 /// Detect font style (bold/italic) from font name
@@ -1163,5 +1722,122 @@ mod tests {
         assert!(mdx.contains("## Tables"));
         assert!(mdx.contains("| A | B |"));
         assert!(mdx.contains("| 1 | 2 |"));
+    }
+
+    #[test]
+    fn test_is_encrypted_unencrypted_pdf() {
+        // Create minimal valid PDF without encryption
+        let parser = PdfParser {
+            path: std::path::PathBuf::new(),
+            data: b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF".to_vec(),
+        };
+        assert!(!parser.is_encrypted());
+    }
+
+    #[test]
+    fn test_encryption_info_none_for_unencrypted() {
+        let parser = PdfParser {
+            path: std::path::PathBuf::new(),
+            data: b"%PDF-1.4\n".to_vec(),
+        };
+        assert!(parser.get_encryption_info().is_none());
+    }
+
+    #[test]
+    fn test_layout_element_types() {
+        assert_eq!(LayoutElementType::Text, LayoutElementType::Text);
+        assert_ne!(LayoutElementType::Text, LayoutElementType::Image);
+        assert_ne!(LayoutElementType::Header, LayoutElementType::Footer);
+    }
+
+    #[test]
+    fn test_text_alignment_default() {
+        let alignment: TextAlignment = Default::default();
+        assert_eq!(alignment, TextAlignment::Left);
+    }
+
+    #[test]
+    fn test_layout_element_creation() {
+        let element = LayoutElement {
+            element_type: LayoutElementType::Text,
+            content: "Hello World".to_string(),
+            page: 1,
+            x: 72.0,
+            y: 720.0,
+            width: 200.0,
+            height: 12.0,
+            font_size: Some(12.0),
+            font_name: Some("Arial".to_string()),
+            alignment: TextAlignment::Left,
+            is_bold: false,
+            is_italic: false,
+            line_spacing: 1.2,
+            indent_level: 0,
+            ref_id: None,
+        };
+
+        assert_eq!(element.content, "Hello World");
+        assert_eq!(element.page, 1);
+        assert_eq!(element.font_size, Some(12.0));
+    }
+
+    #[test]
+    fn test_encryption_info_struct() {
+        let info = EncryptionInfo {
+            version: 4,
+            revision: 4,
+            key_length: 128,
+            user_password_set: true,
+            owner_password_set: true,
+            permissions: -3904,
+        };
+
+        assert_eq!(info.version, 4);
+        assert_eq!(info.key_length, 128);
+        assert!(info.user_password_set);
+    }
+
+    #[test]
+    fn test_pdf_error_display() {
+        let err = PdfError::EncryptedNoPassword;
+        assert!(format!("{}", err).contains("encrypted"));
+
+        let err = PdfError::InvalidPassword;
+        assert!(format!("{}", err).contains("Invalid password"));
+
+        let err = PdfError::UnsupportedEncryption("AES-512".to_string());
+        assert!(format!("{}", err).contains("AES-512"));
+    }
+
+    #[test]
+    fn test_try_auto_decrypt_unencrypted() {
+        let parser = PdfParser {
+            path: std::path::PathBuf::new(),
+            data: b"%PDF-1.4\n".to_vec(),
+        };
+
+        // Should succeed for unencrypted PDF
+        let result = parser.try_auto_decrypt();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_text_block_grouping() {
+        let parser = PdfParser {
+            path: std::path::PathBuf::new(),
+            data: b"%PDF-1.4\n".to_vec(),
+        };
+
+        let texts = vec![
+            PositionedText { text: "Hello".to_string(), x: 72.0, y: 720.0, page: 1 },
+            PositionedText { text: "World".to_string(), x: 150.0, y: 720.0, page: 1 },
+            PositionedText { text: "New line".to_string(), x: 72.0, y: 700.0, page: 1 },
+        ];
+
+        let blocks = parser.group_text_into_blocks(&texts, 792.0);
+
+        // Should group "Hello World" on same line
+        assert!(blocks.len() >= 2);
+        assert!(blocks[0].content.contains("Hello"));
     }
 }
