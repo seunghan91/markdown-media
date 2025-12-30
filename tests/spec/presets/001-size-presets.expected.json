@@ -1,0 +1,86 @@
+{
+  "testName": "001-size-presets",
+  "description": "Built-in size presets application",
+  "resources": {
+    "photo-thumb": {
+      "type": "image",
+      "src": "./photo.jpg",
+      "preset": "thumb",
+      "applied": {
+        "width": 150,
+        "height": 150,
+        "fit": "cover",
+        "quality": 80,
+        "format": "webp"
+      }
+    },
+    "photo-small": {
+      "type": "image",
+      "src": "./photo.jpg",
+      "preset": "small",
+      "applied": {
+        "width": 320,
+        "height": null,
+        "fit": "contain",
+        "quality": 85
+      }
+    },
+    "photo-medium": {
+      "type": "image",
+      "src": "./photo.jpg",
+      "preset": "medium",
+      "applied": {
+        "width": 640,
+        "height": null,
+        "fit": "contain",
+        "quality": 85
+      }
+    },
+    "photo-large": {
+      "type": "image",
+      "src": "./photo.jpg",
+      "preset": "large",
+      "applied": {
+        "width": 1024,
+        "height": null,
+        "fit": "contain",
+        "quality": 90
+      }
+    },
+    "photo-full": {
+      "type": "image",
+      "src": "./photo.jpg",
+      "preset": "full",
+      "applied": {
+        "width": 1920,
+        "height": null,
+        "fit": "contain",
+        "quality": 90
+      }
+    },
+    "photo-square": {
+      "type": "image",
+      "src": "./photo.jpg",
+      "preset": "square",
+      "applied": {
+        "width": 500,
+        "height": 500,
+        "fit": "cover",
+        "quality": 85
+      }
+    },
+    "photo-widescreen": {
+      "type": "image",
+      "src": "./photo.jpg",
+      "preset": "widescreen",
+      "applied": {
+        "width": 1280,
+        "height": 720,
+        "fit": "cover",
+        "quality": 90
+      }
+    }
+  },
+  "resourceCount": 7,
+  "errors": []
+}

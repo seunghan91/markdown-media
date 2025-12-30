@@ -1,0 +1,41 @@
+{
+  "testName": "002-multiple-images",
+  "description": "Multiple images in single document",
+  "resources": {
+    "image1.png": {
+      "type": "image",
+      "src": "./image1.png",
+      "alt": "First image",
+      "title": "First title"
+    },
+    "image2.jpg": {
+      "type": "image",
+      "src": "./image2.jpg",
+      "alt": "Second image",
+      "title": null
+    },
+    "image3.webp": {
+      "type": "image",
+      "src": "https://example.com/image3.webp",
+      "alt": "Third image",
+      "title": "External image",
+      "external": true
+    },
+    "icon.svg": {
+      "type": "image",
+      "src": "./icon.svg",
+      "alt": "icon",
+      "title": null,
+      "inline": true
+    },
+    "badge.png": {
+      "type": "image",
+      "src": "./badge.png",
+      "alt": "badge",
+      "title": null,
+      "inline": true
+    }
+  },
+  "resourceCount": 5,
+  "errors": []
+}

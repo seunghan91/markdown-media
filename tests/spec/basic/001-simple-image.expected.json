@@ -1,0 +1,14 @@
+{
+  "testName": "001-simple-image",
+  "description": "Basic single image parsing",
+  "resources": {
+    "sunset.jpg": {
+      "type": "image",
+      "src": "./sunset.jpg",
+      "alt": "A beautiful sunset",
+      "title": null
+    }
+  },
+  "resourceCount": 1,
+  "errors": []
+}

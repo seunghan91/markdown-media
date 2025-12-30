@@ -1,0 +1,33 @@
+{
+  "testName": "003-video-audio",
+  "description": "Video and audio element detection",
+  "resources": {
+    "demo.mp4": {
+      "type": "video",
+      "src": "./demo.mp4",
+      "alt": "Demo video",
+      "title": null
+    },
+    "abc123": {
+      "type": "embed",
+      "src": "https://youtube.com/watch?v=abc123",
+      "alt": "YouTube embed",
+      "provider": "youtube",
+      "videoId": "abc123"
+    },
+    "background.mp3": {
+      "type": "audio",
+      "src": "./background.mp3",
+      "alt": "Background music",
+      "title": null
+    },
+    "podcast.m4a": {
+      "type": "audio",
+      "src": "./podcast.m4a",
+      "alt": "Podcast episode",
+      "title": "Episode 42"
+    }
+  },
+  "resourceCount": 4,
+  "errors": []
+}

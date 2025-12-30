@@ -1,0 +1,43 @@
+{
+  "testName": "001-basic-mdm",
+  "description": "Basic MDM sidecar file parsing",
+  "sidecarVersion": "1.0",
+  "mediaRoot": "./assets",
+  "resources": {
+    "hero": {
+      "type": "image",
+      "src": "./assets/hero-image.jpg",
+      "width": 1200,
+      "height": 630,
+      "alt": "Website hero banner",
+      "loading": "eager"
+    },
+    "profile": {
+      "type": "image",
+      "src": "./assets/avatar.png",
+      "width": 200,
+      "height": 200,
+      "preset": "avatar",
+      "applied": {
+        "fit": "cover",
+        "quality": 80,
+        "format": "webp",
+        "borderRadius": "50%"
+      }
+    },
+    "gallery-1": {
+      "type": "image",
+      "src": "./assets/photos/img001.jpg",
+      "preset": "gallery",
+      "caption": "First gallery image",
+      "applied": {
+        "widths": [320, 640, 960],
+        "sizes": "(max-width: 480px) 100vw, (max-width: 768px) 50vw, 33vw",
+        "format": "webp",
+        "fallbackFormat": "jpeg"
+      }
+    }
+  },
+  "resourceCount": 3,
+  "errors": []
+}
