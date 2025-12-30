@@ -182,24 +182,26 @@ pub fn extract_para_text(data: &[u8]) -> String {
         i += 2;
 
         match char_code {
-            // Skip control characters and inline controls
-            0..=8 | 0x10..=0x1F => {
-                // Extended control characters take 8 bytes total (16 bytes including char)
-                if char_code == CHAR_INLINE_CTRL_START 
-                    || char_code == CHAR_SECTION_DEF
-                    || char_code == CHAR_FIELD_START
-                    || char_code == CHAR_TABLE
-                    || char_code == CHAR_DRAWING
-                {
-                    // Skip 14 more bytes (16 total for inline control)
-                    i += 14;
-                }
-            }
+            // Whitespace / visible specials
             CHAR_TAB => result.push('\t'),
             CHAR_LINE_BREAK => result.push('\n'),
             CHAR_PARA_BREAK => result.push('\n'),
             CHAR_SPACE => result.push(' '),
             CHAR_HYPHEN => result.push('-'),
+
+            // Control characters and inline controls
+            0..=8 | 0x10..=0x1F => {
+                // Extended control characters take 16 bytes total (2 bytes char + 14 bytes payload)
+                if char_code == CHAR_INLINE_CTRL_START
+                    || char_code == CHAR_SECTION_DEF
+                    || char_code == CHAR_FIELD_START
+                    || char_code == CHAR_TABLE
+                    || char_code == CHAR_DRAWING
+                {
+                    i += 14;
+                }
+            }
+
             // Normal character
             code => {
                 if let Some(c) = char::from_u32(code as u32) {
@@ -212,12 +214,65 @@ pub fn extract_para_text(data: &[u8]) -> String {
     result
 }
 
+/// Cell span information for merged cells
+#[derive(Debug, Clone, Default)]
+pub struct CellSpan {
+    pub row: u16,
+    pub col: u16,
+    pub row_span: u16,
+    pub col_span: u16,
+}
+
+/// Table cell with content and merge info
+#[derive(Debug, Clone)]
+pub struct TableCell {
+    pub row: u16,
+    pub col: u16,
+    pub row_span: u16,
+    pub col_span: u16,
+    pub content: String,
+    pub is_header: bool,
+    pub background_color: Option<u32>,
+    pub border_style: Option<u8>,
+}
+
+impl Default for TableCell {
+    fn default() -> Self {
+        TableCell {
+            row: 0,
+            col: 0,
+            row_span: 1,
+            col_span: 1,
+            content: String::new(),
+            is_header: false,
+            background_color: None,
+            border_style: None,
+        }
+    }
+}
+
 /// Parse table structure from TABLE record
 #[derive(Debug, Clone)]
 pub struct TableInfo {
     pub rows: u16,
     pub cols: u16,
     pub cell_count: u16,
+    pub cell_spans: Vec<CellSpan>,
+    pub row_heights: Vec<u16>,
+    pub col_widths: Vec<u16>,
+}
+
+impl Default for TableInfo {
+    fn default() -> Self {
+        TableInfo {
+            rows: 0,
+            cols: 0,
+            cell_count: 0,
+            cell_spans: Vec::new(),
+            row_heights: Vec::new(),
+            col_widths: Vec::new(),
+        }
+    }
 }
 
 pub fn parse_table_info(data: &[u8]) -> Option<TableInfo> {
@@ -225,18 +280,300 @@ pub fn parse_table_info(data: &[u8]) -> Option<TableInfo> {
         return None;
     }
 
-    // Table record structure (simplified):
+    // Table record structure:
     // - Flags: 4 bytes
     // - Row count: 2 bytes
     // - Col count: 2 bytes
+    // - Cell spacing: 2 bytes
+    // - Left/Right/Top/Bottom margins: 2 bytes each (8 bytes total)
+    // - Row sizes array: rows * 2 bytes
+    // - Border fill ID: 2 bytes
+    // - Zone info count: 2 bytes
+    // - Zone infos: ...
+
     let rows = u16::from_le_bytes([data[4], data[5]]);
     let cols = u16::from_le_bytes([data[6], data[7]]);
 
-    Some(TableInfo {
+    let mut info = TableInfo {
         rows,
         cols,
         cell_count: rows * cols,
+        cell_spans: Vec::new(),
+        row_heights: Vec::new(),
+        col_widths: Vec::new(),
+    };
+
+    // Parse row heights if available (after margins at offset 18)
+    let row_heights_offset = 18;
+    if data.len() >= row_heights_offset + (rows as usize * 2) {
+        for i in 0..rows as usize {
+            let offset = row_heights_offset + i * 2;
+            if offset + 2 <= data.len() {
+                let height = u16::from_le_bytes([data[offset], data[offset + 1]]);
+                info.row_heights.push(height);
+            }
+        }
+    }
+
+    Some(info)
+}
+
+/// Parse LIST_HEADER record to extract cell properties (including merge info)
+///
+/// LIST_HEADER structure for table cells:
+/// - Para count: 2 bytes
+/// - Flags: 4 bytes (bits 0-1: text direction, bit 2-3: page break type)
+/// - Width: 2 bytes
+/// - Height: 2 bytes
+/// - Left margin: 2 bytes
+/// - Right margin: 2 bytes
+/// - Top margin: 2 bytes
+/// - Bottom margin: 2 bytes
+/// - Border fill ID: 2 bytes
+/// - Col span: 2 bytes (at offset 22)
+/// - Row span: 2 bytes (at offset 24)
+/// - Cell width: 2 bytes (at offset 26)
+/// - Cell height: 2 bytes (at offset 28)
+pub fn parse_cell_list_header(data: &[u8]) -> Option<CellSpan> {
+    if data.len() < 26 {
+        return None;
+    }
+
+    // Read col_span and row_span
+    let col_span = u16::from_le_bytes([data[22], data[23]]);
+    let row_span = u16::from_le_bytes([data[24], data[25]]);
+
+    Some(CellSpan {
+        row: 0,  // Set by caller
+        col: 0,  // Set by caller
+        row_span: row_span.max(1),
+        col_span: col_span.max(1),
     })
+}
+
+/// Shape component types
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShapeType {
+    Line,
+    Rectangle,
+    Ellipse,
+    Arc,
+    Polygon,
+    Curve,
+    Picture,
+    Ole,
+    Container,
+    Unknown(u16),
+}
+
+impl From<u16> for ShapeType {
+    fn from(tag: u16) -> Self {
+        match tag {
+            HWPTAG_SHAPE_COMPONENT_LINE => ShapeType::Line,
+            HWPTAG_SHAPE_COMPONENT_RECTANGLE => ShapeType::Rectangle,
+            HWPTAG_SHAPE_COMPONENT_ELLIPSE => ShapeType::Ellipse,
+            HWPTAG_SHAPE_COMPONENT_POLYGON => ShapeType::Polygon,
+            HWPTAG_SHAPE_COMPONENT_CURVE => ShapeType::Curve,
+            HWPTAG_SHAPE_COMPONENT_PICTURE => ShapeType::Picture,
+            HWPTAG_SHAPE_COMPONENT_OLE => ShapeType::Ole,
+            HWPTAG_SHAPE_COMPONENT_CONTAINER => ShapeType::Container,
+            other => ShapeType::Unknown(other),
+        }
+    }
+}
+
+/// Shape component structure for drawings and pictures
+#[derive(Debug, Clone)]
+pub struct ShapeComponent {
+    pub shape_type: ShapeType,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub rotation: i16,
+    pub x_flip: bool,
+    pub y_flip: bool,
+    pub bin_data_id: Option<u16>,  // For pictures, reference to BinData
+    pub alt_text: Option<String>,
+}
+
+impl Default for ShapeComponent {
+    fn default() -> Self {
+        ShapeComponent {
+            shape_type: ShapeType::Unknown(0),
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            rotation: 0,
+            x_flip: false,
+            y_flip: false,
+            bin_data_id: None,
+            alt_text: None,
+        }
+    }
+}
+
+/// Parse SHAPE_COMPONENT record
+///
+/// SHAPE_COMPONENT structure:
+/// - Flags: 4 bytes
+/// - Rotation: 2 bytes (degrees * 10)
+/// - X coord: 4 bytes (signed)
+/// - Y coord: 4 bytes (signed)
+/// - Width: 4 bytes
+/// - Height: 4 bytes
+/// - X flip: 1 byte
+/// - Y flip: 1 byte
+/// - ...
+pub fn parse_shape_component(data: &[u8], shape_type: ShapeType) -> Option<ShapeComponent> {
+    if data.len() < 24 {
+        return None;
+    }
+
+    let _flags = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let rotation = i16::from_le_bytes([data[4], data[5]]);
+    let x = i32::from_le_bytes([data[6], data[7], data[8], data[9]]);
+    let y = i32::from_le_bytes([data[10], data[11], data[12], data[13]]);
+    let width = u32::from_le_bytes([data[14], data[15], data[16], data[17]]);
+    let height = u32::from_le_bytes([data[18], data[19], data[20], data[21]]);
+    let x_flip = data.get(22).map(|&b| b != 0).unwrap_or(false);
+    let y_flip = data.get(23).map(|&b| b != 0).unwrap_or(false);
+
+    Some(ShapeComponent {
+        shape_type,
+        x,
+        y,
+        width,
+        height,
+        rotation: rotation / 10,  // Convert from degrees * 10 to degrees
+        x_flip,
+        y_flip,
+        bin_data_id: None,
+        alt_text: None,
+    })
+}
+
+/// Parse SHAPE_COMPONENT_PICTURE record
+///
+/// Additional picture-specific data after SHAPE_COMPONENT:
+/// - Border color: 4 bytes
+/// - Border thickness: 4 bytes
+/// - Border properties: 4 bytes
+/// - Image clip left: 4 bytes
+/// - Image clip top: 4 bytes
+/// - Image clip right: 4 bytes
+/// - Image clip bottom: 4 bytes
+/// - Brightness: 1 byte
+/// - Contrast: 1 byte
+/// - Effect: 1 byte
+/// - BinData ID: 2 bytes (reference to BinData record)
+pub fn parse_picture_component(data: &[u8]) -> Option<(ShapeComponent, u16)> {
+    // First parse the shape component base
+    let mut shape = parse_shape_component(data, ShapeType::Picture)?;
+
+    // Picture-specific data starts at offset 24
+    // BinData ID is typically at offset 24 + 28 = 52
+    let bin_data_offset = 52;
+    if data.len() >= bin_data_offset + 2 {
+        let bin_data_id = u16::from_le_bytes([data[bin_data_offset], data[bin_data_offset + 1]]);
+        shape.bin_data_id = Some(bin_data_id);
+        return Some((shape, bin_data_id));
+    }
+
+    // Try alternative offset (some HWP versions use different layouts)
+    if data.len() >= 26 {
+        let bin_data_id = u16::from_le_bytes([data[24], data[25]]);
+        shape.bin_data_id = Some(bin_data_id);
+        return Some((shape, bin_data_id));
+    }
+
+    Some((shape, 0))
+}
+
+/// Complete table structure with cells and formatting
+#[derive(Debug, Clone)]
+pub struct HwpTable {
+    pub info: TableInfo,
+    pub cells: Vec<Vec<TableCell>>,
+}
+
+impl HwpTable {
+    pub fn new(rows: u16, cols: u16) -> Self {
+        let mut cells = Vec::with_capacity(rows as usize);
+        for r in 0..rows {
+            let mut row = Vec::with_capacity(cols as usize);
+            for c in 0..cols {
+                row.push(TableCell {
+                    row: r,
+                    col: c,
+                    ..Default::default()
+                });
+            }
+            cells.push(row);
+        }
+
+        HwpTable {
+            info: TableInfo {
+                rows,
+                cols,
+                cell_count: rows * cols,
+                ..Default::default()
+            },
+            cells,
+        }
+    }
+
+    /// Convert table to markdown
+    pub fn to_markdown(&self) -> String {
+        if self.cells.is_empty() {
+            return String::new();
+        }
+
+        let mut lines = Vec::new();
+        let mut skip_cells: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
+
+        for (row_idx, row) in self.cells.iter().enumerate() {
+            let mut cell_contents = Vec::new();
+
+            for (col_idx, cell) in row.iter().enumerate() {
+                // Skip cells that are covered by merged cells
+                if skip_cells.contains(&(row_idx as u16, col_idx as u16)) {
+                    continue;
+                }
+
+                // Mark cells covered by this cell's span
+                if cell.row_span > 1 || cell.col_span > 1 {
+                    for r in 0..cell.row_span {
+                        for c in 0..cell.col_span {
+                            if r != 0 || c != 0 {
+                                skip_cells.insert((row_idx as u16 + r, col_idx as u16 + c));
+                            }
+                        }
+                    }
+                }
+
+                // Clean content for markdown table
+                let content = cell.content
+                    .replace("|", "\\|")
+                    .replace("\n", " ")
+                    .trim()
+                    .to_string();
+
+                cell_contents.push(content);
+            }
+
+            lines.push(format!("| {} |", cell_contents.join(" | ")));
+
+            // Add separator after header row
+            if row_idx == 0 {
+                let sep: Vec<&str> = (0..cell_contents.len()).map(|_| "---").collect();
+                lines.push(format!("| {} |", sep.join(" | ")));
+            }
+        }
+
+        lines.join("\n")
+    }
 }
 
 /// Character style properties (matching HWPX CharStyle)
@@ -456,20 +793,7 @@ fn extract_para_text_with_positions(data: &[u8]) -> Vec<(u32, char)> {
         i += 2;
 
         match char_code {
-            // Skip control characters and inline controls
-            0..=8 | 0x10..=0x1F => {
-                // Extended control characters take 16 bytes total
-                if char_code == CHAR_INLINE_CTRL_START
-                    || char_code == CHAR_SECTION_DEF
-                    || char_code == CHAR_FIELD_START
-                    || char_code == CHAR_TABLE
-                    || char_code == CHAR_DRAWING
-                {
-                    // Skip 14 more bytes (16 total for inline control)
-                    i += 14;
-                }
-                char_pos += 1;
-            }
+            // Whitespace / visible specials
             CHAR_TAB => {
                 result.push((char_pos, '\t'));
                 char_pos += 1;
@@ -490,6 +814,20 @@ fn extract_para_text_with_positions(data: &[u8]) -> Vec<(u32, char)> {
                 result.push((char_pos, '-'));
                 char_pos += 1;
             }
+
+            // Control characters and inline controls
+            0..=8 | 0x10..=0x1F => {
+                if char_code == CHAR_INLINE_CTRL_START
+                    || char_code == CHAR_SECTION_DEF
+                    || char_code == CHAR_FIELD_START
+                    || char_code == CHAR_TABLE
+                    || char_code == CHAR_DRAWING
+                {
+                    i += 14;
+                }
+                char_pos += 1;
+            }
+
             // Normal character
             code => {
                 if let Some(c) = char::from_u32(code as u32) {

@@ -2,8 +2,9 @@ use super::ole::OleReader;
 use super::record::{
     HwpRecord, RecordParser, extract_para_text, parse_table_info,
     parse_char_shape, parse_para_char_shape, extract_para_text_formatted,
+    parse_cell_list_header, CellSpan,
     CharShape, ParaCharShapeMapping,
-    HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE,
+    HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE, HWPTAG_LIST_HEADER,
     HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE,
     HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA,
 };
@@ -221,41 +222,65 @@ impl HwpParser {
                 // Find TABLE records and associated text
                 let mut current_table: Option<TableData> = None;
                 let mut current_cells: Vec<String> = Vec::new();
+                let mut current_cell_spans: Vec<CellSpan> = Vec::new();
                 let mut in_table = false;
                 let mut table_info: Option<(u16, u16)> = None;
-                
+                let mut cell_index: usize = 0;
+
                 for record in &records {
                     match record.tag_id {
                         HWPTAG_TABLE => {
                             // Finish previous table if any
                             if let Some(mut table) = current_table.take() {
                                 table.cells = organize_cells(&current_cells, table.cols);
+                                table.cell_spans = current_cell_spans.clone();
                                 tables.push(table);
                                 current_cells.clear();
+                                current_cell_spans.clear();
                             }
-                            
+
                             // Start new table
                             if let Some(info) = parse_table_info(&record.data) {
                                 current_table = Some(TableData {
                                     rows: info.rows as usize,
                                     cols: info.cols as usize,
                                     cells: Vec::new(),
+                                    cell_spans: Vec::new(),
                                 });
                                 table_info = Some((info.rows, info.cols));
                                 in_table = true;
+                                cell_index = 0;
+                            }
+                        }
+                        HWPTAG_LIST_HEADER if in_table => {
+                            // Parse cell span information from LIST_HEADER
+                            if let Some((_rows, cols)) = table_info {
+                                if let Some(mut span) = parse_cell_list_header(&record.data) {
+                                    // Calculate row/col from cell index
+                                    span.row = (cell_index / cols as usize) as u16;
+                                    span.col = (cell_index % cols as usize) as u16;
+
+                                    // Only store if there's actual spanning (row_span > 1 or col_span > 1)
+                                    if span.row_span > 1 || span.col_span > 1 {
+                                        current_cell_spans.push(span);
+                                    }
+                                }
+                                cell_index += 1;
                             }
                         }
                         HWPTAG_PARA_TEXT if in_table => {
                             let text = extract_para_text(&record.data);
                             current_cells.push(text);
-                            
+
                             // Check if we've collected all cells
                             if let Some((rows, cols)) = table_info {
                                 if current_cells.len() >= (rows * cols) as usize {
                                     if let Some(mut table) = current_table.take() {
                                         table.cells = organize_cells(&current_cells, table.cols);
+                                        table.cell_spans = current_cell_spans.clone();
                                         tables.push(table);
                                         current_cells.clear();
+                                        current_cell_spans.clear();
                                         in_table = false;
                                         table_info = None;
                                     }
@@ -269,6 +294,7 @@ impl HwpParser {
                 // Handle last table
                 if let Some(mut table) = current_table.take() {
                     table.cells = organize_cells(&current_cells, table.cols);
+                    table.cell_spans = current_cell_spans;
                     tables.push(table);
                 }
             }
@@ -390,6 +416,8 @@ pub struct TableData {
     pub rows: usize,
     pub cols: usize,
     pub cells: Vec<Vec<String>>,
+    /// Cell span information for merged cells
+    pub cell_spans: Vec<CellSpan>,
 }
 
 impl TableData {
@@ -501,6 +529,7 @@ mod tests {
                 vec!["Header 1".to_string(), "Header 2".to_string()],
                 vec!["Cell 1".to_string(), "Cell 2".to_string()],
             ],
+            cell_spans: Vec::new(),
         };
         
         let md = table.to_markdown();
