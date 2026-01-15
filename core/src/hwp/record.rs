@@ -46,21 +46,53 @@ pub const HWPTAG_CTRL_DATA: u16 = 0x57;
 pub const HWPTAG_EQEDIT: u16 = 0x58;
 
 /// Special characters in HWP text
-pub const CHAR_LINE_BREAK: u16 = 0x0A;
-pub const CHAR_PARA_BREAK: u16 = 0x0D;
-pub const CHAR_TAB: u16 = 0x09;
-pub const CHAR_HYPHEN: u16 = 0x1E;
-pub const CHAR_SPACE: u16 = 0x20;
-pub const CHAR_INLINE_CTRL_START: u16 = 0x01; // Extended control start
-pub const CHAR_INLINE_CTRL_END: u16 = 0x02;   // Extended control end
-pub const CHAR_SECTION_DEF: u16 = 0x03;
-pub const CHAR_FIELD_START: u16 = 0x04;
-pub const CHAR_FIELD_END: u16 = 0x05;
-pub const CHAR_BOOKMARK: u16 = 0x06;
-pub const CHAR_TABLE: u16 = 0x0B;
-pub const CHAR_DRAWING: u16 = 0x0C;
-pub const CHAR_FOOTNOTE_ENDNOTE: u16 = 0x0E;
-pub const CHAR_HIDDEN_COMMENT: u16 = 0x0F;
+/// Reference: HWP 5.0 specification and Hancom documentation
+pub const CHAR_LINE_BREAK: u16 = 0x0A;      // 줄바꿈
+pub const CHAR_PARA_BREAK: u16 = 0x0D;      // 문단 끝
+pub const CHAR_TAB: u16 = 0x09;             // 탭
+pub const CHAR_HYPHEN: u16 = 0x1E;          // 하이픈
+pub const CHAR_SPACE: u16 = 0x20;           // 공백
+
+/// Extended control characters (consume 16 bytes total: 2 bytes char + 14 bytes payload)
+pub const CHAR_INLINE_CTRL_START: u16 = 0x01;  // 확장 컨트롤 시작 (묶음 빈칸/고정폭 빈칸)
+pub const CHAR_INLINE_CTRL_END: u16 = 0x02;    // 인라인 코드 (글자 겹침)
+pub const CHAR_SECTION_DEF: u16 = 0x03;        // 구역/단 정의
+pub const CHAR_FIELD_START: u16 = 0x04;        // 필드 시작
+pub const CHAR_FIELD_END: u16 = 0x05;          // 필드 끝
+pub const CHAR_BOOKMARK: u16 = 0x06;           // 책갈피/제목
+pub const CHAR_DATE: u16 = 0x07;               // 날짜/제어문자
+pub const CHAR_AUTO_NUMBER: u16 = 0x08;        // 덧말/자동 번호
+pub const CHAR_TABLE: u16 = 0x0B;              // 표
+pub const CHAR_DRAWING: u16 = 0x0C;            // 그림/동영상/OLE
+pub const CHAR_FOOTNOTE_ENDNOTE: u16 = 0x0E;   // 미주/각주
+pub const CHAR_HIDDEN_COMMENT: u16 = 0x0F;     // 숨은 설명
+
+/// Extended control characters that consume 16 bytes total (2 + 14)
+/// Characters in this set skip 14 additional bytes after the 2-byte char code
+pub const EXTENDED_CTRL_CHARS: [u16; 18] = [
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,  // 0x01-0x08
+    0x0B, 0x0C, 0x0E, 0x0F,                          // 0x0B, 0x0C, 0x0E, 0x0F
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15,              // 0x10-0x15
+];
+
+/// Check if character is a high surrogate (0xD800-0xDBFF)
+#[inline]
+pub fn is_high_surrogate(code: u16) -> bool {
+    code >= 0xD800 && code <= 0xDBFF
+}
+
+/// Check if character is a low surrogate (0xDC00-0xDFFF)
+#[inline]
+pub fn is_low_surrogate(code: u16) -> bool {
+    code >= 0xDC00 && code <= 0xDFFF
+}
+
+/// Decode surrogate pair to Unicode code point
+/// Formula: 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
+#[inline]
+pub fn decode_surrogate_pair(high: u16, low: u16) -> u32 {
+    0x10000 + (((high as u32) - 0xD800) << 10) + ((low as u32) - 0xDC00)
+}
 
 /// Parsed HWP record
 #[derive(Debug, Clone)]
@@ -172,37 +204,58 @@ impl<'a> RecordParser<'a> {
 }
 
 /// Extract text from PARA_TEXT record data
+/// Handles UTF-16LE encoding, control characters, extended controls, and surrogate pairs
 pub fn extract_para_text(data: &[u8]) -> String {
     let mut result = String::new();
     let mut i = 0;
 
     while i + 1 < data.len() {
-        // Read UTF-16LE character
+        // Read UTF-16LE character (2 bytes, little endian)
         let char_code = u16::from_le_bytes([data[i], data[i + 1]]);
         i += 2;
 
         match char_code {
-            // Whitespace / visible specials
-            CHAR_TAB => result.push('\t'),
-            CHAR_LINE_BREAK => result.push('\n'),
-            CHAR_PARA_BREAK => result.push('\n'),
-            CHAR_SPACE => result.push(' '),
-            CHAR_HYPHEN => result.push('-'),
+            // NULL character - skip (may be padding)
+            0x00 => continue,
 
-            // Control characters and inline controls
-            0..=8 | 0x10..=0x1F => {
-                // Extended control characters take 16 bytes total (2 bytes char + 14 bytes payload)
-                if char_code == CHAR_INLINE_CTRL_START
-                    || char_code == CHAR_SECTION_DEF
-                    || char_code == CHAR_FIELD_START
-                    || char_code == CHAR_TABLE
-                    || char_code == CHAR_DRAWING
-                {
-                    i += 14;
+            // Tab
+            CHAR_TAB => result.push('\t'),
+
+            // Line break
+            CHAR_LINE_BREAK => result.push('\n'),
+
+            // Paragraph break
+            CHAR_PARA_BREAK => result.push('\n'),
+
+            // Extended control characters (consume 16 bytes total: 2 + 14)
+            // 0x01-0x08, 0x0B, 0x0C, 0x0E, 0x0F, 0x10-0x15
+            0x01..=0x08 | 0x0B | 0x0C | 0x0E | 0x0F | 0x10..=0x15 => {
+                // Skip 14 bytes of payload
+                i = (i + 14).min(data.len());
+            }
+
+            // Other control characters (0x16-0x1F) - just skip
+            0x16..=0x1F => continue,
+
+            // High surrogate (0xD800-0xDBFF) - beginning of surrogate pair
+            code if is_high_surrogate(code) => {
+                // Read low surrogate
+                if i + 1 < data.len() {
+                    let low = u16::from_le_bytes([data[i], data[i + 1]]);
+                    if is_low_surrogate(low) {
+                        i += 2;
+                        let codepoint = decode_surrogate_pair(code, low);
+                        if let Some(c) = char::from_u32(codepoint) {
+                            result.push(c);
+                        }
+                    }
                 }
             }
 
-            // Normal character
+            // Low surrogate without high - skip (invalid)
+            code if is_low_surrogate(code) => continue,
+
+            // Normal printable character (>= 0x20)
             code => {
                 if let Some(c) = char::from_u32(code as u32) {
                     result.push(c);
@@ -788,47 +841,64 @@ fn extract_para_text_with_positions(data: &[u8]) -> Vec<(u32, char)> {
     let mut char_pos: u32 = 0;
 
     while i + 1 < data.len() {
-        // Read UTF-16LE character
+        // Read UTF-16LE character (2 bytes, little endian)
         let char_code = u16::from_le_bytes([data[i], data[i + 1]]);
         i += 2;
 
         match char_code {
-            // Whitespace / visible specials
+            // NULL character - skip
+            0x00 => continue,
+
+            // Tab
             CHAR_TAB => {
                 result.push((char_pos, '\t'));
                 char_pos += 1;
             }
+
+            // Line break
             CHAR_LINE_BREAK => {
                 result.push((char_pos, '\n'));
                 char_pos += 1;
             }
+
+            // Paragraph break
             CHAR_PARA_BREAK => {
                 result.push((char_pos, '\n'));
                 char_pos += 1;
             }
-            CHAR_SPACE => {
-                result.push((char_pos, ' '));
-                char_pos += 1;
-            }
-            CHAR_HYPHEN => {
-                result.push((char_pos, '-'));
+
+            // Extended control characters (consume 16 bytes total: 2 + 14)
+            0x01..=0x08 | 0x0B | 0x0C | 0x0E | 0x0F | 0x10..=0x15 => {
+                i = (i + 14).min(data.len());
                 char_pos += 1;
             }
 
-            // Control characters and inline controls
-            0..=8 | 0x10..=0x1F => {
-                if char_code == CHAR_INLINE_CTRL_START
-                    || char_code == CHAR_SECTION_DEF
-                    || char_code == CHAR_FIELD_START
-                    || char_code == CHAR_TABLE
-                    || char_code == CHAR_DRAWING
-                {
-                    i += 14;
+            // Other control characters - skip
+            0x16..=0x1F => {
+                char_pos += 1;
+            }
+
+            // High surrogate - beginning of surrogate pair
+            code if is_high_surrogate(code) => {
+                if i + 1 < data.len() {
+                    let low = u16::from_le_bytes([data[i], data[i + 1]]);
+                    if is_low_surrogate(low) {
+                        i += 2;
+                        let codepoint = decode_surrogate_pair(code, low);
+                        if let Some(c) = char::from_u32(codepoint) {
+                            result.push((char_pos, c));
+                        }
+                    }
                 }
                 char_pos += 1;
             }
 
-            // Normal character
+            // Low surrogate without high - skip
+            code if is_low_surrogate(code) => {
+                char_pos += 1;
+            }
+
+            // Normal printable character
             code => {
                 if let Some(c) = char::from_u32(code as u32) {
                     result.push((char_pos, c));

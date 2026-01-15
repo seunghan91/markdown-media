@@ -1,5 +1,6 @@
 use cfb::CompoundFile;
 use flate2::read::ZlibDecoder;
+use miniz_oxide::inflate::DecompressError;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -204,21 +205,96 @@ impl OleReader {
     }
 }
 
-/// Decompress zlib-compressed data (tries zlib first, then raw deflate)
+/// Decompress zlib-compressed data
+/// HWP files use raw deflate (equivalent to Python's zlib.decompress(data, -15))
 pub fn decompress_zlib(data: &[u8]) -> io::Result<Vec<u8>> {
-    // First try zlib (with header)
+    // First try zlib with header (standard zlib format)
     let mut decoder = ZlibDecoder::new(data);
     let mut decompressed = Vec::new();
     if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
         return Ok(decompressed);
     }
 
-    // Try raw deflate (without zlib header) - HWP uses this
+    // Try raw deflate using miniz_oxide (equivalent to Python's wbits=-15)
+    // This is what HWP files actually use
+    if let Ok(result) = decompress_raw_deflate(data) {
+        if !result.is_empty() {
+            return Ok(result);
+        }
+    }
+
+    // Fallback: try flate2's DeflateDecoder
     use flate2::read::DeflateDecoder;
     let mut decoder = DeflateDecoder::new(data);
     let mut decompressed = Vec::new();
     decoder.read_to_end(&mut decompressed)?;
     Ok(decompressed)
+}
+
+/// Decompress raw deflate data (no zlib header)
+/// Equivalent to Python's zlib.decompress(data, -15)
+///
+/// HWP files use raw DEFLATE compression without zlib header.
+/// Python handles this with zlib.decompress(data, wbits=-15)
+fn decompress_raw_deflate(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
+    use miniz_oxide::inflate::core::{decompress, inflate_flags, DecompressorOxide};
+    use miniz_oxide::inflate::TINFLStatus;
+
+    // Estimate output size (compressed data typically expands 2-10x)
+    let estimated_size = data.len().saturating_mul(10).max(4096);
+    let mut output = vec![0u8; estimated_size];
+    let mut decompressor = DecompressorOxide::new();
+
+    let mut in_pos = 0;
+    let mut out_pos = 0;
+
+    loop {
+        // Flags for raw deflate (no zlib header)
+        let flags = inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
+            | if in_pos < data.len() { inflate_flags::TINFL_FLAG_HAS_MORE_INPUT } else { 0 };
+
+        let (status, bytes_read, bytes_written) = decompress(
+            &mut decompressor,
+            &data[in_pos..],
+            &mut output[out_pos..],
+            out_pos,  // Output position for non-wrapping buffer
+            flags,
+        );
+
+        in_pos += bytes_read;
+        out_pos += bytes_written;
+
+        match status {
+            TINFLStatus::Done => {
+                output.truncate(out_pos);
+                return Ok(output);
+            }
+            TINFLStatus::HasMoreOutput => {
+                // Expand output buffer
+                let new_size = output.len().saturating_mul(2);
+                output.resize(new_size, 0);
+            }
+            TINFLStatus::NeedsMoreInput => {
+                // Return what we have if we got some output
+                if out_pos > 0 {
+                    output.truncate(out_pos);
+                    return Ok(output);
+                }
+                // Try simpler approach
+                return decompress_raw_deflate_simple(data);
+            }
+            _ => {
+                // Error occurred, try simpler approach
+                return decompress_raw_deflate_simple(data);
+            }
+        }
+    }
+}
+
+/// Simpler raw deflate decompression using decompress_to_vec
+fn decompress_raw_deflate_simple(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
+    // decompress_to_vec handles raw deflate without zlib wrapper
+    miniz_oxide::inflate::decompress_to_vec(data)
 }
 
 #[cfg(test)]

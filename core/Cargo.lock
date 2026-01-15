@@ -1106,6 +1106,7 @@ dependencies = [
  "image",
  "js-sys",
  "lopdf",
+ "miniz_oxide",
  "pdf-extract",
  "quick-xml",
  "resvg",

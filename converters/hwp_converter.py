@@ -209,6 +209,9 @@ def convert_hwp_to_mdx(input_path: str, output_dir: str, verbose: bool = False) 
     assets_dir = output_path / "assets"
     assets_dir.mkdir(exist_ok=True)
 
+    # Clean content of any surrogate characters
+    content = content.encode('utf-8', errors='surrogatepass').decode('utf-8', errors='replace')
+
     # Create MDX content
     mdx_content = f"""---
 title: {input_file.stem}
