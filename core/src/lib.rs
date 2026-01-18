@@ -13,6 +13,7 @@ pub mod docx;
 pub mod renderer;
 pub mod optimizer;
 pub mod cache;
+pub mod legal;
 
 pub use hwp::HwpParser;
 pub use hwpx::HwpxParser;

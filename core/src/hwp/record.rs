@@ -69,10 +69,12 @@ pub const CHAR_HIDDEN_COMMENT: u16 = 0x0F;     // 숨은 설명
 
 /// Extended control characters that consume 16 bytes total (2 + 14)
 /// Characters in this set skip 14 additional bytes after the 2-byte char code
-pub const EXTENDED_CTRL_CHARS: [u16; 18] = [
+/// Note: 0x16-0x1F range also requires 14-byte skip (confirmed via hwplib/pyhwp analysis)
+pub const EXTENDED_CTRL_CHARS: [u16; 28] = [
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,  // 0x01-0x08
     0x0B, 0x0C, 0x0E, 0x0F,                          // 0x0B, 0x0C, 0x0E, 0x0F
     0x10, 0x11, 0x12, 0x13, 0x14, 0x15,              // 0x10-0x15
+    0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,  // 0x16-0x1F (추가)
 ];
 
 /// Check if character is a high surrogate (0xD800-0xDBFF)
@@ -228,14 +230,11 @@ pub fn extract_para_text(data: &[u8]) -> String {
             CHAR_PARA_BREAK => result.push('\n'),
 
             // Extended control characters (consume 16 bytes total: 2 + 14)
-            // 0x01-0x08, 0x0B, 0x0C, 0x0E, 0x0F, 0x10-0x15
-            0x01..=0x08 | 0x0B | 0x0C | 0x0E | 0x0F | 0x10..=0x15 => {
+            // 0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F (all require 14-byte payload skip)
+            0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => {
                 // Skip 14 bytes of payload
                 i = (i + 14).min(data.len());
             }
-
-            // Other control characters (0x16-0x1F) - just skip
-            0x16..=0x1F => continue,
 
             // High surrogate (0xD800-0xDBFF) - beginning of surrogate pair
             code if is_high_surrogate(code) => {
@@ -868,13 +867,9 @@ fn extract_para_text_with_positions(data: &[u8]) -> Vec<(u32, char)> {
             }
 
             // Extended control characters (consume 16 bytes total: 2 + 14)
-            0x01..=0x08 | 0x0B | 0x0C | 0x0E | 0x0F | 0x10..=0x15 => {
+            // 0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F (all require 14-byte payload skip)
+            0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => {
                 i = (i + 14).min(data.len());
-                char_pos += 1;
-            }
-
-            // Other control characters - skip
-            0x16..=0x1F => {
                 char_pos += 1;
             }
 
@@ -951,6 +946,34 @@ mod tests {
         ];
         let text = extract_para_text(&data);
         assert_eq!(text, "안녕");
+    }
+
+    #[test]
+    fn test_extended_ctrl_char_0x16_to_0x1f() {
+        // Test that 0x16-0x1F control characters properly skip 14 bytes
+        // Structure: "A" + 0x16 + 14 bytes payload + "B"
+        let mut data = vec![
+            b'A', 0,    // 'A'
+            0x16, 0,    // Control char 0x16
+        ];
+        // Add 14 bytes of payload (should be skipped)
+        data.extend_from_slice(&[0xFF; 14]);
+        // Add 'B' after payload
+        data.extend_from_slice(&[b'B', 0]);
+        
+        let text = extract_para_text(&data);
+        assert_eq!(text, "AB", "0x16 control char should skip 14 bytes payload");
+        
+        // Test 0x1F as well
+        let mut data2 = vec![
+            b'X', 0,    // 'X'
+            0x1F, 0,    // Control char 0x1F
+        ];
+        data2.extend_from_slice(&[0xAA; 14]);
+        data2.extend_from_slice(&[b'Y', 0]);
+        
+        let text2 = extract_para_text(&data2);
+        assert_eq!(text2, "XY", "0x1F control char should skip 14 bytes payload");
     }
 
     #[test]
