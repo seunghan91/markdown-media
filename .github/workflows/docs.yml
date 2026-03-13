@@ -45,81 +45,23 @@ jobs:
         run: |
           mkdir -p _site
 
-          # ── 메인 랜딩 (README → index.html) ─────────────────────────────
-          cat > _site/index.html << 'HTML'
-          <!DOCTYPE html>
-          <html lang="ko">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>MDM — Markdown+Media</title>
-            <meta name="description" content="Superset of Markdown for seamlessly embedding and controlling multimedia content">
-            <style>
-              body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; line-height: 1.7; }
-              .hero { max-width: 860px; margin: 0 auto; padding: 80px 24px 60px; text-align: center; }
-              h1 { font-size: clamp(2rem, 6vw, 3.5rem); font-weight: 800; background: linear-gradient(135deg, #58a6ff, #b88eff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 12px; }
-              .sub { font-size: 1.1rem; color: #8b949e; max-width: 600px; margin: 0 auto 40px; }
-              .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-              .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; border-radius: 8px; font-size: 15px; font-weight: 600; text-decoration: none; transition: all .15s; }
-              .btn-primary { background: #58a6ff; color: #0d1117; }
-              .btn-primary:hover { background: #79b8ff; }
-              .btn-secondary { background: transparent; color: #e6edf3; border: 1px solid #30363d; }
-              .btn-secondary:hover { border-color: #58a6ff; color: #58a6ff; }
-              .features { max-width: 860px; margin: 0 auto; padding: 0 24px 80px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
-              .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; }
-              .card h3 { margin: 0 0 8px; font-size: 1rem; }
-              .card p { margin: 0; color: #8b949e; font-size: 14px; }
-              pre { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; overflow-x: auto; font-size: 14px; max-width: 860px; margin: 0 auto 40px; }
-              code { font-family: 'Fira Code', Consolas, monospace; color: #a5d6ff; }
-            </style>
-          </head>
-          <body>
-            <div class="hero">
-              <h1>MDM</h1>
-              <p class="sub">Markdown+Media — 직관적인 <code style="color:#58a6ff;background:#1f2937;padding:2px 8px;border-radius:4px">![[]]</code> 문법으로 이미지, 비디오, 오디오를 완벽하게 제어하세요</p>
-              <div class="actions">
-                <a class="btn btn-primary" href="./playground/">🎮 Playground</a>
-                <a class="btn btn-secondary" href="https://github.com/seunghan91/markdown-media">📖 GitHub</a>
-                <a class="btn btn-secondary" href="https://www.npmjs.com/package/@mdm/parser">📦 npm</a>
-              </div>
-            </div>
-            <div style="max-width:860px;margin:0 auto 40px;padding:0 24px">
-              <pre><code>// 이미지 삽입
-![[hero.jpg]]
+          # Landing page
+          cp docs/index.html _site/index.html
 
-// 속성 제어
-![[photo.jpg | width=800 align=center caption="아름다운 풍경"]]
-
-// 프리셋 사용 (.mdm 사이드카 파일)
-![[logo:header]]
-![[intro-video:inline]]</code></pre>
-            </div>
-            <div class="features">
-              <div class="card"><h3>🖼️ 이미지</h3><p>크기, 정렬, 캡션, 포맷(jpg/png/webp/svg) 완벽 지원</p></div>
-              <div class="card"><h3>🎬 비디오</h3><p>controls, autoplay, muted, loop 속성 인라인 제어</p></div>
-              <div class="card"><h3>🔉 오디오</h3><p>mp3/wav 오디오 플레이어 삽입</p></div>
-              <div class="card"><h3>📁 Sidecar</h3><p>.mdm 파일로 미디어 경로와 프리셋 중앙 관리</p></div>
-              <div class="card"><h3>⚡ 경량</h3><p>Rust 코어, JS/Python 바인딩, 브라우저 WASM 지원</p></div>
-              <div class="card"><h3>🔒 안전</h3><p>XSS 방지 HTML 이스케이핑 내장</p></div>
-            </div>
-          </body>
-          </html>
-          HTML
-
-          # ── Playground ──────────────────────────────────────────────────
+          # Playground
           mkdir -p _site/playground
           cp playground/index.html _site/playground/
 
-          # ── Viewer ──────────────────────────────────────────────────────
+          # Viewer
           mkdir -p _site/viewer
           cp viewer/index.html _site/viewer/
 
-          # ── Parser dist (for CDN usage from playground) ─────────────────
+          # Parser dist (CDN-accessible from playground)
           mkdir -p _site/dist
           cp packages/parser-js/dist/index.umd.js _site/dist/mdm-parser.umd.js
           cp packages/parser-js/dist/index.browser.mjs _site/dist/mdm-parser.mjs
 
-          echo "✅ Site prepared:"
+          echo "Site prepared:"
           find _site -type f | sort
 
       - name: Setup Pages
