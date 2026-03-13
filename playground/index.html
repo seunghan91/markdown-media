@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MDM Playground — Markdown+Media 라이브 데모</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #79b8ff;
+      --success: #3fb950;
+      --warning: #d29922;
+      --tag-bg: #1f2937;
+      --code-bg: #0d1117;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .logo-icon {
+      width: 32px; height: 32px;
+      background: linear-gradient(135deg, var(--accent), #b88eff);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; font-weight: 800; color: #fff;
+      flex-shrink: 0;
+    }
+    .logo-text { font-size: 18px; font-weight: 700; }
+    .logo-badge {
+      background: var(--tag-bg);
+      color: var(--muted);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .header-actions { margin-left: auto; display: flex; gap: 8px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background .15s, border-color .15s;
+    }
+    .btn:hover { background: var(--tag-bg); border-color: var(--accent); color: var(--accent); }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #0d1117;
+      font-weight: 600;
+    }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #0d1117; }
+
+    /* ── Toolbar ── */
+    .toolbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 24px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .toolbar-label { font-size: 12px; color: var(--muted); margin-right: 4px; }
+    .example-btn {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--tag-bg);
+      color: var(--muted);
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .example-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .example-btn.active { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 600; }
+
+    .toolbar-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+
+    /* ── Main layout ── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      overflow: hidden;
+    }
+
+    .pane {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .pane + .pane { border-left: 1px solid var(--border); }
+
+    .pane-header {
+      padding: 8px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .pane-header .status {
+      font-size: 11px;
+      color: var(--success);
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .pane-header .status.error { color: #f85149; }
+
+    /* ── Editor ── */
+    #editor {
+      flex: 1;
+      width: 100%;
+      background: var(--code-bg);
+      color: var(--text);
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 20px;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.7;
+      tab-size: 2;
+    }
+
+    /* ── Output pane ── */
+    .output-tabs {
+      display: flex;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      padding: 6px 16px;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      transition: all .15s;
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab:hover:not(.active) { color: var(--text); }
+
+    .output-panel {
+      flex: 1;
+      overflow: auto;
+      display: none;
+    }
+    .output-panel.visible { display: block; }
+
+    /* Preview panel */
+    #preview-panel {
+      padding: 24px;
+      line-height: 1.7;
+    }
+    #preview-panel img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--tag-bg);
+      padding: 4px;
+    }
+    #preview-panel video, #preview-panel audio { max-width: 100%; }
+    #preview-panel figure { margin: 16px 0; }
+    #preview-panel figcaption {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      font-style: italic;
+    }
+    #preview-panel .align-center { display: block; margin: 0 auto; }
+    #preview-panel .align-left { float: left; margin-right: 16px; }
+    #preview-panel .align-right { float: right; margin-left: 16px; }
+    #preview-panel iframe { max-width: 100%; border-radius: 6px; }
+    #preview-panel .mdm-placeholder {
+      background: var(--tag-bg);
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      padding: 20px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* HTML panel */
+    #html-panel {
+      padding: 0;
+      background: var(--code-bg);
+    }
+    #html-output {
+      width: 100%;
+      height: 100%;
+      padding: 20px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+      background: transparent;
+      border: none;
+      outline: none;
+      resize: none;
+    }
+
+    /* Tokens panel */
+    #tokens-panel {
+      padding: 16px;
+      background: var(--code-bg);
+    }
+    .token-list { display: flex; flex-direction: column; gap: 8px; }
+    .token-item {
+      background: var(--tag-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 12px;
+    }
+    .token-type {
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: 4px;
+    }
+    .token-type.text { color: var(--muted); }
+    .token-type.mdm-reference { color: var(--accent); }
+    .token-value { font-family: var(--font-mono); color: var(--text); }
+    .token-attrs { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+    .token-attr {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .token-attr span { color: var(--success); }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 8px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+    .footer-stat { display: flex; align-items: center; gap: 4px; }
+    .stat-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+    .stat-dot.loading { background: var(--warning); }
+
+    /* ── Syntax highlight helper classes ── */
+    .hl-keyword { color: #ff7b72; }
+    .hl-string { color: #a5d6ff; }
+    .hl-number { color: #79c0ff; }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+      .pane + .pane { border-left: none; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <a class="logo" href="https://github.com/seunghan91/markdown-media" target="_blank">
+    <div class="logo-icon">M</div>
+    <span class="logo-text">MDM</span>
+    <span class="logo-badge">Markdown+Media</span>
+  </a>
+  <span style="color:var(--muted);font-size:13px;">Playground — 라이브 미리보기</span>
+  <div class="header-actions">
+    <a class="btn" href="https://github.com/seunghan91/markdown-media" target="_blank">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+    <a class="btn" href="https://github.com/seunghan91/markdown-media/blob/master/README.md" target="_blank">
+      📖 문서
+    </a>
+    <button class="btn btn-primary" id="share-btn">🔗 공유</button>
+  </div>
+</header>
+
+<!-- ── Toolbar ── -->
+<toolbar class="toolbar">
+  <span class="toolbar-label">예제:</span>
+  <button class="example-btn active" data-example="basic">기본 이미지</button>
+  <button class="example-btn" data-example="attributes">속성 사용</button>
+  <button class="example-btn" data-example="video">비디오/오디오</button>
+  <button class="example-btn" data-example="preset">프리셋</button>
+  <button class="example-btn" data-example="blog">블로그 포스트</button>
+  <div class="toolbar-sep"></div>
+  <button class="example-btn" data-example="clear">초기화</button>
+</toolbar>
+
+<!-- ── Main ── -->
+<main>
+  <!-- Editor Pane -->
+  <div class="pane">
+    <div class="pane-header">
+      <span>✏️ 편집기</span>
+      <span class="status" id="editor-status">준비</span>
+    </div>
+    <textarea id="editor" spellcheck="false" placeholder="여기에 MDM 마크다운을 입력하세요...
+
+예시:
+![[photo.jpg]]
+![[hero.jpg | width=800 align=center caption=&quot;아름다운 풍경&quot;]]"></textarea>
+  </div>
+
+  <!-- Output Pane -->
+  <div class="pane">
+    <div class="output-tabs">
+      <div class="tab active" data-tab="preview">👁️ 미리보기</div>
+      <div class="tab" data-tab="html">📄 HTML</div>
+      <div class="tab" data-tab="tokens">🔍 토큰</div>
+    </div>
+
+    <div id="preview-panel" class="output-panel visible"></div>
+
+    <div id="html-panel" class="output-panel">
+      <textarea id="html-output" readonly></textarea>
+    </div>
+
+    <div id="tokens-panel" class="output-panel">
+      <div class="token-list" id="token-list"></div>
+    </div>
+  </div>
+</main>
+
+<!-- ── Footer ── -->
+<footer>
+  <div class="footer-stat">
+    <div class="stat-dot loading" id="parser-dot"></div>
+    <span id="parser-status">파서 로딩 중…</span>
+  </div>
+  <span>·</span>
+  <span id="token-count">토큰 0개</span>
+  <span>·</span>
+  <span id="parse-time">-</span>
+  <span style="margin-left:auto">
+    <a href="https://github.com/seunghan91/markdown-media" target="_blank">@mdm/parser</a>
+    v0.1.0 ·
+    <a href="https://github.com/seunghan91/markdown-media/blob/master/LICENSE" target="_blank">MIT</a>
+  </span>
+</footer>
+
+<!-- Load MDM parser (UMD build) -->
+<script>
+// ── Inline fallback parser (no build step needed for playground) ──────────────
+// This mirrors the core logic so playground works without a server.
+
+class Tokenizer {
+  constructor() {
+    this.mdmPattern = /!\[\[([^\]]+)\]\]/g;
+    this.refParts = /^([^:|]+)(?::([^|]+))?(?:\s*\|\s*(.+))?$/;
+    this.attrPattern = /(\w[\w-]*)(?:=(?:"([^"]*)"|'([^']*)'|([^\s]+)))?/g;
+  }
+
+  tokenize(text) {
+    const tokens = [];
+    let lastIndex = 0;
+    let match;
+    this.mdmPattern.lastIndex = 0;
+
+    while ((match = this.mdmPattern.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        tokens.push({ type: 'text', value: text.slice(lastIndex, match.index) });
+      }
+      try {
+        const parsed = this.parseReference(match[1]);
+        tokens.push({ type: 'mdm-reference', raw: match[0], ...parsed });
+      } catch (e) {
+        tokens.push({ type: 'text', value: match[0] });
+      }
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < text.length) {
+      tokens.push({ type: 'text', value: text.slice(lastIndex) });
+    }
+    return tokens;
+  }
+
+  parseReference(ref) {
+    const m = ref.match(this.refParts);
+    if (!m) throw new Error('Invalid reference: ' + ref);
+    const [, name, preset, attrsStr] = m;
+    return {
+      name: name.trim(),
+      preset: preset ? preset.trim() : null,
+      attributes: attrsStr ? this.parseAttributes(attrsStr) : {}
+    };
+  }
+
+  parseAttributes(str) {
+    const attrs = {};
+    let m;
+    this.attrPattern.lastIndex = 0;
+    while ((m = this.attrPattern.exec(str)) !== null) {
+      const [, key, dq, sq, uq] = m;
+      const raw = dq !== undefined ? dq : sq !== undefined ? sq : uq !== undefined ? uq : true;
+      if (raw === true) { attrs[key] = true; }
+      else if (raw === 'true') { attrs[key] = true; }
+      else if (raw === 'false') { attrs[key] = false; }
+      else if (/^\d+$/.test(raw)) { attrs[key] = parseInt(raw, 10); }
+      else if (/^\d+\.\d+$/.test(raw)) { attrs[key] = parseFloat(raw); }
+      else { attrs[key] = raw; }
+    }
+    return attrs;
+  }
+}
+
+class Renderer {
+  constructor(mdmData = null) { this.mdmData = mdmData; }
+
+  render(tokens) { return tokens.map(t => this.renderToken(t)).join(''); }
+
+  renderToken(t) {
+    if (t.type === 'text') return t.value;
+    if (t.type === 'mdm-reference') return this.renderMDMRef(t);
+    return '';
+  }
+
+  renderMDMRef(t) {
+    const { name, preset, attributes } = t;
+    const resource = this.mdmData?.resources?.[name];
+    if (!resource) return this.renderDirectFile(name, attributes);
+
+    const presetAttrs = this.getPreset(resource, preset);
+    const merged = { ...resource, ...presetAttrs, ...attributes };
+
+    switch (resource.type) {
+      case 'image': return this.renderImage(merged);
+      case 'video': return this.renderVideo(merged);
+      case 'audio': return this.renderAudio(merged);
+      case 'embed': return this.renderEmbed(merged);
+      default: return `<!-- Unknown type: ${resource.type} -->`;
+    }
+  }
+
+  getPreset(resource, preset) {
+    if (!preset) return {};
+    if (resource.presets?.[preset]) return resource.presets[preset];
+    if (this.mdmData?.presets?.[preset]) return this.mdmData.presets[preset];
+    return {};
+  }
+
+  renderDirectFile(filename, attrs) {
+    const ext = filename.split('.').pop().toLowerCase();
+    if (['jpg','jpeg','png','gif','webp','svg'].includes(ext))
+      return this.renderImage({ src: filename, ...attrs });
+    if (['mp4','webm','ogv'].includes(ext))
+      return this.renderVideo({ src: filename, ...attrs });
+    if (['mp3','wav','ogg'].includes(ext))
+      return this.renderAudio({ src: filename, ...attrs });
+    // For demo: show placeholder
+    return `<div class="mdm-placeholder">📎 ${this.esc(filename)}</div>`;
+  }
+
+  renderImage(a) {
+    const parts = [];
+    // For demo, show placeholder since no actual images
+    const src = a.src || a.name || 'image';
+    parts.push(`src="${this.esc(src)}"`);
+    if (a.alt) parts.push(`alt="${this.esc(a.alt)}"`);
+    if (a.width) parts.push(`width="${a.width}"`);
+    if (a.height) parts.push(`height="${a.height}"`);
+    if (a.loading) parts.push(`loading="${a.loading}"`);
+    const styles = this.buildStyles(a);
+    if (styles) parts.push(`style="${styles}"`);
+    if (a.align) parts.push(`class="align-${a.align}"`);
+
+    // For playground demo: use placeholder since no actual files
+    const imgEl = `<img ${parts.join(' ')} onerror="this.style.background='#1f2937';this.style.minHeight='80px';this.style.display='block'" alt="${this.esc(a.alt || src)}">`;
+    if (a.caption) return `<figure>${imgEl}<figcaption>${this.esc(a.caption)}</figcaption></figure>`;
+    return imgEl;
+  }
+
+  renderVideo(a) {
+    const parts = [];
+    if (a.src) parts.push(`src="${this.esc(a.src)}"`);
+    if (a.width) parts.push(`width="${a.width}"`);
+    if (a.height) parts.push(`height="${a.height}"`);
+    if (a.poster) parts.push(`poster="${this.esc(a.poster)}"`);
+    ['controls','autoplay','muted','loop'].forEach(k => { if (a[k]) parts.push(k); });
+    return `<video ${parts.join(' ')}></video>`;
+  }
+
+  renderAudio(a) {
+    const parts = [];
+    if (a.src) parts.push(`src="${this.esc(a.src)}"`);
+    ['controls','autoplay','loop'].forEach(k => { if (a[k]) parts.push(k); });
+    return `<audio ${parts.join(' ')}></audio>`;
+  }
+
+  renderEmbed(a) {
+    if (a.provider === 'youtube') {
+      const w = a.width || 560, h = a.height || 315;
+      return `<iframe width="${w}" height="${h}" src="https://www.youtube.com/embed/${a.id}" frameborder="0" allowfullscreen style="border-radius:8px;max-width:100%"></iframe>`;
+    }
+    if (a.provider === 'vimeo') {
+      const w = a.width || 640, h = a.height || 360;
+      return `<iframe width="${w}" height="${h}" src="https://player.vimeo.com/video/${a.id}" frameborder="0" allowfullscreen style="border-radius:8px;max-width:100%"></iframe>`;
+    }
+    return `<!-- Unsupported embed: ${a.provider} -->`;
+  }
+
+  buildStyles(a) {
+    const s = [];
+    if (a['max-width']) s.push(`max-width:${a['max-width']}px`);
+    if (a['object-fit']) s.push(`object-fit:${a['object-fit']}`);
+    if (a.opacity) s.push(`opacity:${a.opacity}`);
+    if (a.float) s.push(`float:${a.float}`);
+    return s.join(';');
+  }
+
+  esc(str) {
+    if (typeof str !== 'string') return String(str);
+    return str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+}
+
+// ── Examples ────────────────────────────────────────────────────────────────
+const EXAMPLES = {
+  basic: `# MDM 기본 문법
+
+## 간단한 이미지 삽입
+
+![[photo.jpg]]
+
+## 직접 URL로 이미지 삽입
+
+![[https://picsum.photos/800/400]]
+
+## 여러 이미지
+
+![[https://picsum.photos/seed/a/400/300]]
+![[https://picsum.photos/seed/b/400/300]]`,
+
+  attributes: `# 이미지 속성
+
+## 너비 지정
+
+![[https://picsum.photos/1200/600 | width=600]]
+
+## 중앙 정렬 + 캡션
+
+![[https://picsum.photos/800/450 | width=700 align=center caption="아름다운 풍경 사진"]]
+
+## alt 텍스트 + 너비
+
+![[https://picsum.photos/600/400 | width=400 alt="샘플 이미지" align=center]]
+
+## 로고 (작은 크기)
+
+![[https://picsum.photos/100/100 | width=80 height=80]]`,
+
+  video: `# 비디오 & 오디오
+
+## 비디오 (controls)
+
+![[intro.mp4 | controls width=640]]
+
+## 오토플레이 뮤트 루프 비디오
+
+![[bg-loop.mp4 | autoplay muted loop width=100%]]
+
+## 오디오 플레이어
+
+![[podcast.mp3 | controls]]
+
+## YouTube 임베드
+
+![[youtube-demo]]`,
+
+  preset: `# 프리셋 시스템
+
+프리셋은 .mdm 사이드카 파일에서 정의합니다.
+아래는 일반 속성 오버라이드 예시입니다.
+
+## 썸네일 크기
+
+![[https://picsum.photos/800/600 | width=150 height=150]]
+
+## 미디엄 크기
+
+![[https://picsum.photos/1200/800 | width=640]]
+
+## 풀 와이드
+
+![[https://picsum.photos/1920/600 | width=1200 align=center]]
+
+## caption + align 조합
+
+![[https://picsum.photos/seed/c/600/400 | width=400 align=center caption="🌄 아름다운 일출"]]`,
+
+  blog: `# MDM 블로그 포스트 예시
+
+안녕하세요! 오늘은 **MDM (Markdown+Media)** 파서를 소개합니다.
+
+![[https://picsum.photos/seed/blog/1200/500 | width=900 align=center caption="MDM 프로젝트 히어로 이미지"]]
+
+## 🚀 왜 MDM인가?
+
+표준 마크다운으로는 이미지 크기나 정렬을 HTML 없이 제어할 수 없습니다.
+MDM은 직관적인 \`![[]]\` 문법으로 이 문제를 해결합니다.
+
+## 📸 다양한 이미지 스타일
+
+### 썸네일 갤러리
+
+![[https://picsum.photos/seed/1/300/200 | width=200]]
+![[https://picsum.photos/seed/2/300/200 | width=200]]
+![[https://picsum.photos/seed/3/300/200 | width=200]]
+
+### 캡션이 있는 이미지
+
+![[https://picsum.photos/seed/hero/800/400 | width=600 align=center caption="우리 팀의 오피스 전경"]]
+
+## 마무리
+
+MDM은 오픈소스이며 누구나 기여할 수 있습니다!
+
+⭐ [GitHub에서 별 주기](https://github.com/seunghan91/markdown-media)`,
+
+  clear: ''
+};
+
+// ── YouTube resource for demo ────────────────────────────────────────────────
+const DEMO_MDM_DATA = {
+  resources: {
+    'youtube-demo': { type: 'embed', provider: 'youtube', id: 'dQw4w9WgXcQ' }
+  }
+};
+
+// ── Core ─────────────────────────────────────────────────────────────────────
+const tokenizer = new Tokenizer();
+const renderer = new Renderer(DEMO_MDM_DATA);
+const editor = document.getElementById('editor');
+const previewPanel = document.getElementById('preview-panel');
+const htmlOutput = document.getElementById('html-output');
+const tokenList = document.getElementById('token-list');
+const tokenCountEl = document.getElementById('token-count');
+const parseTimeEl = document.getElementById('parse-time');
+const editorStatus = document.getElementById('editor-status');
+const parserDot = document.getElementById('parser-dot');
+const parserStatus = document.getElementById('parser-status');
+
+// Parser ready
+parserDot.classList.remove('loading');
+parserStatus.textContent = '파서 준비 완료';
+
+let debounceTimer;
+let activeTab = 'preview';
+
+function parse(text) {
+  const t0 = performance.now();
+  const tokens = tokenizer.tokenize(text);
+  const html = renderer.render(tokens);
+  const elapsed = (performance.now() - t0).toFixed(1);
+  return { tokens, html, elapsed };
+}
+
+function formatHtml(html) {
+  // Simple formatting
+  return html
+    .replace(/></g, '>\n<')
+    .replace(/^/gm, '')
+    .trim();
+}
+
+function renderTokenList(tokens) {
+  return tokens.map(t => {
+    if (t.type === 'text') {
+      const preview = t.value.length > 60 ? t.value.slice(0, 60) + '…' : t.value;
+      return `<div class="token-item">
+        <div class="token-type text">TEXT</div>
+        <div class="token-value">${escapeHtml(preview)}</div>
+      </div>`;
+    }
+    const attrs = Object.entries(t.attributes || {});
+    return `<div class="token-item">
+      <div class="token-type mdm-reference">MDM-REFERENCE</div>
+      <div class="token-value">
+        name: <strong>${escapeHtml(t.name)}</strong>${t.preset ? ` &nbsp; preset: <strong>${escapeHtml(t.preset)}</strong>` : ''}
+      </div>
+      ${attrs.length ? `<div class="token-attrs">${attrs.map(([k,v]) =>
+        `<div class="token-attr">${escapeHtml(k)}=<span>${escapeHtml(String(v))}</span></div>`
+      ).join('')}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function update() {
+  const text = editor.value;
+  try {
+    const { tokens, html, elapsed } = parse(text);
+    const mdmRefs = tokens.filter(t => t.type === 'mdm-reference');
+
+    // Update preview
+    if (activeTab === 'preview') previewPanel.innerHTML = html;
+    // Update HTML
+    if (activeTab === 'html') htmlOutput.value = formatHtml(html);
+    // Update tokens
+    if (activeTab === 'tokens') tokenList.innerHTML = renderTokenList(tokens);
+
+    tokenCountEl.textContent = `MDM 참조 ${mdmRefs.length}개 · 토큰 ${tokens.length}개`;
+    parseTimeEl.textContent = `${elapsed}ms`;
+    editorStatus.textContent = '파싱 완료';
+    editorStatus.className = 'status';
+  } catch (e) {
+    editorStatus.textContent = '오류: ' + e.message;
+    editorStatus.className = 'status error';
+  }
+}
+
+editor.addEventListener('input', () => {
+  clearTimeout(debounceTimer);
+  editorStatus.textContent = '입력 중…';
+  debounceTimer = setTimeout(update, 150);
+});
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.output-panel').forEach(p => p.classList.remove('visible'));
+    tab.classList.add('active');
+    activeTab = tab.dataset.tab;
+    document.getElementById(activeTab + '-panel').classList.add('visible');
+    update();
+  });
+});
+
+// Examples
+document.querySelectorAll('.example-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.example-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    editor.value = EXAMPLES[btn.dataset.example] || '';
+    update();
+  });
+});
+
+// Share button
+document.getElementById('share-btn').addEventListener('click', () => {
+  const url = new URL(window.location.href);
+  url.searchParams.set('code', btoa(encodeURIComponent(editor.value)));
+  navigator.clipboard.writeText(url.toString()).then(() => {
+    const btn = document.getElementById('share-btn');
+    btn.textContent = '✅ 복사됨!';
+    setTimeout(() => btn.textContent = '🔗 공유', 2000);
+  });
+});
+
+// Load from URL param
+const urlParams = new URLSearchParams(window.location.search);
+const urlCode = urlParams.get('code');
+if (urlCode) {
+  try {
+    editor.value = decodeURIComponent(atob(urlCode));
+  } catch (e) {
+    editor.value = EXAMPLES.basic;
+  }
+} else {
+  editor.value = EXAMPLES.basic;
+}
+
+// Initial render
+update();
+</script>
+</body>
+</html>

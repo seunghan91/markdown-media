@@ -31,8 +31,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "rollup -c",
-    "build:prod": "NODE_ENV=production rollup -c",
+    "build": "rollup -c && cp src/index.d.ts dist/index.d.ts",
+    "build:prod": "NODE_ENV=production rollup -c && cp src/index.d.ts dist/index.d.ts",
     "dev": "rollup -c -w",
     "test": "node --test",
     "test:watch": "node --test --watch",
