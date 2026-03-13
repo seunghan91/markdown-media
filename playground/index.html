@@ -115,6 +115,42 @@
     .example-btn.active { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 600; }
 
     .toolbar-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+    .upload-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600;
+      background: var(--accent); color: #0d1117; cursor: pointer;
+      border: none; transition: background .15s; white-space: nowrap;
+    }
+    .upload-btn:hover { background: var(--accent-hover); }
+    .upload-btn.loading { background: var(--warning); cursor: not-allowed; }
+
+    /* ── Convert modal overlay ── */
+    .convert-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.6); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    .convert-overlay.visible { display: flex; }
+    .convert-modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 32px; width: 400px; max-width: 90vw;
+      text-align: center;
+    }
+    .convert-modal h3 { margin-bottom: 12px; font-size: 16px; }
+    .convert-modal p { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+    .convert-spinner {
+      width: 40px; height: 40px; border: 3px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin .7s linear infinite; margin: 0 auto 16px;
+    }
+    .convert-result { text-align: left; }
+    .convert-result .result-stats {
+      font-size: 12px; color: var(--muted); margin-bottom: 12px;
+    }
+    .convert-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+    .btn-load { padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; background: var(--accent); color: #0d1117; }
+    .btn-cancel { padding: 8px 18px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; font-size: 14px; background: transparent; color: var(--text); }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ── Main layout ── */
     main {
@@ -344,6 +380,11 @@
   <button class="example-btn" data-example="blog">블로그 포스트</button>
   <div class="toolbar-sep"></div>
   <button class="example-btn" data-example="clear">초기화</button>
+  <div class="toolbar-sep"></div>
+  <label class="upload-btn" id="upload-label" title="HWP / DOCX / PDF 파일을 MDM 마크다운으로 변환">
+    📂 파일 변환
+    <input type="file" id="file-input" accept=".hwp,.docx,.pdf" style="display:none">
+  </label>
 </toolbar>
 
 <!-- ── Main ── -->
@@ -397,6 +438,36 @@
     <a href="https://github.com/seunghan91/markdown-media/blob/master/LICENSE" target="_blank">MIT</a>
   </span>
 </footer>
+
+<!-- ── File Convert Modal ── -->
+<div class="convert-overlay" id="convert-overlay">
+  <div class="convert-modal" id="convert-modal">
+    <div id="convert-loading">
+      <div class="convert-spinner"></div>
+      <h3>변환 중…</h3>
+      <p id="convert-filename" style="color:var(--muted);font-size:13px"></p>
+    </div>
+    <div id="convert-done" style="display:none">
+      <div style="font-size:32px;margin-bottom:12px">✅</div>
+      <h3 id="convert-done-title">변환 완료</h3>
+      <div class="convert-result">
+        <div class="result-stats" id="convert-stats"></div>
+      </div>
+      <div class="convert-btns">
+        <button class="btn-cancel" id="convert-cancel">닫기</button>
+        <button class="btn-load" id="convert-load">에디터에 불러오기</button>
+      </div>
+    </div>
+    <div id="convert-error" style="display:none">
+      <div style="font-size:32px;margin-bottom:12px">❌</div>
+      <h3>변환 실패</h3>
+      <p id="convert-error-msg" style="color:var(--muted);font-size:13px;margin-bottom:16px"></p>
+      <div class="convert-btns">
+        <button class="btn-cancel" id="convert-error-cancel">닫기</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Load MDM parser (UMD build) -->
 <script>
@@ -826,6 +897,68 @@ if (urlCode) {
 
 // Initial render
 update();
+
+// ── File Convert ─────────────────────────────────────────────────────────────
+const API_BASE = 'https://mdm-api.onrender.com';
+const fileInput = document.getElementById('file-input');
+const uploadLabel = document.getElementById('upload-label');
+const overlay = document.getElementById('convert-overlay');
+let convertedMarkdown = '';
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  fileInput.value = '';  // reset so same file can be picked again
+
+  // show loading
+  overlay.classList.add('visible');
+  document.getElementById('convert-loading').style.display = '';
+  document.getElementById('convert-done').style.display = 'none';
+  document.getElementById('convert-error').style.display = 'none';
+  document.getElementById('convert-filename').textContent = file.name;
+  uploadLabel.classList.add('loading');
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/convert`, {
+      method: 'POST',
+      body: formData,
+    });
+    const data = await res.json();
+
+    if (!res.ok) throw new Error(data.detail || '서버 오류');
+
+    convertedMarkdown = data.markdown;
+
+    // show result
+    document.getElementById('convert-loading').style.display = 'none';
+    document.getElementById('convert-done').style.display = '';
+    document.getElementById('convert-done-title').textContent = `${data.filename} 변환 완료`;
+    document.getElementById('convert-stats').textContent =
+      `문자 ${data.stats.chars.toLocaleString()}자 · 이미지 ${data.stats.images}개`;
+
+  } catch (err) {
+    document.getElementById('convert-loading').style.display = 'none';
+    document.getElementById('convert-error').style.display = '';
+    document.getElementById('convert-error-msg').textContent =
+      err.message.includes('Failed to fetch')
+        ? 'API 서버에 연결할 수 없습니다. 잠시 후 다시 시도하세요.'
+        : err.message;
+  } finally {
+    uploadLabel.classList.remove('loading');
+  }
+});
+
+document.getElementById('convert-load').addEventListener('click', () => {
+  editor.value = convertedMarkdown;
+  overlay.classList.remove('visible');
+  update();
+});
+document.getElementById('convert-cancel').addEventListener('click', () => overlay.classList.remove('visible'));
+document.getElementById('convert-error-cancel').addEventListener('click', () => overlay.classList.remove('visible'));
+overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('visible'); });
 </script>
 </body>
 </html>

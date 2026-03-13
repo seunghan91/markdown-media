@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: mdm-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+    healthCheckPath: /api/health
+    autoDeploy: true
