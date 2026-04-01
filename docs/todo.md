@@ -1,7 +1,7 @@
 # MDM Project TODO List
 
-> **Last Updated**: 2025.12.17
-> **Overall Progress**: 100% 🎉
+> **Last Updated**: 2026.04.02
+> **Overall Progress**: Phase 1-3 완료, Phase 4-7 진행 예정
 
 ---
 
@@ -16,6 +16,15 @@ CLI Tool:           ████████████████████
 CI/CD:              ████████████████████ 100%
 WASM:               ████████████████████ 100%
 npm Publish:        ░░░░░░░░░░░░░░░░░░░░   0%
+─── Phase 4-7 (korea-law 통합) ───
+별표/별지 파서:     ░░░░░░░░░░░░░░░░░░░░   0%
+HWPX quick-xml:     ░░░░░░░░░░░░░░░░░░░░   0%
+날짜 파서:          ░░░░░░░░░░░░░░░░░░░░   0%
+체인 도구:          ░░░░░░░░░░░░░░░░░░░░   0%
+napi-rs 래퍼:       ░░░░░░░░░░░░░░░░░░░░   0%
+@mdm/core npm:      ░░░░░░░░░░░░░░░░░░░░   0%
+korea-law MCP 통합: ░░░░░░░░░░░░░░░░░░░░   0%
+WASM 범용 배포:     ░░░░░░░░░░░░░░░░░░░░   0%
 ```
 
 ---
@@ -247,6 +256,137 @@ markdown-media/
 └── .github/                   # ❌ 미구현
     └── workflows/
 ```
+
+---
+
+---
+
+## Phase 4: Rust 코어 강화 — korea-law 통합 (High Priority)
+
+> **설계서**: `docs/superpowers/specs/2026-04-02-korea-law-integration-design.md`
+> **목표**: chrisryugj/korean-law-mcp 87개 도구 수준 달성
+
+### 4.1 별표/별지 패턴 감지 & 파서
+
+- [ ] `core/src/legal/patterns.rs` — RE_ANNEX, RE_ANNEX_FORM, RE_ATTACHMENT 정규식 추가
+- [ ] `core/src/legal/annex.rs` — AnnexParser 구현 (HWP/HWPX 별표 추출)
+- [ ] AnnexInfo 구조체 (type, number, title, tables, markdown)
+- [ ] HWP 별표 감지: 본문 텍스트 패턴 매칭 → 테이블 수집
+- [ ] HWPX 별표 감지: section XML에서 마커 탐지 → 테이블 노드 파싱
+- [ ] TableData::to_markdown() 확장 (병합 셀 렌더링 개선)
+- [ ] 테스트: 실제 법제처 별표 HWPX 5건
+
+### 4.2 HWPX 테이블 quick-xml 리팩토링
+
+- [ ] `core/src/hwpx/parser.rs` — string 기반 → quick-xml 이벤트 파싱
+- [ ] 셀 병합 정보 추출 (hp:cellAddr → rowSpan/colSpan)
+- [ ] HWP의 CellSpan 구조체 재활용
+- [ ] 중첩 테이블 지원
+- [ ] 기존 테스트 통과 확인 + 새 테스트
+
+### 4.3 한국어 자연어 날짜 파서
+
+- [ ] `core/src/utils/date_parser.rs` — KoreanDateParser 구현
+- [ ] 절대 날짜: 2024년 3월 1일, 2024.3.1
+- [ ] 상대 날짜: 어제, 내일, 모레, 그제
+- [ ] N일/주/월 전후: 3일 전, 2주 후, 6개월 이내
+- [ ] 요일: 다음주 화요일, 이번주 금요일
+- [ ] 기간: 최근 3개월, 올해 상반기, 작년
+- [ ] 분기: 2024년 1분기, 올해 하반기
+- [ ] 법률 특화: 시행일, 공포일로부터 30일 이내
+- [ ] chrono 크레이트 의존성 추가
+- [ ] 테스트: 30+ 한국어 날짜 표현
+
+### 4.4 체인 함수 정의
+
+- [ ] `core/src/legal/chains.rs` — ChainPlan, ChainStep 구조체
+- [ ] 8개 ChainType enum 정의
+- [ ] from_query() — 자연어 → 실행 계획 생성
+- [ ] aggregate_results() — 스텝 결과 → 통합 Markdown
+- [ ] 병렬 실행 그룹 표시 (parallel_group)
+- [ ] 테스트: 8개 체인 타입 계획 생성
+
+---
+
+## Phase 5: napi-rs Node.js 래퍼 & npm 배포
+
+### 5.1 napi-rs 프로젝트 설정
+
+- [ ] `packages/core-native/` 초기화 (`napi new`)
+- [ ] Cargo.toml — mdm-core 의존성, napi v3
+- [ ] src/lib.rs — #[napi] 매크로로 API 노출:
+  - parse_hwp(Buffer) → ParseResult
+  - parse_hwpx(Buffer) → ParseResult
+  - parse_annex_hwp(Buffer) → Vec<AnnexResult>
+  - parse_annex_hwpx(Buffer) → Vec<AnnexResult>
+  - parse_korean_date(String) → DateResult
+  - create_chain_plan(String, String) → ChainPlanResult
+  - aggregate_chain_results(String) → String
+  - parse_legal_document(String, String) → Vec<JSON>
+
+### 5.2 CI/CD & 빌드
+
+- [ ] GitHub Actions — darwin-arm64, darwin-x64, linux-x64-gnu, linux-arm64-gnu
+- [ ] TypeScript 타입 자동 생성 (index.d.ts)
+- [ ] 플랫폼별 npm 패키지 생성
+
+### 5.3 npm 배포
+
+- [ ] @mdm/core 메타패키지 (optionalDependencies)
+- [ ] @mdm/core-darwin-arm64
+- [ ] @mdm/core-darwin-x64
+- [ ] @mdm/core-linux-x64-gnu
+- [ ] @mdm/core-linux-arm64-gnu
+- [ ] beasthan2025 계정으로 npm publish --access public
+
+---
+
+## Phase 6: korea-law MCP 통합
+
+### 6.1 @mdm/core 연동
+
+- [ ] korea-law/package.json에 @mdm/core 의존성 추가
+- [ ] 기존 HTTP 래퍼에서 @mdm/core 직접 호출로 전환
+
+### 6.2 체인 도구 8개 MCP 등록
+
+- [ ] `korea-law/src/mcp/chain-tools.ts` 신규
+- [ ] chain_full_research — 포괄적 법률 조사
+- [ ] chain_action_basis — 행정 처분 법적 근거
+- [ ] chain_compare_old_new — 개정 전후 비교
+- [ ] chain_search_with_interpretation — 조문 + 해석례
+- [ ] chain_extract_annexes — 별표/별지 추출
+- [ ] chain_compare_delegation — 3단 위임 구조
+- [ ] chain_find_similar_precedents — 유사 판례
+- [ ] chain_research_specialized — 전문기관 결정례
+
+### 6.3 데이터 소스 확장
+
+- [ ] 조세심판원 결정 API 연동 (ttSpecialDecc)
+- [ ] 공정거래위 결정 API 연동
+- [ ] 조약 검색/본문 API 연동 (trty/trtyInfo)
+- [ ] 자치법규 연계 API 연동 (data.go.kr/15031994)
+- [ ] 고용노동부 해석례 API 연동 (moelCgmExpc)
+
+### 6.4 자연어 날짜 + 별표 도구 등록
+
+- [ ] parse_date MCP 도구
+- [ ] extract_annexes MCP 도구
+
+### 6.5 배포
+
+- [ ] Render 배포 테스트 (korea-law-mcp.onrender.com)
+- [ ] MCP 도구 수 64 → 87+ 확인
+
+---
+
+## Phase 7: WASM 범용 배포 (별도 마일스톤)
+
+- [ ] `packages/core-wasm/` 초기화 (wasm-bindgen)
+- [ ] wasm-pack build --target nodejs
+- [ ] wasm-opt -Os 최적화
+- [ ] @mdm/core-wasm npm 배포
+- [ ] 브라우저 HWP 뷰어 데모
 
 ---
 
