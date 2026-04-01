@@ -271,6 +271,10 @@ mod tests {
 
         let caps3 = RE_ANNEX.captures("[별표 3] 허가기준").unwrap();
         assert_eq!(&caps3[1], "3");
+
+        // Negative: non-annex text should not match
+        assert!(RE_ANNEX.captures("제1조(목적)").is_none());
+        assert!(RE_ANNEX.captures("별지 제1호서식").is_none());
     }
 
     #[test]
@@ -281,6 +285,14 @@ mod tests {
 
         let caps2 = RE_ANNEX_FORM.captures("별지서식2 보고서").unwrap();
         assert_eq!(&caps2[1], "2");
+
+        // Documented example: 별지 제2호의3 서식
+        let caps3 = RE_ANNEX_FORM.captures("별지 제2호의3 서식 보고서양식").unwrap();
+        assert_eq!(&caps3[1], "2");
+        assert_eq!(caps3.get(2).map(|m| m.as_str()), Some("3"));
+
+        // Negative: 별표 should not match
+        assert!(RE_ANNEX_FORM.captures("별표 1 기준표").is_none());
     }
 
     #[test]
@@ -288,5 +300,12 @@ mod tests {
         let caps = RE_ATTACHMENT.captures("[첨부1] 관련서류").unwrap();
         assert_eq!(&caps[1], "1");
         assert_eq!(caps[2].trim(), "관련서류");
+
+        // Unbracketed form
+        let caps2 = RE_ATTACHMENT.captures("첨부 2 참고자료").unwrap();
+        assert_eq!(&caps2[1], "2");
+
+        // Negative: no number should not match
+        assert!(RE_ATTACHMENT.captures("첨부서류").is_none());
     }
 }
