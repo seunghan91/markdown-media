@@ -20,8 +20,10 @@ pub mod types;
 pub mod patterns;
 pub mod chunker;
 pub mod exporter;
+pub mod annex;
 
 pub use types::*;
 pub use patterns::*;
 pub use chunker::KoreanLegalChunker;
 pub use exporter::WeKnoraExporter;
+pub use annex::{AnnexParser, AnnexInfo, AnnexType};

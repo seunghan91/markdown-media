@@ -411,7 +411,7 @@ pub struct ImageData {
 }
 
 /// 표 데이터
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TableData {
     pub rows: usize,
     pub cols: usize,

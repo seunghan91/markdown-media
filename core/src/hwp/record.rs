@@ -267,7 +267,7 @@ pub fn extract_para_text(data: &[u8]) -> String {
 }
 
 /// Cell span information for merged cells
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CellSpan {
     pub row: u16,
     pub col: u16,
