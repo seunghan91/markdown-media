@@ -67,7 +67,22 @@ lazy_static! {
     
     /// 공백 패턴
     pub static ref RE_WHITESPACE: Regex = Regex::new(r"\s").unwrap();
-    
+
+    /// 별표(Annex) 패턴: 별표 1, 별표1의2, [별표 3] 안전관리기준
+    pub static ref RE_ANNEX: Regex = Regex::new(
+        r"^\[?별표\s*(\d+)(?:의\s*(\d+))?\]?\s*(.*?)$"
+    ).unwrap();
+
+    /// 별지(Form) 패턴: 별지 제1호서식, 별지서식1, [별지 제2호의3 서식]
+    pub static ref RE_ANNEX_FORM: Regex = Regex::new(
+        r"^\[?별지\s*(?:서식\s*)?(?:제?\s*)?(\d+)(?:호)?(?:의\s*(\d+))?\s*(?:서식)?\]?\s*(.*?)$"
+    ).unwrap();
+
+    /// 첨부(Attachment) 패턴: [첨부1], 첨부 2
+    pub static ref RE_ATTACHMENT: Regex = Regex::new(
+        r"^\[?첨부\s*(\d+)\]?\s*(.*?)$"
+    ).unwrap();
+
     /// 원문자-숫자 매핑
     pub static ref CIRCLED_NUMBERS: HashMap<char, u8> = {
         let mut m = HashMap::new();
@@ -242,5 +257,36 @@ mod tests {
             format_article_with_title("5", None, None),
             "제5조"
         );
+    }
+
+    #[test]
+    fn test_re_annex() {
+        let caps = RE_ANNEX.captures("별표 1 안전관리기준").unwrap();
+        assert_eq!(&caps[1], "1");
+        assert_eq!(caps[3].trim(), "안전관리기준");
+
+        let caps2 = RE_ANNEX.captures("별표1의2 세부기준").unwrap();
+        assert_eq!(&caps2[1], "1");
+        assert_eq!(caps2.get(2).map(|m| m.as_str()), Some("2"));
+
+        let caps3 = RE_ANNEX.captures("[별표 3] 허가기준").unwrap();
+        assert_eq!(&caps3[1], "3");
+    }
+
+    #[test]
+    fn test_re_annex_form() {
+        let caps = RE_ANNEX_FORM.captures("별지 제1호서식 신청서").unwrap();
+        assert_eq!(&caps[1], "1");
+        assert_eq!(caps[3].trim(), "신청서");
+
+        let caps2 = RE_ANNEX_FORM.captures("별지서식2 보고서").unwrap();
+        assert_eq!(&caps2[1], "2");
+    }
+
+    #[test]
+    fn test_re_attachment() {
+        let caps = RE_ATTACHMENT.captures("[첨부1] 관련서류").unwrap();
+        assert_eq!(&caps[1], "1");
+        assert_eq!(caps[2].trim(), "관련서류");
     }
 }
