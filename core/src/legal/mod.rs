@@ -21,9 +21,11 @@ pub mod patterns;
 pub mod chunker;
 pub mod exporter;
 pub mod annex;
+pub mod chains;
 
 pub use types::*;
 pub use patterns::*;
 pub use chunker::KoreanLegalChunker;
 pub use exporter::WeKnoraExporter;
 pub use annex::{AnnexParser, AnnexInfo, AnnexType};
+pub use chains::{ChainPlan, ChainStep, ChainType};
