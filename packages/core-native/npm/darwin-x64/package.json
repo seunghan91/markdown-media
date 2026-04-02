@@ -1,5 +1,5 @@
 {
-  "name": "@mdm/core-darwin-x64",
+  "name": "@markdown-media/core-darwin-x64",
   "version": "1.0.0",
   "cpu": [
     "x64"

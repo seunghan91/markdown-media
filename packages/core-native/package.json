@@ -1,5 +1,5 @@
 {
-  "name": "@mdm/core",
+  "name": "@markdown-media/core",
   "version": "1.0.0",
   "description": "Native Node.js bindings for mdm-core Rust parser (HWP, legal, dates)",
   "main": "index.js",
@@ -14,10 +14,10 @@
     ]
   },
   "optionalDependencies": {
-    "@mdm/core-darwin-arm64": "1.0.0",
-    "@mdm/core-darwin-x64": "1.0.0",
-    "@mdm/core-linux-x64-gnu": "1.0.0",
-    "@mdm/core-linux-arm64-gnu": "1.0.0"
+    "@markdown-media/core-darwin-arm64": "1.0.0",
+    "@markdown-media/core-darwin-x64": "1.0.0",
+    "@markdown-media/core-linux-x64-gnu": "1.0.0",
+    "@markdown-media/core-linux-arm64-gnu": "1.0.0"
   },
   "scripts": {
     "artifacts": "napi artifacts",

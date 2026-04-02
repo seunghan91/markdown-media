@@ -1,5 +1,5 @@
 {
-  "name": "@mdm/core-linux-x64-gnu",
+  "name": "@markdown-media/core-linux-x64-gnu",
   "version": "1.0.0",
   "cpu": [
     "x64"
