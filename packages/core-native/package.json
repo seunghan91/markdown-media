@@ -1,0 +1,31 @@
+{
+  "name": "@mdm/core",
+  "version": "1.0.0",
+  "description": "Native Node.js bindings for mdm-core Rust parser (HWP, legal, dates)",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "mdm-core",
+    "triples": {
+      "defaults": true,
+      "additional": ["aarch64-apple-darwin"]
+    }
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "node test/smoke.mjs",
+    "version": "napi version"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "license": "MIT"
+}
