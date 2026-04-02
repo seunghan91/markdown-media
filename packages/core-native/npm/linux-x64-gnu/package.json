@@ -1,0 +1,19 @@
+{
+  "name": "@mdm/core-linux-x64-gnu",
+  "version": "1.0.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "mdm-core.linux-x64-gnu.node",
+  "files": [
+    "mdm-core.linux-x64-gnu.node"
+  ],
+  "description": "Native Node.js bindings for mdm-core Rust parser (HWP, legal, dates)",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}
