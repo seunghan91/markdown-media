@@ -5,11 +5,13 @@
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
-    "name": "mdm-core",
-    "triples": {
-      "defaults": true,
-      "additional": ["aarch64-apple-darwin"]
-    }
+    "binaryName": "mdm-core",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
   },
   "scripts": {
     "artifacts": "napi artifacts",
