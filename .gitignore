@@ -32,3 +32,5 @@ npm-debug.log*
 /core/hwp_test/
 /samples/output/
 /packages/parser-rs/target/
+/packages/core-native/target/
+/packages/core-native/*.node
