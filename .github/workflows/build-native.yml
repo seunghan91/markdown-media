@@ -1,0 +1,129 @@
+name: Build & Publish Native
+
+on:
+  push:
+    tags:
+      - 'core-native-v*'
+  workflow_dispatch:
+
+env:
+  WORKING_DIR: packages/core-native
+
+jobs:
+  build:
+    name: Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            build_args: --target aarch64-apple-darwin
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            build_args: --target x86_64-apple-darwin
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            build_args: --target x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            build_args: --target aarch64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+
+      - name: Install dependencies
+        working-directory: ${{ env.WORKING_DIR }}
+        run: npm install
+
+      - name: Build native module
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          napi build --platform --release ${{ matrix.build_args }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: ${{ env.WORKING_DIR }}/*.node
+          if-no-files-found: error
+
+  publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ env.WORKING_DIR }}/artifacts
+
+      - name: Move artifacts to npm dirs
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          npm install -g @napi-rs/cli
+          napi artifacts --dir artifacts --npm-dir npm
+
+      - name: List artifacts
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          echo "=== Artifacts ==="
+          find npm -name "*.node" -ls
+          echo "=== Package contents ==="
+          ls -la npm/*/
+
+      - name: Publish platform packages
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          for dir in npm/*/; do
+            if [ -f "$dir/package.json" ] && ls "$dir"/*.node 1>/dev/null 2>&1; then
+              echo "Publishing $dir..."
+              cd "$dir"
+              npm publish --access public --provenance
+              cd ../..
+            else
+              echo "Skipping $dir (no .node file)"
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        working-directory: ${{ env.WORKING_DIR }}
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
