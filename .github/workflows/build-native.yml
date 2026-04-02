@@ -97,7 +97,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
         run: |
           npm install -g @napi-rs/cli
-          napi artifacts --dir artifacts --npm-dir npm
+          napi artifacts -d artifacts --npm-dir npm
 
       - name: List artifacts
         working-directory: ${{ env.WORKING_DIR }}
