@@ -8,6 +8,7 @@ on:
 
 env:
   WORKING_DIR: packages/core-native
+  RUSTFLAGS: -A dead_code -A unused_variables -A unused_imports -A unused_mut
 
 jobs:
   build:
