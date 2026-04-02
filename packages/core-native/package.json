@@ -35,5 +35,9 @@
     "index.d.ts",
     "*.node"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seunghan91/markdown-media"
+  }
 }
