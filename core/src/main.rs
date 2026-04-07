@@ -195,8 +195,29 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         return;
     }
 
-    // Neither ZIP nor PDF nor CFB → unknown, but try as HWP anyway
-    let _ = is_cfb; // suppress unused warning while we still try open as HWP
+    // Neither ZIP nor PDF nor CFB → unknown
+    // Detect known unsupported formats with friendly messages BEFORE the
+    // confusing 'invalid CFB magic' error fires.
+    let _ = is_cfb;
+
+    // Fasoo DRMONE enterprise DRM-encrypted documents start with the literal
+    // "0x9B 0x20 D R M O N E   This Document is encrypted ...". These files
+    // are AES-encrypted at the OS level and require a license server — no
+    // open-source parser (including kordoc) can read them.
+    if magic.len() >= 8 && magic[0] == 0x9B && &magic[2..8] == b"DRMONE" {
+        eprintln!("❌ This file is DRM-protected (Fasoo DRMONE).");
+        eprintln!("   Open it in Hancom Office with a valid license to remove DRM,");
+        eprintln!("   then re-export. Open-source parsers cannot read DRM-locked HWPs.");
+        return;
+    }
+
+    // Plain XML (HWPML or law.go.kr export) — declare and bail rather than
+    // pretending to be a CFB file.
+    if magic.len() >= 5 && magic.starts_with(b"<?xml") {
+        eprintln!("❌ This file is XML, not HWP/HWPX. mdm parses HWP 5.x (CFB)");
+        eprintln!("   and HWPX (ZIP+XML), not raw HWPML. Use a different tool.");
+        return;
+    }
 
     match HwpParser::open(input) {
         Ok(mut parser) => {

@@ -350,6 +350,17 @@ impl HwpParser {
             }
         }
 
+        // Korean legal-document heading detection: promote paragraphs that
+        // start with 「제N편/장/절」, 「제N조」, 「부칙」 to markdown headings.
+        // This is the core kordoc heuristic (parser.ts:detectHwp5Headings) and
+        // is critical for downstream RAG splitters that key on heading levels.
+        // We deliberately AVOID font-size-based detection since CHAR_SHAPE
+        // styling in HWP files is unreliable.
+        let blocks = blocks
+            .into_iter()
+            .map(|b| promote_korean_heading(&b).unwrap_or(b))
+            .collect::<Vec<_>>();
+
         blocks.join("\n\n")
     }
 
@@ -522,6 +533,100 @@ impl HwpParser {
             metadata,
         })
     }
+}
+
+/// Detect Korean legal-document headings and prefix the paragraph with the
+/// appropriate `#` markers. Returns `None` if the paragraph isn't a heading.
+///
+/// Patterns (mirrors kordoc parser.ts:158-218):
+///   부칙                              → # H1
+///   제N편 / 제N장                     → ## H2
+///   제N절                             → ### H3
+///   제N조 (가능한 항목 번호 포함)     → ### H3
+///   제N목                             → #### H4
+///
+/// Strict guards:
+///   - Heading text length ≤ 80 chars (longer = body text that happens to
+///     start with the keyword)
+///   - First non-whitespace character must match the pattern
+///   - GFM table rows (start with `|`) are never promoted
+fn promote_korean_heading(paragraph: &str) -> Option<String> {
+    if paragraph.starts_with('|') || paragraph.starts_with('#') {
+        return None;
+    }
+    let trimmed = paragraph.trim_start();
+    if trimmed.is_empty() || trimmed.len() > 240 {
+        return None;
+    }
+    // Take only the first line for matching (multi-paragraph blocks shouldn't
+    // be promoted as a whole).
+    let first_line = trimmed.lines().next()?;
+    if first_line.len() > 80 {
+        return None;
+    }
+
+    // Helper: produce a heading prefix without disturbing the rest of the body
+    let make = |level: usize| -> String {
+        let prefix = "#".repeat(level);
+        format!("{} {}", prefix, paragraph.trim_start())
+    };
+
+    // Charwise checks (avoid pulling in regex crate dependency)
+    if first_line == "부칙" || first_line.starts_with("부칙 ") || first_line.starts_with("부칙(") {
+        return Some(make(1));
+    }
+
+    // 제N편 / 제N장
+    if first_line.starts_with("제") && (first_line.contains("편") || first_line.contains("장"))
+        && matches_n_marker(first_line, &["편", "장"])
+    {
+        return Some(make(2));
+    }
+    // 제N절
+    if first_line.starts_with("제") && matches_n_marker(first_line, &["절"]) {
+        return Some(make(3));
+    }
+    // 제N조
+    if first_line.starts_with("제") && matches_n_marker(first_line, &["조"]) {
+        return Some(make(3));
+    }
+    // 제N목
+    if first_line.starts_with("제") && matches_n_marker(first_line, &["목"]) {
+        return Some(make(4));
+    }
+
+    None
+}
+
+/// True if `s` starts with `제`, has at least one digit before any of `markers`,
+/// and the marker character appears within reasonable distance from start.
+fn matches_n_marker(s: &str, markers: &[&str]) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.first() != Some(&'제') {
+        return false;
+    }
+
+    let mut i = 1;
+    let mut saw_digit = false;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        saw_digit = true;
+        i += 1;
+    }
+    if !saw_digit {
+        return false;
+    }
+    // Optional `의N` (e.g., 제5조의2)
+    if i < chars.len() && chars[i] == '의' {
+        i += 1;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i >= chars.len() {
+        return false;
+    }
+    let marker = chars[i];
+    markers.iter().any(|m| m.chars().next() == Some(marker))
 }
 
 /// Parse an OLE2 PropertySet stream (e.g. `\u{0005}HwpSummaryInformation`) and
