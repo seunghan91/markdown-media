@@ -192,6 +192,14 @@ impl OleReader {
             .collect()
     }
 
+    /// Read the OLE2 SummaryInformation stream (`\u{0005}HwpSummaryInformation`).
+    /// Returns raw bytes; parsing into propIds is the caller's job.
+    pub fn read_summary_information(&mut self) -> io::Result<Vec<u8>> {
+        // The leading byte is the binary 0x05 control char per OLE2 spec for
+        // standard property streams.
+        self.read_stream("\u{0005}HwpSummaryInformation")
+    }
+
     /// Summary section count
     pub fn section_count(&self) -> usize {
         let mut count = 0;

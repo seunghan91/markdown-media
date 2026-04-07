@@ -51,34 +51,50 @@ pub struct Table {
 }
 
 impl Table {
-    /// Convert table to Markdown format
+    /// Convert table to Markdown format.
+    ///
+    /// Same rendering rules as the HWP 5.x `build_gfm_table`:
+    /// - 1-column wrapper tables → unwrap to plain paragraphs
+    /// - Header separator always emitted after row 0 (GFM requires it)
+    /// - Newlines inside cells become `<br>`
+    /// - Pipes inside cells are escaped as `\|`
+    /// - Header separator width matches actual column count
     pub fn to_markdown(&self) -> String {
         if self.cells.is_empty() || self.cols == 0 {
             return String::new();
         }
 
-        let mut result = String::new();
+        // 1-column layout wrapper → unwrap to paragraphs
+        if self.cols == 1 {
+            return self.cells.iter()
+                .filter_map(|row| row.first().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+        }
 
+        let mut md = String::new();
         for (row_idx, row) in self.cells.iter().enumerate() {
-            // Build row
-            result.push('|');
+            md.push('|');
             for cell in row {
-                let cell_text = cell.trim().replace('\n', " ");
-                result.push_str(&format!(" {} |", cell_text));
+                let escaped = cell.trim().replace('\n', "<br>").replace('|', "\\|");
+                md.push(' ');
+                md.push_str(&escaped);
+                md.push_str(" |");
             }
-            result.push('\n');
+            md.push('\n');
 
-            // Add separator after header row
-            if row_idx == 0 && self.has_header {
-                result.push('|');
+            // GFM header separator after the first row (always, not just when has_header)
+            if row_idx == 0 {
+                md.push('|');
                 for _ in 0..self.cols {
-                    result.push_str("---|");
+                    md.push_str(" --- |");
                 }
-                result.push('\n');
+                md.push('\n');
             }
         }
 
-        result
+        md
     }
 }
 
@@ -351,63 +367,160 @@ fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (Strin
     (cleaned, tables)
 }
 
-/// Parse a single table from XML
+/// Parse a single HWPX table from XML.
+///
+/// Walks `<hp:tc>` elements collecting cell text + position metadata from
+/// `<hp:cellAddr colAddr rowAddr>` and `<hp:cellSpan colSpan rowSpan>` child
+/// elements (HWPX spec). Cells are placed in a `rows × cols` grid using direct
+/// addresses, with span shadow-fill — same algorithm as the HWP 5.x parser's
+/// `build_gfm_table` (vendor/markdown-media/core/src/hwp/parser.rs).
+///
+/// Without addr-based placement, mdm's HWPX parser previously rendered merged
+/// header tables with mis-aligned columns and dropped rows where the cell
+/// count didn't match `rowCnt × colCnt`.
 fn parse_table(xml: &str) -> Option<Table> {
-    // Extract row and column count
-    let rows = extract_attr(xml, "rowCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let cols = extract_attr(xml, "colCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
-
+    let rows: usize = extract_attr(xml, "rowCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let cols: usize = extract_attr(xml, "colCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
     if rows == 0 || cols == 0 {
         return None;
     }
 
-    let mut cells: Vec<Vec<String>> = Vec::new();
+    // Bound to avoid runaway allocation on malformed files
+    let rows = rows.min(1024);
+    let cols = cols.min(256);
+
+    // Collect every <hp:tc> with its address + span + text
+    #[derive(Clone)]
+    struct CellMeta {
+        col_addr: usize,
+        row_addr: usize,
+        col_span: usize,
+        row_span: usize,
+        text: String,
+        has_addr: bool,
+    }
+
+    let mut collected: Vec<CellMeta> = Vec::new();
     let mut has_header = false;
+    let mut sequential_idx: usize = 0; // for files without explicit addr
     let mut pos = 0;
 
-    // Parse each row
-    while let Some(tr_start) = xml[pos..].find("<hp:tr>") {
-        let tr_pos = pos + tr_start;
+    while let Some(tc_start) = xml[pos..].find("<hp:tc ") {
+        let tc_pos = pos + tc_start;
 
-        if let Some(tr_end) = xml[tr_pos..].find("</hp:tr>") {
-            let row_xml = &xml[tr_pos..tr_pos + tr_end];
-            let mut row_cells = Vec::new();
-            let mut cell_pos = 0;
+        if extract_attr(&xml[tc_pos..], "header").as_deref() == Some("1") {
+            has_header = true;
+        }
 
-            // Parse each cell in row
-            while let Some(tc_start) = row_xml[cell_pos..].find("<hp:tc ") {
-                let tc_pos = cell_pos + tc_start;
+        let Some(tc_end) = xml[tc_pos..].find("</hp:tc>") else { break; };
+        let cell_xml = &xml[tc_pos..tc_pos + tc_end];
 
-                // Check if header cell
-                if let Some(header_attr) = extract_attr(&row_xml[tc_pos..], "header") {
-                    if header_attr == "1" {
-                        has_header = true;
+        // <hp:cellAddr colAddr="..." rowAddr="..."/>
+        let (col_addr, row_addr, has_addr) = match cell_xml.find("<hp:cellAddr ") {
+            Some(addr_start) => {
+                let addr_xml = &cell_xml[addr_start..];
+                let ca = extract_attr(addr_xml, "colAddr").and_then(|s| s.parse().ok());
+                let ra = extract_attr(addr_xml, "rowAddr").and_then(|s| s.parse().ok());
+                match (ca, ra) {
+                    (Some(c), Some(r)) => (c, r, true),
+                    _ => (sequential_idx % cols, sequential_idx / cols, false),
+                }
+            }
+            None => (sequential_idx % cols, sequential_idx / cols, false),
+        };
+
+        // <hp:cellSpan colSpan="..." rowSpan="..."/>
+        let (col_span, row_span) = match cell_xml.find("<hp:cellSpan ") {
+            Some(span_start) => {
+                let span_xml = &cell_xml[span_start..];
+                let cs = extract_attr(span_xml, "colSpan").and_then(|s| s.parse().ok()).unwrap_or(1usize);
+                let rs = extract_attr(span_xml, "rowSpan").and_then(|s| s.parse().ok()).unwrap_or(1usize);
+                (cs.max(1).min(cols), rs.max(1).min(rows))
+            }
+            None => (1, 1),
+        };
+
+        let text = extract_cell_text(cell_xml);
+        collected.push(CellMeta {
+            col_addr,
+            row_addr,
+            col_span,
+            row_span,
+            text,
+            has_addr,
+        });
+        sequential_idx += 1;
+        pos = tc_pos + tc_end + 8;
+    }
+
+    if collected.is_empty() {
+        return None;
+    }
+
+    // Build grid: None = unplaced, Some("") = shadow span fill, Some("text") = cell
+    let mut grid: Vec<Vec<Option<String>>> = vec![vec![None; cols]; rows];
+
+    let any_addr = collected.iter().any(|c| c.has_addr);
+
+    if any_addr {
+        for cell in &collected {
+            if cell.row_addr >= rows || cell.col_addr >= cols {
+                continue;
+            }
+            grid[cell.row_addr][cell.col_addr] = Some(cell.text.clone());
+            for dr in 0..cell.row_span {
+                for dc in 0..cell.col_span {
+                    if dr == 0 && dc == 0 {
+                        continue;
+                    }
+                    let rr = cell.row_addr + dr;
+                    let cc = cell.col_addr + dc;
+                    if rr < rows && cc < cols && grid[rr][cc].is_none() {
+                        grid[rr][cc] = Some(String::new());
                     }
                 }
-
-                if let Some(tc_end) = row_xml[tc_pos..].find("</hp:tc>") {
-                    let cell_xml = &row_xml[tc_pos..tc_pos + tc_end];
-                    let cell_text = extract_cell_text(cell_xml);
-                    row_cells.push(cell_text);
-                    cell_pos = tc_pos + tc_end + 8;
-                } else {
-                    cell_pos = tc_pos + 1;
+            }
+        }
+    } else {
+        // Sequential fill fallback (for files that omit cellAddr)
+        let mut idx = 0usize;
+        for r in 0..rows {
+            for c in 0..cols {
+                if grid[r][c].is_some() {
+                    continue;
+                }
+                if idx >= collected.len() {
+                    break;
+                }
+                let cell = &collected[idx];
+                idx += 1;
+                grid[r][c] = Some(cell.text.clone());
+                for dr in 0..cell.row_span {
+                    for dc in 0..cell.col_span {
+                        if dr == 0 && dc == 0 {
+                            continue;
+                        }
+                        let rr = r + dr;
+                        let cc = c + dc;
+                        if rr < rows && cc < cols && grid[rr][cc].is_none() {
+                            grid[rr][cc] = Some(String::new());
+                        }
+                    }
                 }
             }
-
-            if !row_cells.is_empty() {
-                // Pad row to match column count
-                while row_cells.len() < cols {
-                    row_cells.push(String::new());
-                }
-                cells.push(row_cells);
-            }
-
-            pos = tr_pos + tr_end + 8;
-        } else {
-            break;
         }
     }
+
+    // Drop fully-empty rows (information-free shadow noise)
+    let cells: Vec<Vec<String>> = grid
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|cell| cell.unwrap_or_default())
+                .collect::<Vec<_>>()
+        })
+        .filter(|row| row.iter().any(|c| !c.trim().is_empty()))
+        .collect();
 
     if cells.is_empty() {
         return None;
@@ -421,40 +534,142 @@ fn parse_table(xml: &str) -> Option<Table> {
     })
 }
 
-/// Extract cell text from cell XML
+/// Extract cell text from cell XML.
+///
+/// Walks all `<hp:t>` runs (with or without attrs) AND any nested `<hp:drawText>`
+/// (textbox) content. Multiple `<hp:p>` paragraphs inside a cell are joined
+/// with `\n` (preserved as `<br>` by the table renderer). Text is decoded for
+/// XML entities (`&amp;` → `&`, `&lt;` → `<`, etc).
 fn extract_cell_text(xml: &str) -> String {
-    let mut result = String::new();
+    // Collect text segments per <hp:p> paragraph
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut p_pos = 0;
+
+    loop {
+        // Find next <hp:p>... opening (allow with or without attrs)
+        let opening = xml[p_pos..].find("<hp:p>").map(|i| (p_pos + i, 6))
+            .or_else(|| xml[p_pos..].find("<hp:p ").map(|i| (p_pos + i, 6)));
+
+        match opening {
+            Some((p_start, _)) => {
+                let after_open = match xml[p_start..].find('>') {
+                    Some(i) => p_start + i + 1,
+                    None => break,
+                };
+                let p_end = match xml[after_open..].find("</hp:p>") {
+                    Some(i) => after_open + i,
+                    None => break,
+                };
+                let p_xml = &xml[after_open..p_end];
+                let p_text = extract_runs_text(p_xml);
+                if !p_text.trim().is_empty() {
+                    paragraphs.push(p_text);
+                }
+                p_pos = p_end + 7;
+            }
+            None => break,
+        }
+    }
+
+    // Fallback: if no <hp:p> wrappers, just walk runs at the cell level
+    if paragraphs.is_empty() {
+        let direct = extract_runs_text(xml);
+        if !direct.trim().is_empty() {
+            paragraphs.push(direct);
+        }
+    }
+
+    paragraphs.join("\n").trim().to_string()
+}
+
+/// Walk every `<hp:t>` run inside a fragment, decode XML entities, also pick up
+/// `<hp:drawText>...</hp:drawText>` textbox bodies recursively.
+fn extract_runs_text(xml: &str) -> String {
+    let mut out = String::new();
     let mut pos = 0;
 
-    while let Some(t_start) = xml[pos..].find("<hp:t>") {
-        let start = pos + t_start + 6;
-        if let Some(t_end) = xml[start..].find("</hp:t>") {
-            let text = &xml[start..start + t_end];
-            if !result.is_empty() && !text.is_empty() {
-                result.push(' ');
-            }
-            result.push_str(text);
-            pos = start + t_end + 7;
-        } else {
-            break;
-        }
-    }
+    while pos < xml.len() {
+        // Pick the earliest of <hp:t>, <hp:t , <hp:drawText>, <hp:drawText
+        let t1 = xml[pos..].find("<hp:t>");
+        let t2 = xml[pos..].find("<hp:t ");
+        let dt1 = xml[pos..].find("<hp:drawText>");
+        let dt2 = xml[pos..].find("<hp:drawText ");
+        let tab = xml[pos..].find("<hp:tab/>");
+        let lb = xml[pos..].find("<hp:lineBreak/>");
 
-    // Also handle self-closing <hp:t/>
-    if result.is_empty() {
-        // Try alternative text extraction
-        if let Some(t_start) = xml.find("<hp:t ") {
-            let start = t_start;
-            if let Some(close) = xml[start..].find('>') {
-                let after_tag = start + close + 1;
-                if let Some(end) = xml[after_tag..].find("</hp:t>") {
-                    result = xml[after_tag..after_tag + end].to_string();
+        let candidates = [
+            t1.map(|i| (i, "t")),
+            t2.map(|i| (i, "t")),
+            dt1.map(|i| (i, "dt")),
+            dt2.map(|i| (i, "dt")),
+            tab.map(|i| (i, "tab")),
+            lb.map(|i| (i, "lb")),
+        ];
+        let next = candidates
+            .iter()
+            .filter_map(|c| *c)
+            .min_by_key(|(i, _)| *i);
+
+        let Some((rel, kind)) = next else { break; };
+        let abs = pos + rel;
+
+        match kind {
+            "t" => {
+                let after_open = match xml[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let close = match xml[after_open..].find("</hp:t>") {
+                    Some(i) => after_open + i,
+                    None => break,
+                };
+                let raw = &xml[after_open..close];
+                if !out.is_empty() && !raw.is_empty() && !out.ends_with(|c: char| c.is_whitespace()) {
+                    // No extra space — runs concatenate naturally (kordoc style)
                 }
+                out.push_str(&decode_xml_entities(raw));
+                pos = close + 7;
             }
+            "dt" => {
+                let after_open = match xml[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let close = match xml[after_open..].find("</hp:drawText>") {
+                    Some(i) => after_open + i,
+                    None => break,
+                };
+                let inner = &xml[after_open..close];
+                let inner_text = extract_runs_text(inner);
+                if !inner_text.trim().is_empty() {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(inner_text.trim());
+                }
+                pos = close + 14;
+            }
+            "tab" => {
+                out.push('\t');
+                pos = abs + 9;
+            }
+            "lb" => {
+                out.push('\n');
+                pos = abs + 15;
+            }
+            _ => break,
         }
     }
 
-    result.trim().to_string()
+    out
+}
+
+fn decode_xml_entities(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// Extract attribute value from XML tag

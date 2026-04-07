@@ -481,21 +481,31 @@ impl HwpParser {
 
     /// 메타데이터를 추출합니다
     pub fn extract_metadata(&mut self) -> io::Result<Metadata> {
-        match self.ole_reader.read_file_header() {
-            Ok(header_data) => {
-                let version = parse_version(&header_data);
-                let flags = self.ole_reader.flags();
-                
-                Ok(Metadata {
-                    version,
-                    compressed: flags.compressed,
-                    encrypted: flags.encrypted,
-                    section_count: self.ole_reader.section_count(),
-                    bin_data_count: self.ole_reader.list_bin_data().len(),
-                })
-            }
-            Err(e) => Err(e),
+        let header_data = self.ole_reader.read_file_header()?;
+        let version = parse_version(&header_data);
+        let flags = self.ole_reader.flags();
+
+        let mut meta = Metadata {
+            version,
+            compressed: flags.compressed,
+            encrypted: flags.encrypted,
+            section_count: self.ole_reader.section_count(),
+            bin_data_count: self.ole_reader.list_bin_data().len(),
+            ..Default::default()
+        };
+
+        // Best-effort: title/author/etc from \u{0005}HwpSummaryInformation
+        if let Ok(summary_data) = self.ole_reader.read_summary_information() {
+            let props = parse_summary_information(&summary_data);
+            meta.title = props.get(&2).cloned();
+            meta.subject = props.get(&3).cloned();
+            meta.author = props.get(&4).cloned();
+            meta.keywords = props.get(&5).cloned();
+            meta.description = props.get(&6).cloned();
+            meta.last_author = props.get(&8).cloned();
         }
+
+        Ok(meta)
     }
 
     /// MDM 형식으로 변환합니다
@@ -512,6 +522,162 @@ impl HwpParser {
             metadata,
         })
     }
+}
+
+/// Parse an OLE2 PropertySet stream (e.g. `\u{0005}HwpSummaryInformation`) and
+/// return a map of propertyId → string value.
+///
+/// Format (Microsoft DocSummaryInfo / SummaryInformation spec):
+///
+///   PropertySetHeader (28 bytes)
+///     0..2   ByteOrder      = 0xFFFE (LE)
+///     2..4   Format         = 0
+///     4..8   OS version
+///     8..24  CLSID
+///    24..28  NumPropertySets (always >= 1)
+///
+///   PropertySetEntry[NumPropertySets]
+///     0..16  FMTID (CLSID)
+///    16..20  Offset to PropertySet from stream start
+///
+///   PropertySet at offset
+///     0..4   Size (whole property set, in bytes)
+///     4..8   NumProperties
+///     8..    PropertyIdentifierAndOffset[NumProperties]   (each: u32 propId, u32 offset from PropertySet start)
+///    then    Property values at offset
+///
+///   Property value
+///     0..4   Type (VT_*)
+///     4..    value data
+///
+/// We only decode VT_LPSTR (0x001E) and VT_LPWSTR (0x001F) string types — these
+/// cover title/author/subject/keywords/comments. Numeric property types are skipped.
+fn parse_summary_information(data: &[u8]) -> HashMap<u32, String> {
+    let mut props: HashMap<u32, String> = HashMap::new();
+
+    if data.len() < 48 {
+        return props;
+    }
+    // Sanity check on byte order
+    if data[0] != 0xFE || data[1] != 0xFF {
+        return props;
+    }
+
+    let read_u32 = |off: usize| -> Option<u32> {
+        if off + 4 > data.len() {
+            None
+        } else {
+            Some(u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]))
+        }
+    };
+
+    let num_sets = match read_u32(24) {
+        Some(n) => n,
+        None => return props,
+    };
+    if num_sets == 0 || num_sets > 8 {
+        return props;
+    }
+
+    // We only inspect the first PropertySet (DocumentSummary doesn't matter
+    // for HWP — title/author live in the first one).
+    let entry_offset = 28; // first PropertySetEntry begins right after header
+    let set_offset = match read_u32(entry_offset + 16) {
+        Some(o) => o as usize,
+        None => return props,
+    };
+    if set_offset + 8 > data.len() {
+        return props;
+    }
+
+    let num_props = match read_u32(set_offset + 4) {
+        Some(n) => n as usize,
+        None => return props,
+    };
+    if num_props == 0 || num_props > 256 {
+        return props;
+    }
+
+    // Read PropertyIdentifierAndOffset table
+    for i in 0..num_props {
+        let pidx_off = set_offset + 8 + i * 8;
+        if pidx_off + 8 > data.len() {
+            break;
+        }
+        let prop_id = match read_u32(pidx_off) {
+            Some(v) => v,
+            None => break,
+        };
+        let prop_offset = match read_u32(pidx_off + 4) {
+            Some(v) => set_offset + v as usize,
+            None => break,
+        };
+        if prop_offset + 8 > data.len() {
+            continue;
+        }
+
+        let vt = match read_u32(prop_offset) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        // Only known string types
+        if vt == 0x001E {
+            // VT_LPSTR — Code-Page string. Layout: u32 length (incl NUL), then bytes.
+            let len = match read_u32(prop_offset + 4) {
+                Some(l) => l as usize,
+                None => continue,
+            };
+            let str_start = prop_offset + 8;
+            if len > 0 && str_start + len <= data.len() {
+                let bytes = &data[str_start..str_start + len];
+                // Strip trailing NULs
+                let trimmed: Vec<u8> = bytes.iter().take_while(|&&b| b != 0).copied().collect();
+                // HWP summary streams use code-page 949 (CP949 / EUC-KR variant). We
+                // try UTF-8 first; if that fails, attempt CP949 via encoding_rs which
+                // is already a dependency.
+                let s = match std::str::from_utf8(&trimmed) {
+                    Ok(s) => s.to_string(),
+                    Err(_) => {
+                        let (cow, _enc, _had_errors) = encoding_rs::EUC_KR.decode(&trimmed);
+                        cow.into_owned()
+                    }
+                };
+                let s = s.trim().to_string();
+                if !s.is_empty() {
+                    props.insert(prop_id, s);
+                }
+            }
+        } else if vt == 0x001F {
+            // VT_LPWSTR — UTF-16LE string. Layout: u32 char count (incl NUL), then chars.
+            let count = match read_u32(prop_offset + 4) {
+                Some(l) => l as usize,
+                None => continue,
+            };
+            let str_start = prop_offset + 8;
+            let byte_len = count * 2;
+            if count > 0 && str_start + byte_len <= data.len() {
+                let mut chars: Vec<u16> = Vec::with_capacity(count);
+                for j in 0..count {
+                    let off = str_start + j * 2;
+                    let cp = u16::from_le_bytes([data[off], data[off + 1]]);
+                    if cp == 0 {
+                        break;
+                    }
+                    chars.push(cp);
+                }
+                if let Ok(s) = String::from_utf16(&chars) {
+                    let s = s.trim().to_string();
+                    if !s.is_empty() {
+                        props.insert(prop_id, s);
+                    }
+                }
+            }
+        }
+        // Other VT types (numeric, datetime, etc.) — skip silently
+    }
+
+    props
 }
 
 /// Walk forward from a CTRL_HEADER record, collecting all child PARA_TEXT
@@ -928,13 +1094,25 @@ impl TableData {
 }
 
 /// 메타데이터
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Metadata {
     pub version: String,
     pub compressed: bool,
     pub encrypted: bool,
     pub section_count: usize,
     pub bin_data_count: usize,
+    /// Document title from \u{0005}HwpSummaryInformation propId 2 (PIDSI_TITLE)
+    pub title: Option<String>,
+    /// Author/creator — propId 4 (PIDSI_AUTHOR)
+    pub author: Option<String>,
+    /// Subject — propId 3 (PIDSI_SUBJECT)
+    pub subject: Option<String>,
+    /// Keywords/tags — propId 5 (PIDSI_KEYWORDS)
+    pub keywords: Option<String>,
+    /// Description / comment — propId 6 (PIDSI_COMMENTS)
+    pub description: Option<String>,
+    /// Last saved by — propId 8 (PIDSI_LASTAUTHOR)
+    pub last_author: Option<String>,
 }
 
 /// MDM 문서 (변환 결과)
@@ -950,10 +1128,45 @@ impl MdmDocument {
     /// Generate MDX content
     pub fn to_mdx(&self) -> String {
         let mut mdx = String::new();
-        
+
+        // YAML-safe escaping for free-form metadata strings
+        let yaml_escape = |s: &str| -> String {
+            // Quote and escape backslashes + quotes; collapse newlines to spaces
+            let mut out = String::with_capacity(s.len() + 2);
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' | '\r' => out.push(' '),
+                    _ => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        };
+
         // Frontmatter
         mdx.push_str("---\n");
         mdx.push_str(&format!("version: \"{}\"\n", self.metadata.version));
+        if let Some(t) = &self.metadata.title {
+            mdx.push_str(&format!("title: {}\n", yaml_escape(t)));
+        }
+        if let Some(a) = &self.metadata.author {
+            mdx.push_str(&format!("author: {}\n", yaml_escape(a)));
+        }
+        if let Some(s) = &self.metadata.subject {
+            mdx.push_str(&format!("subject: {}\n", yaml_escape(s)));
+        }
+        if let Some(k) = &self.metadata.keywords {
+            mdx.push_str(&format!("keywords: {}\n", yaml_escape(k)));
+        }
+        if let Some(d) = &self.metadata.description {
+            mdx.push_str(&format!("description: {}\n", yaml_escape(d)));
+        }
+        if let Some(l) = &self.metadata.last_author {
+            mdx.push_str(&format!("lastAuthor: {}\n", yaml_escape(l)));
+        }
         mdx.push_str(&format!("sections: {}\n", self.metadata.section_count));
         mdx.push_str(&format!("images: {}\n", self.images.len()));
         mdx.push_str(&format!("tables: {}\n", self.tables.len()));
