@@ -323,6 +323,41 @@ fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
     styles
 }
 
+/// Depth-aware finder for the MATCHING close tag when the same tag can nest.
+///
+/// Starts scanning at `from`, assumes we've already opened 1 level of `open`.
+/// Returns the absolute index of the close tag that balances the opened depth,
+/// or `None` if the XML is unbalanced.
+///
+/// Critical for HWPX: tables (`<hp:tbl>`) and cells (`<hp:tc>`) can nest, and
+/// naïve `find("</hp:tbl>")` returns the FIRST close which is the inner one —
+/// causing the outer table to truncate and lose all nested-cell content.
+/// Reference: pyhwpx/kordoc use recursive tree walkers; we need the same
+/// correctness without pulling in a DOM parser.
+fn find_matching_close(xml: &str, from: usize, open: &str, close: &str) -> Option<usize> {
+    let mut depth: usize = 1;
+    let mut scan = from;
+    while scan < xml.len() && depth > 0 {
+        let o = xml[scan..].find(open).map(|i| scan + i);
+        let c = xml[scan..].find(close).map(|i| scan + i);
+        match (o, c) {
+            (Some(oo), Some(cc)) if oo < cc => {
+                depth += 1;
+                scan = oo + open.len();
+            }
+            (_, Some(cc)) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(cc);
+                }
+                scan = cc + close.len();
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Parse section XML and extract text with tables
 fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (String, Vec<Table>) {
     let mut result = String::new();
@@ -338,20 +373,20 @@ fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (Strin
             let before_table = &xml[pos..tbl_pos];
             result.push_str(&extract_text_with_formatting(before_table, char_styles));
 
-            // Find table end
-            if let Some(tbl_end) = xml[tbl_pos..].find("</hp:tbl>") {
-                let table_xml = &xml[tbl_pos..tbl_pos + tbl_end + 9];
+            // Find matching table close — must be depth-aware because HWPX
+            // tables can nest. See find_matching_close() for rationale.
+            let scan_from = tbl_pos + "<hp:tbl ".len();
+            if let Some(tbl_end) = find_matching_close(xml, scan_from, "<hp:tbl ", "</hp:tbl>") {
+                let table_xml = &xml[tbl_pos..tbl_end + 9];
 
-                // Parse table
                 if let Some(table) = parse_table(table_xml) {
-                    // Add table markdown
                     result.push_str("\n\n");
                     result.push_str(&table.to_markdown());
                     result.push('\n');
                     tables.push(table);
                 }
 
-                pos = tbl_pos + tbl_end + 9;
+                pos = tbl_end + 9;
             } else {
                 pos = tbl_pos + 1;
             }
@@ -412,8 +447,13 @@ fn parse_table(xml: &str) -> Option<Table> {
             has_header = true;
         }
 
-        let Some(tc_end) = xml[tc_pos..].find("</hp:tc>") else { break; };
-        let cell_xml = &xml[tc_pos..tc_pos + tc_end];
+        // Depth-aware close finder — cells can contain nested tables with
+        // nested cells. Without depth tracking, the inner cell's `</hp:tc>`
+        // would close the outer cell prematurely and we'd mis-count rows.
+        let scan_from = tc_pos + "<hp:tc ".len();
+        let Some(tc_end) = find_matching_close(xml, scan_from, "<hp:tc ", "</hp:tc>")
+        else { break; };
+        let cell_xml = &xml[tc_pos..tc_end];
 
         // <hp:cellAddr colAddr="..." rowAddr="..."/>
         let (col_addr, row_addr, has_addr) = match cell_xml.find("<hp:cellAddr ") {
@@ -450,7 +490,9 @@ fn parse_table(xml: &str) -> Option<Table> {
             has_addr,
         });
         sequential_idx += 1;
-        pos = tc_pos + tc_end + 8;
+        // tc_end is now ABSOLUTE (from find_matching_close) — advance past
+        // `</hp:tc>` to skip the entire closed cell including any nested tables.
+        pos = tc_end + "</hp:tc>".len();
     }
 
     if collected.is_empty() {
