@@ -2,7 +2,7 @@ use super::ole::OleReader;
 use super::record::{
     HwpRecord, RecordParser, extract_para_text, parse_table_info,
     parse_char_shape, parse_para_char_shape, extract_para_text_formatted,
-    parse_cell_list_header, CellSpan,
+    parse_cell_list_header, parse_picture_component, CellSpan,
     CharShape, ParaCharShapeMapping,
     HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE, HWPTAG_LIST_HEADER,
     HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE, HWPTAG_CTRL_HEADER,
@@ -150,9 +150,13 @@ impl HwpParser {
         let mut in_table = false;
         let mut table_rows: usize = 0;
         let mut table_cols: usize = 0;
+        // Track the record-stream level of the HWPTAG_TABLE marker. Cells and
+        // their PARA_TEXTs live at level > table_level. When we see a PARA_HEADER
+        // at level <= table_level, the table is finished — flush it. This fixes
+        // the bug where tables with merged cells (which never reach rows*cols
+        // termination) were absorbing later top-level paragraphs.
+        let mut table_level: u16 = 0;
         // Each entry pairs cell text with its LIST_HEADER metadata.
-        // The active cell (last entry) accumulates PARA_TEXT until a new
-        // LIST_HEADER appears or the table ends.
         let mut cells: Vec<(CellSpan, String)> = Vec::new();
 
         // Convenience: flush pending paragraph into blocks
@@ -185,7 +189,12 @@ impl HwpParser {
                                 }
                                 current_char_shape_mapping = None;
                             }
-                            if let Some(box_text) = extract_subtree_text(&records, i, 200, "\n") {
+                            // First check if this gso wraps an image (SHAPE_COMPONENT_PICTURE
+                            // child with binDataId). If so, emit a [이미지: imageN] placeholder
+                            // — matches kordoc behavior. Otherwise fall through to textbox text.
+                            if let Some(bin_id) = extract_subtree_image_id(&records, i, 200) {
+                                blocks.push(format!("[이미지: image{}]", bin_id));
+                            } else if let Some(box_text) = extract_subtree_text(&records, i, 200, "\n") {
                                 if !box_text.trim().is_empty() {
                                     blocks.push(box_text);
                                 }
@@ -222,6 +231,25 @@ impl HwpParser {
                     }
                 }
                 HWPTAG_PARA_HEADER => {
+                    // Empirically: cell PARA_HEADERs in real HWP files appear at
+                    // the SAME level as their parent HWPTAG_TABLE record (not
+                    // deeper). So we need strict `<` here — `<=` would prematurely
+                    // flush on the very first cell paragraph and produce empty tables.
+                    // This closes the table when we hit a paragraph at a SHALLOWER
+                    // level than the table — which means we've returned to outer
+                    // section flow.
+                    if in_table && record.level < table_level {
+                        if !cells.is_empty() {
+                            if let Some(md) = build_gfm_table(table_rows, table_cols, &cells) {
+                                blocks.push(md);
+                            }
+                            cells.clear();
+                        }
+                        in_table = false;
+                        table_rows = 0;
+                        table_cols = 0;
+                    }
+
                     if !in_table {
                         if let Some(text_data) = current_text_data.take() {
                             let text = extract_para_text_formatted(
@@ -260,6 +288,7 @@ impl HwpParser {
 
                     if let Some(info) = parse_table_info(&record.data) {
                         in_table = true;
+                        table_level = record.level;
                         table_rows = info.rows as usize;
                         table_cols = info.cols as usize;
                         cells.clear();
@@ -826,6 +855,39 @@ fn extract_subtree_text(
     } else {
         Some(texts.join(joiner))
     }
+}
+
+/// Walk forward from a CTRL_HEADER (gso) record looking for a child
+/// SHAPE_COMPONENT_PICTURE record. Returns the picture's binDataId so the
+/// caller can emit a `[이미지: imageN]` placeholder. Returns `None` if no
+/// picture child is found within the lookahead window — caller should fall
+/// back to text-box extraction.
+///
+/// Mirrors kordoc parser.ts:381-401 `extractBinDataId`.
+fn extract_subtree_image_id(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> Option<u16> {
+    if ctrl_idx >= records.len() {
+        return None;
+    }
+    let ctrl_level = records[ctrl_idx].level;
+    let end = (ctrl_idx + max_lookahead + 1).min(records.len());
+
+    for j in (ctrl_idx + 1)..end {
+        let r = &records[j];
+        if r.level <= ctrl_level {
+            break;
+        }
+        if r.tag_id == HWPTAG_SHAPE_COMPONENT_PICTURE {
+            if let Some((_, bin_id)) = parse_picture_component(&r.data) {
+                if bin_id > 0 {
+                    return Some(bin_id);
+                }
+            }
+            // Even if parsing fails, this is definitely a picture node — return a
+            // sentinel that the caller can interpret as "image present, id unknown".
+            return Some(0);
+        }
+    }
+    None
 }
 
 /// Return the index just past the last child of a CTRL_HEADER subtree.

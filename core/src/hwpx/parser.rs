@@ -583,19 +583,25 @@ fn extract_cell_text(xml: &str) -> String {
 }
 
 /// Walk every `<hp:t>` run inside a fragment, decode XML entities, also pick up
-/// `<hp:drawText>...</hp:drawText>` textbox bodies recursively.
+/// `<hp:drawText>...</hp:drawText>` textbox bodies recursively, plus
+/// `<hp:pic>` / `<hp:img>` references which become `[이미지: imageN]` markers.
 fn extract_runs_text(xml: &str) -> String {
     let mut out = String::new();
     let mut pos = 0;
 
     while pos < xml.len() {
-        // Pick the earliest of <hp:t>, <hp:t , <hp:drawText>, <hp:drawText
+        // Pick the earliest opening tag — order matters for ties.
         let t1 = xml[pos..].find("<hp:t>");
         let t2 = xml[pos..].find("<hp:t ");
         let dt1 = xml[pos..].find("<hp:drawText>");
         let dt2 = xml[pos..].find("<hp:drawText ");
         let tab = xml[pos..].find("<hp:tab/>");
         let lb = xml[pos..].find("<hp:lineBreak/>");
+        // Image references: hc:img carries binaryItemIDRef. It usually lives
+        // inside an <hp:pic> wrapper but kordoc just emits one marker per
+        // hc:img occurrence regardless of wrapper.
+        let img1 = xml[pos..].find("<hc:img ");
+        let img2 = xml[pos..].find("<hc:img>");
 
         let candidates = [
             t1.map(|i| (i, "t")),
@@ -604,6 +610,8 @@ fn extract_runs_text(xml: &str) -> String {
             dt2.map(|i| (i, "dt")),
             tab.map(|i| (i, "tab")),
             lb.map(|i| (i, "lb")),
+            img1.map(|i| (i, "img")),
+            img2.map(|i| (i, "img")),
         ];
         let next = candidates
             .iter()
@@ -624,9 +632,6 @@ fn extract_runs_text(xml: &str) -> String {
                     None => break,
                 };
                 let raw = &xml[after_open..close];
-                if !out.is_empty() && !raw.is_empty() && !out.ends_with(|c: char| c.is_whitespace()) {
-                    // No extra space — runs concatenate naturally (kordoc style)
-                }
                 out.push_str(&decode_xml_entities(raw));
                 pos = close + 7;
             }
@@ -656,6 +661,21 @@ fn extract_runs_text(xml: &str) -> String {
             "lb" => {
                 out.push('\n');
                 pos = abs + 15;
+            }
+            "img" => {
+                // <hc:img binaryItemIDRef="image1" .../>  →  [이미지: image1]
+                let after_open = match xml[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let tag_xml = &xml[abs..after_open];
+                if let Some(id) = extract_attr(tag_xml, "binaryItemIDRef") {
+                    if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                        out.push(' ');
+                    }
+                    out.push_str(&format!("[이미지: {}]", id));
+                }
+                pos = after_open;
             }
             _ => break,
         }
@@ -749,6 +769,26 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
             // Handle <hp:fwSpace/> (fixed-width space)
             if run_content.contains("<hp:fwSpace/>") && text_content.is_empty() {
                 text_content.push(' ');
+            }
+
+            // Image references — scan run content for <hc:img binaryItemIDRef="...">
+            // and emit `[이미지: imageN]` placeholders. kordoc emits one marker per
+            // image occurrence so RAG/embedding pipelines can locate visual content.
+            let mut img_scan = 0usize;
+            while let Some(img_rel) = run_content[img_scan..].find("<hc:img ") {
+                let img_abs = img_scan + img_rel;
+                let after = match run_content[img_abs..].find('>') {
+                    Some(i) => img_abs + i + 1,
+                    None => break,
+                };
+                let tag = &run_content[img_abs..after];
+                if let Some(id) = extract_attr(tag, "binaryItemIDRef") {
+                    if !text_content.is_empty() && !text_content.ends_with(char::is_whitespace) {
+                        text_content.push(' ');
+                    }
+                    text_content.push_str(&format!("[이미지: {}]", id));
+                }
+                img_scan = after;
             }
 
             // Apply formatting if we have text and a valid charPrIDRef
