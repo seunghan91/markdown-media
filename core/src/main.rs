@@ -163,17 +163,40 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
 
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    // Handle HWPX (ZIP-based)
-    if ext.eq_ignore_ascii_case("hwpx") {
+    // Detect format by MAGIC BYTES first — many real files have a `.hwp`
+    // extension but contain HWPX (ZIP) or PDF data. kordoc verified this is
+    // common in Korean gov / financial docs (e.g. bank case-study sample).
+    // Without content-based detection mdm fails entirely on these.
+    let magic = std::fs::read(input)
+        .ok()
+        .map(|b| b.into_iter().take(8).collect::<Vec<u8>>())
+        .unwrap_or_default();
+    let is_zip = magic.len() >= 4
+        && magic[0] == 0x50  // P
+        && magic[1] == 0x4B  // K
+        && (magic[2] == 0x03 || magic[2] == 0x05 || magic[2] == 0x07);
+    let is_pdf = magic.len() >= 4
+        && magic[0] == b'%'
+        && magic[1] == b'P'
+        && magic[2] == b'D'
+        && magic[3] == b'F';
+    let is_cfb = magic.len() >= 8
+        && magic == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+    // ZIP magic → HWPX (regardless of extension)
+    if is_zip || ext.eq_ignore_ascii_case("hwpx") {
         convert_hwpx(input, output, format, extract_images, verbose);
         return;
     }
 
-    // Handle PDF
-    if ext.eq_ignore_ascii_case("pdf") {
+    // PDF magic → PDF
+    if is_pdf || ext.eq_ignore_ascii_case("pdf") {
         convert_pdf(input, output, format, verbose);
         return;
     }
+
+    // Neither ZIP nor PDF nor CFB → unknown, but try as HWP anyway
+    let _ = is_cfb; // suppress unused warning while we still try open as HWP
 
     match HwpParser::open(input) {
         Ok(mut parser) => {

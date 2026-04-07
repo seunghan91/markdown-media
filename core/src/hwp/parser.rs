@@ -741,18 +741,44 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
         };
     }
 
-    let mut md = String::new();
-    for (i, row) in grid.iter().enumerate() {
-        md.push('|');
-        for cell in row {
-            let raw = cell.as_deref().unwrap_or("");
-            let escaped = raw.trim().replace('\n', "<br>").replace('|', "\\|");
-            md.push(' ');
-            md.push_str(&escaped);
-            md.push_str(" |");
-        }
-        md.push('\n');
+    // Pre-render rows, then filter out fully-empty rows (information-free
+    // shadow noise from heavy row merging). The header row separator is added
+    // AFTER the first non-empty row so GFM stays well-formed.
+    let rendered_rows: Vec<(bool, String)> = grid
+        .iter()
+        .map(|row| {
+            let mut line = String::from("|");
+            let mut has_content = false;
+            for cell in row {
+                let raw = cell.as_deref().unwrap_or("");
+                let escaped = raw.trim().replace('\n', "<br>").replace('|', "\\|");
+                if !escaped.is_empty() {
+                    has_content = true;
+                }
+                line.push(' ');
+                line.push_str(&escaped);
+                line.push_str(" |");
+            }
+            (has_content, line)
+        })
+        .collect();
 
+    // Drop fully-empty rows but keep them when ALL rows are empty (extreme edge case)
+    let any_content = rendered_rows.iter().any(|(c, _)| *c);
+    let kept: Vec<&str> = rendered_rows
+        .iter()
+        .filter(|(has, _)| !any_content || *has)
+        .map(|(_, l)| l.as_str())
+        .collect();
+
+    if kept.is_empty() {
+        return None;
+    }
+
+    let mut md = String::new();
+    for (i, line) in kept.iter().enumerate() {
+        md.push_str(line);
+        md.push('\n');
         if i == 0 {
             md.push('|');
             for _ in 0..cols {

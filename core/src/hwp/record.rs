@@ -232,8 +232,15 @@ pub fn extract_para_text(data: &[u8]) -> String {
             // NULL character - skip (may be padding)
             0x00 => continue,
 
-            // Tab (single wchar)
-            CHAR_TAB => result.push('\t'),
+            // Tab — INLINE control: emit \t then skip 14-byte payload (tab leader,
+            // alignment, etc.). Per HWP5 spec and verified against KRX TOC bytes
+            // where every TAB is followed by 7 wchars of metadata then another TAB.
+            // Without the skip, mdm output looks like `Executive Summary\t堈ȃ\t 0`
+            // instead of `Executive Summary\t 0`.
+            CHAR_TAB => {
+                result.push('\t');
+                i = (i + 14).min(data.len());
+            }
 
             // Line break (single wchar)
             CHAR_LINE_BREAK => result.push('\n'),
@@ -903,9 +910,11 @@ fn extract_para_text_with_positions(data: &[u8]) -> Vec<(u32, char)> {
             // NULL character - skip
             0x00 => continue,
 
+            // Tab — INLINE 16-byte control (see extract_para_text for full note)
             CHAR_TAB => {
                 result.push((char_pos, '\t'));
                 char_pos += 1;
+                i = (i + 14).min(data.len());
             }
             CHAR_LINE_BREAK => {
                 result.push((char_pos, '\n'));
