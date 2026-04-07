@@ -47,9 +47,9 @@ pub const HWPTAG_EQEDIT: u16 = 0x58;
 
 /// Special characters in HWP text
 /// Reference: HWP 5.0 specification and Hancom documentation
-pub const CHAR_LINE_BREAK: u16 = 0x0A;      // 줄바꿈
+pub const CHAR_LINE_BREAK: u16 = 0x0A;      // 줄바꿈 (single wchar in real files)
 pub const CHAR_PARA_BREAK: u16 = 0x0D;      // 문단 끝
-pub const CHAR_TAB: u16 = 0x09;             // 탭
+pub const CHAR_TAB: u16 = 0x09;             // 탭 (single wchar in real files)
 pub const CHAR_HYPHEN: u16 = 0x1E;          // 하이픈
 pub const CHAR_SPACE: u16 = 0x20;           // 공백
 
@@ -67,14 +67,26 @@ pub const CHAR_DRAWING: u16 = 0x0C;            // 그림/동영상/OLE
 pub const CHAR_FOOTNOTE_ENDNOTE: u16 = 0x0E;   // 미주/각주
 pub const CHAR_HIDDEN_COMMENT: u16 = 0x0F;     // 숨은 설명
 
-/// Extended control characters that consume 16 bytes total (2 + 14)
-/// Characters in this set skip 14 additional bytes after the 2-byte char code
-/// Note: 0x16-0x1F range also requires 14-byte skip (confirmed via hwplib/pyhwp analysis)
-pub const EXTENDED_CTRL_CHARS: [u16; 28] = [
+/// Extended control characters that consume 16 bytes total (2 + 14).
+///
+/// Bug history (2026-04): the previous range `0x0E..=0x1F` over-consumed 14 bytes
+/// after 0x18/0x1E/0x1F, dropping ~7 wchars of real text. Fixed by extracting them
+/// as single-wchar. KRX sample `팀장 : 박성환(8881)` → `팀장881)` regression resolved.
+///
+/// NOTE: kordoc/HWP5 spec lists 0x0A and 0x09 as extended/inline (16-byte) controls,
+/// but real-world files in our test corpus use them as 2-byte single-wchar. Aligning
+/// with the spec REGRESSED the benchmark (2.30M → 2.21M chars). Empirical wins over
+/// spec here. The remaining gap vs kordoc is in record traversal (textbox/footnote
+/// containers), not control char handling.
+pub const EXTENDED_CTRL_CHARS: [u16; 25] = [
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,  // 0x01-0x08
     0x0B, 0x0C, 0x0E, 0x0F,                          // 0x0B, 0x0C, 0x0E, 0x0F
     0x10, 0x11, 0x12, 0x13, 0x14, 0x15,              // 0x10-0x15
-    0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,  // 0x16-0x1F (추가)
+    0x16, 0x17,                                       // 0x16, 0x17
+    // 0x18 = HYPHEN — single wchar
+    0x19, 0x1A, 0x1B, 0x1C, 0x1D,                    // 0x19-0x1D
+    // 0x1E = NB-SPACE — single wchar
+    // 0x1F = FIXED-WIDTH SPACE — single wchar
 ];
 
 /// Check if character is a high surrogate (0xD800-0xDBFF)
@@ -220,18 +232,29 @@ pub fn extract_para_text(data: &[u8]) -> String {
             // NULL character - skip (may be padding)
             0x00 => continue,
 
-            // Tab
+            // Tab (single wchar)
             CHAR_TAB => result.push('\t'),
 
-            // Line break
+            // Line break (single wchar)
             CHAR_LINE_BREAK => result.push('\n'),
 
-            // Paragraph break
+            // Paragraph break (single wchar)
             CHAR_PARA_BREAK => result.push('\n'),
 
+            // Single-wchar special characters (no payload — emit literal/space)
+            // 0x18 hyphen, 0x1E NB-space, 0x1F fixed-width space
+            // (kept as-is per benchmark — kordoc-aligned semantics regressed by ~85K chars)
+            CHAR_HYPHEN => result.push('-'),
+            0x1E | 0x1F => result.push(' '),
+
             // Extended control characters (consume 16 bytes total: 2 + 14)
-            // 0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F (all require 14-byte payload skip)
-            0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => {
+            // 0x01-0x08, 0x0B, 0x0C, 0x0E-0x17, 0x19-0x1D (require 14-byte payload skip)
+            // CRITICAL: do NOT include 0x18, 0x1E, 0x1F — they are single-wchar.
+            0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x17 | 0x19..=0x1D => {
+                if std::env::var("MDM_DEBUG_CTRL").is_ok() {
+                    let preview: String = result.chars().rev().take(8).collect::<String>().chars().rev().collect();
+                    eprintln!("[ctrl] code=0x{:02X} pos={} preview_before={:?}", char_code, i-2, preview);
+                }
                 // Skip 14 bytes of payload
                 i = (i + 14).min(data.len());
             }
@@ -266,13 +289,32 @@ pub fn extract_para_text(data: &[u8]) -> String {
     result
 }
 
-/// Cell span information for merged cells
+/// Cell span + position information for merged cells.
+///
+/// HWP5 cell LIST_HEADER struct (verified against kordoc + rhwp):
+///   offset 0  : paraCount   (u16)
+///   offset 2  : flags       (u32)
+///   offset 6  : width       (u16)  — display width, ignored
+///   offset 8  : col_addr    (u16)  — 0-based column position
+///   offset 10 : row_addr    (u16)  — 0-based row position
+///   offset 12 : col_span    (u16)  — number of columns this cell occupies
+///   offset 14 : row_span    (u16)  — number of rows this cell occupies
+///
+/// `col_addr`/`row_addr` are the GROUND TRUTH for cell placement in merged
+/// tables; sequential fill (chunks_by cols) is wrong for any non-trivial
+/// table. When addr fields are present, use them directly.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CellSpan {
     pub row: u16,
     pub col: u16,
     pub row_span: u16,
     pub col_span: u16,
+    /// Authoritative column position from LIST_HEADER offset 8
+    pub col_addr: u16,
+    /// Authoritative row position from LIST_HEADER offset 10
+    pub row_addr: u16,
+    /// True if col_addr/row_addr were successfully read from the record
+    pub has_addr: bool,
 }
 
 /// Table cell with content and merge info
@@ -379,27 +421,40 @@ pub fn parse_table_info(data: &[u8]) -> Option<TableInfo> {
 /// - Height: 2 bytes
 /// - Left margin: 2 bytes
 /// - Right margin: 2 bytes
-/// - Top margin: 2 bytes
-/// - Bottom margin: 2 bytes
-/// - Border fill ID: 2 bytes
-/// - Col span: 2 bytes (at offset 22)
-/// - Row span: 2 bytes (at offset 24)
-/// - Cell width: 2 bytes (at offset 26)
-/// - Cell height: 2 bytes (at offset 28)
+/// Parse cell LIST_HEADER. Returns position + span fields.
+///
+/// HWP5 cell LIST_HEADER layout (offsets are bytes from start of record data):
+///   0..2   paraCount   u16
+///   2..6   flags       u32
+///   6..8   width       u16  (display)
+///   8..10  col_addr    u16  ← used for direct grid placement
+///  10..12  row_addr    u16  ← used for direct grid placement
+///  12..14  col_span    u16  ← merged-cell column count
+///  14..16  row_span    u16  ← merged-cell row count
+///
+/// HISTORICAL BUG (2026-04): This function previously read col_span/row_span at
+/// offsets 22/24 (which are border-fill IDs / cell margins, not span!). Result:
+/// every merged cell got garbage span values, the table render mis-aligned, and
+/// matrix tables (KRX IT 현황) lost ~50% of their content. Fixed against kordoc
+/// reference (parser.ts:792-807).
 pub fn parse_cell_list_header(data: &[u8]) -> Option<CellSpan> {
-    if data.len() < 26 {
+    if data.len() < 16 {
         return None;
     }
 
-    // Read col_span and row_span
-    let col_span = u16::from_le_bytes([data[22], data[23]]);
-    let row_span = u16::from_le_bytes([data[24], data[25]]);
+    let col_addr = u16::from_le_bytes([data[8], data[9]]);
+    let row_addr = u16::from_le_bytes([data[10], data[11]]);
+    let col_span = u16::from_le_bytes([data[12], data[13]]);
+    let row_span = u16::from_le_bytes([data[14], data[15]]);
 
     Some(CellSpan {
-        row: 0,  // Set by caller
-        col: 0,  // Set by caller
+        row: row_addr,
+        col: col_addr,
         row_span: row_span.max(1),
         col_span: col_span.max(1),
+        col_addr,
+        row_addr,
+        has_addr: true,
     })
 }
 
@@ -848,27 +903,35 @@ fn extract_para_text_with_positions(data: &[u8]) -> Vec<(u32, char)> {
             // NULL character - skip
             0x00 => continue,
 
-            // Tab
             CHAR_TAB => {
                 result.push((char_pos, '\t'));
                 char_pos += 1;
             }
-
-            // Line break
             CHAR_LINE_BREAK => {
                 result.push((char_pos, '\n'));
                 char_pos += 1;
             }
-
-            // Paragraph break
             CHAR_PARA_BREAK => {
                 result.push((char_pos, '\n'));
                 char_pos += 1;
             }
 
-            // Extended control characters (consume 16 bytes total: 2 + 14)
-            // 0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F (all require 14-byte payload skip)
-            0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => {
+            // Single-wchar special chars (kept per benchmark — see record.rs match arm)
+            CHAR_HYPHEN => {
+                result.push((char_pos, '-'));
+                char_pos += 1;
+            }
+            0x1E | 0x1F => {
+                result.push((char_pos, ' '));
+                char_pos += 1;
+            }
+
+            // Extended control (16 bytes) — see EXTENDED_CTRL_CHARS const for full notes
+            0x01..=0x08 | 0x0B | 0x0C | 0x0E..=0x17 | 0x19..=0x1D => {
+                if std::env::var("MDM_DEBUG_CTRL").is_ok() {
+                    let preview: String = result.iter().rev().take(8).map(|(_, c)| c).rev().collect();
+                    eprintln!("[ctrl-pos] code=0x{:02X} pos={} preview_before={:?}", char_code, i-2, preview);
+                }
                 i = (i + 14).min(data.len());
                 char_pos += 1;
             }
