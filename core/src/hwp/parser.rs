@@ -1161,7 +1161,7 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
                 })
             })
             .unwrap_or(false);
-    if eff_cols == 2 && eff_rows >= 2 && label_col_is_short && !first_row_looks_like_header {
+    if eff_cols == 2 && eff_rows >= 3 && label_col_is_short && !first_row_looks_like_header {
         let mut out = String::new();
         for row in &trimmed {
             let label = row[0].trim();
