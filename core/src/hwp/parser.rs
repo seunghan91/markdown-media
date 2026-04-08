@@ -326,22 +326,20 @@ impl HwpParser {
                             cells.push((CellSpan::default(), text.to_string()));
                         }
 
-                        // Termination check: did we collect rows*cols cells?
-                        // Note: with merged cells the actual cell count is LESS than
-                        // rows*cols, so this check may never trip — that's why we
-                        // also flush on the next HWPTAG_TABLE / end-of-section.
-                        if table_cols > 0
-                            && table_rows > 0
-                            && cells.len() >= table_rows * table_cols
-                        {
-                            if let Some(md) = build_gfm_table(table_rows, table_cols, &cells) {
-                                blocks.push(md);
-                            }
-                            cells.clear();
-                            in_table = false;
-                            table_rows = 0;
-                            table_cols = 0;
-                        }
+                        // NOTE: We deliberately do NOT terminate on
+                        // `cells.len() >= rows*cols` here. HWP allows the LAST
+                        // cell to contain multiple PARA_TEXT records, and an
+                        // eager flush after the first one would orphan the
+                        // remaining paragraphs (they'd fall through to the
+                        // outer paragraph branch and render as standalone text
+                        // BELOW the table — e.g. "(정부서울청사 소재)"
+                        // dropping out of the 임용예정인원 cell).
+                        //
+                        // Closure is handled by:
+                        //   1. HWPTAG_PARA_HEADER at shallower level (line ~241)
+                        //      — fires when section flow returns above table_level
+                        //   2. HWPTAG_TABLE for the next table (line ~282)
+                        //   3. End-of-section trailing flush (line ~376)
                     } else {
                         current_text_data = Some(record.data.clone());
                     }
@@ -1057,14 +1055,74 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
         }
     }
 
-    // Render to GFM (mirrors TableData::to_markdown but skips the 1-col unwrap
-    // because by this point we know the table has structural meaning).
-    if cols == 1 {
-        // 1-column wrapper → unwrap to paragraphs
-        let body: Vec<String> = grid
+    // ── Cleanup pass 1: drop fully-empty columns ───────────────────────────
+    // HWP frequently emits 3-col layout tables where the meaningful content
+    // sits in only one or two columns and the rest are spacer cells. Render
+    // those spacers as GFM columns and the viewer fills with <th></th> noise.
+    let cell_text = |row: usize, col: usize| -> &str {
+        grid.get(row)
+            .and_then(|r| r.get(col))
+            .and_then(|c| c.as_deref())
+            .map(|s| s.trim())
+            .unwrap_or("")
+    };
+    let nonempty_cols: Vec<usize> = (0..cols)
+        .filter(|&c| (0..rows).any(|r| !cell_text(r, c).is_empty()))
+        .collect();
+    let nonempty_rows: Vec<usize> = (0..rows)
+        .filter(|&r| (0..cols).any(|c| !cell_text(r, c).is_empty()))
+        .collect();
+
+    if nonempty_cols.is_empty() || nonempty_rows.is_empty() {
+        return None;
+    }
+
+    let eff_cols = nonempty_cols.len();
+    let eff_rows = nonempty_rows.len();
+
+    // Build the trimmed grid (only non-empty rows × non-empty cols)
+    let trimmed: Vec<Vec<String>> = nonempty_rows
+        .iter()
+        .map(|&r| {
+            nonempty_cols
+                .iter()
+                .map(|&c| cell_text(r, c).to_string())
+                .collect()
+        })
+        .collect();
+
+    // ── Cleanup pass 2: 1-row × N-col → section heading OR paragraph ───────
+    // HWP authors use 1-row tables purely as visual headings (e.g.
+    // "| 1 | 임용예정인원 (1개 직위, 총 1명) |"). Rendering these as GFM
+    // tables with empty <tbody> creates the "둥둥 떠보이는 빈 헤더" effect.
+    //
+    // Heuristic: short joined content (≤60 chars, no newline) → heading.
+    // Long content → plain paragraph (it was a body paragraph that the
+    // author wrapped in a 1-row table for visual framing, NOT a heading).
+    if eff_rows == 1 {
+        let cells: Vec<&str> = trimmed[0].iter().map(|s| s.as_str()).collect();
+        let joined = cells.join(" ").trim().to_string();
+        if joined.is_empty() {
+            return None;
+        }
+        let looks_like_heading =
+            joined.chars().count() <= 60 && !joined.contains('\n');
+        return if looks_like_heading {
+            // ### nests under any document-level headings without
+            // overpowering Korean legal §-headings (which are h2).
+            Some(format!("### {}", joined))
+        } else {
+            // Long body wrapped in a decorative 1-row table — emit as
+            // paragraph and preserve intra-cell line breaks.
+            Some(joined.replace('\n', "\n\n"))
+        };
+    }
+
+    // ── Cleanup pass 3: 1-col after collapse → paragraphs ──────────────────
+    if eff_cols == 1 {
+        let body: Vec<String> = trimmed
             .iter()
-            .filter_map(|row| row[0].as_ref())
-            .map(|s| s.trim().to_string())
+            .map(|row| row[0].clone())
             .filter(|s| !s.is_empty())
             .collect();
         return if body.is_empty() {
@@ -1074,47 +1132,73 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
         };
     }
 
-    // Pre-render rows, then filter out fully-empty rows (information-free
-    // shadow noise from heavy row merging). The header row separator is added
-    // AFTER the first non-empty row so GFM stays well-formed.
-    let rendered_rows: Vec<(bool, String)> = grid
+    // ── Cleanup pass 4: 2-col label/body table → definition list ───────────
+    // The "응시자격요건 고려사항" / "직무기술서" pattern is a tall 2-col
+    // table where col[0] is a section label and col[1] holds a multi-line
+    // body that becomes a wall of <br><br><br> in GFM. Render as
+    // **label**\n\nbody\n\n which is far more readable AND keeps the text
+    // searchable for downstream RAG.
+    // Only collapse to definition list when col[0] looks like a SHORT label
+    // for every non-empty row. Otherwise we'd wrap body paragraphs in `**…**`
+    // (e.g. the [안내사항] table where col[0] holds a long announcement).
+    let label_col_is_short = trimmed.iter().all(|row| {
+        let label = row[0].trim();
+        label.is_empty() || (label.chars().count() <= 30 && !label.contains('\n'))
+    });
+    if eff_cols == 2 && label_col_is_short {
+        let mut out = String::new();
+        for row in &trimmed {
+            let label = row[0].trim();
+            let body = row[1].trim();
+            if label.is_empty() && body.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            if !label.is_empty() {
+                out.push_str("**");
+                out.push_str(label);
+                out.push_str("**");
+                if !body.is_empty() {
+                    out.push_str("\n\n");
+                }
+            }
+            if !body.is_empty() {
+                // Preserve intra-cell line breaks as paragraph breaks for
+                // readability instead of <br>. This is the whole point.
+                out.push_str(&body.replace('\n', "\n\n"));
+            }
+        }
+        return if out.is_empty() { None } else { Some(out) };
+    }
+
+    // ── Default: render the trimmed grid as a real GFM table ───────────────
+    let rendered_rows: Vec<String> = trimmed
         .iter()
         .map(|row| {
             let mut line = String::from("|");
-            let mut has_content = false;
             for cell in row {
-                let raw = cell.as_deref().unwrap_or("");
-                let escaped = raw.trim().replace('\n', "<br>").replace('|', "\\|");
-                if !escaped.is_empty() {
-                    has_content = true;
-                }
+                let escaped = cell.replace('\n', "<br>").replace('|', "\\|");
                 line.push(' ');
                 line.push_str(&escaped);
                 line.push_str(" |");
             }
-            (has_content, line)
+            line
         })
         .collect();
 
-    // Drop fully-empty rows but keep them when ALL rows are empty (extreme edge case)
-    let any_content = rendered_rows.iter().any(|(c, _)| *c);
-    let kept: Vec<&str> = rendered_rows
-        .iter()
-        .filter(|(has, _)| !any_content || *has)
-        .map(|(_, l)| l.as_str())
-        .collect();
-
-    if kept.is_empty() {
+    if rendered_rows.is_empty() {
         return None;
     }
 
     let mut md = String::new();
-    for (i, line) in kept.iter().enumerate() {
+    for (i, line) in rendered_rows.iter().enumerate() {
         md.push_str(line);
         md.push('\n');
         if i == 0 {
             md.push('|');
-            for _ in 0..cols {
+            for _ in 0..eff_cols {
                 md.push_str(" --- |");
             }
             md.push('\n');
