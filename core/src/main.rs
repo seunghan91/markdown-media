@@ -8,6 +8,8 @@ use clap::{Parser, Subcommand};
 use hwp::HwpParser;
 use hwpx::HwpxParser;
 use pdf::PdfParser;
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -211,11 +213,10 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         return;
     }
 
-    // Plain XML (HWPML or law.go.kr export) — declare and bail rather than
-    // pretending to be a CFB file.
+    // Plain XML can be raw HWPML exports (often mislabeled as `.hwp`).
+    // Handle those directly instead of pretending to be a CFB file.
     if magic.len() >= 5 && magic.starts_with(b"<?xml") {
-        eprintln!("❌ This file is XML, not HWP/HWPX. mdm parses HWP 5.x (CFB)");
-        eprintln!("   and HWPX (ZIP+XML), not raw HWPML. Use a different tool.");
+        convert_hwpml(input, output, format, verbose);
         return;
     }
 
@@ -322,6 +323,169 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         Err(e) => {
             eprintln!("❌ Error opening file: {}", e);
         }
+    }
+}
+
+fn convert_hwpml(input: &Path, output: &Path, format: &str, verbose: bool) {
+    let xml = match fs::read_to_string(input) {
+        Ok(xml) => xml,
+        Err(e) => {
+            eprintln!("❌ Error reading XML file: {}", e);
+            return;
+        }
+    };
+
+    let (version, title, content, sections) = match parse_hwpml(&xml) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("❌ Error parsing HWPML: {}", e);
+            return;
+        }
+    };
+
+    fs::create_dir_all(output).expect("Failed to create output directory");
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+
+    match format {
+        "json" => {
+            let json_path = output.join(format!("{}.json", stem));
+            let json_data = json!({
+                "version": "1.0",
+                "format": "hwpml",
+                "metadata": {
+                    "hwpml_version": version,
+                    "title": title,
+                    "sections": sections,
+                },
+                "content": content,
+            });
+            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                .expect("Failed to write JSON");
+            println!("  ✓ Created: {}", json_path.display());
+        }
+        _ => {
+            let mdx_path = output.join(format!("{}.mdx", stem));
+            let mdx_content = format!(
+                "---\nformat: hwpml\nversion: \"{}\"\ntitle: \"{}\"\nsections: {}\n---\n\n{}",
+                version,
+                title.replace('"', "\\\""),
+                sections,
+                content
+            );
+            fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
+            println!("  ✓ Created: {}", mdx_path.display());
+
+            let mdm_path = output.join(format!("{}.mdm", stem));
+            let mdm_manifest = json!({
+                "version": "1.0",
+                "format": "hwpml",
+                "source": input.file_name().unwrap_or_default().to_string_lossy(),
+                "resources": {},
+            });
+            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                .expect("Failed to write MDM manifest");
+            println!("  ✓ Created: {}", mdm_path.display());
+        }
+    }
+
+    if verbose {
+        println!("\n📊 Summary:");
+        println!("  - Format: HWPML (raw XML)");
+        println!("  - Sections: {}", sections);
+        println!("  - Text length: {} chars", content.len());
+    }
+
+    println!("✅ Conversion complete!");
+}
+
+fn parse_hwpml(xml: &str) -> Result<(String, String, String, usize), String> {
+    let mut reader = Reader::from_str(xml);
+    reader.trim_text(true);
+    let mut buf = Vec::new();
+
+    let mut version = String::from("unknown");
+    let mut title = String::new();
+    let mut in_title = false;
+    let mut in_body = false;
+    let mut in_char = false;
+    let mut current_para = String::new();
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut sections = 0usize;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"HWPML" => {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"Version" {
+                            version = attr
+                                .unescape_value()
+                                .map(|v| v.into_owned())
+                                .unwrap_or_else(|_| "unknown".to_string());
+                        }
+                    }
+                }
+                b"TITLE" => in_title = true,
+                b"BODY" => in_body = true,
+                b"SECTION" if in_body => sections += 1,
+                b"P" if in_body => current_para.clear(),
+                b"CHAR" if in_body => in_char = true,
+                _ => {}
+            },
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"TITLE" => in_title = false,
+                b"BODY" => in_body = false,
+                b"CHAR" => in_char = false,
+                b"P" if in_body => {
+                    let para = current_para.trim();
+                    if !para.is_empty() {
+                        paragraphs.push(para.to_string());
+                    }
+                    current_para.clear();
+                }
+                _ => {}
+            },
+            Ok(Event::Text(e)) => {
+                let text = e.unescape().map(|t| t.into_owned()).unwrap_or_default();
+                if in_title {
+                    title.push_str(&text);
+                }
+                if in_body && in_char {
+                    current_para.push_str(&text);
+                }
+            }
+            Ok(Event::CData(e)) => {
+                let text = String::from_utf8_lossy(e.as_ref()).into_owned();
+                if in_title {
+                    title.push_str(&text);
+                }
+                if in_body && in_char {
+                    current_para.push_str(&text);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(e.to_string()),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    if sections == 0 {
+        sections = 1;
+    }
+    let content = paragraphs.join("\n\n");
+    if title.is_empty() {
+        title = input_fallback_title(xml);
+    }
+    Ok((version, title, content, sections))
+}
+
+fn input_fallback_title(xml: &str) -> String {
+    let start = xml.find("<TITLE>").map(|i| i + 7);
+    let end = xml.find("</TITLE>");
+    match (start, end) {
+        (Some(s), Some(e)) if s <= e => xml[s..e].trim().to_string(),
+        _ => "Untitled".to_string(),
     }
 }
 
