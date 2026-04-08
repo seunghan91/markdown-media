@@ -340,6 +340,11 @@ impl HwpParser {
                         //      — fires when section flow returns above table_level
                         //   2. HWPTAG_TABLE for the next table (line ~282)
                         //   3. End-of-section trailing flush (line ~376)
+                    } else if let Some(existing) = current_text_data.as_mut() {
+                        // A single HWP paragraph can span multiple PARA_TEXT records.
+                        // Overwriting here drops earlier fragments, which shows up as
+                        // large apparent "text gaps" on dense business-report fixtures.
+                        existing.extend_from_slice(&record.data);
                     } else {
                         current_text_data = Some(record.data.clone());
                     }
@@ -1139,13 +1144,24 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
     // **label**\n\nbody\n\n which is far more readable AND keeps the text
     // searchable for downstream RAG.
     // Only collapse to definition list when col[0] looks like a SHORT label
-    // for every non-empty row. Otherwise we'd wrap body paragraphs in `**…**`
-    // (e.g. the [안내사항] table where col[0] holds a long announcement).
+    // for every non-empty row, AND the first row does not look like a real
+    // table header. Otherwise we'd flatten legitimate 2-col business tables
+    // such as "구분 | 주요 현황" and lose row/column structure.
     let label_col_is_short = trimmed.iter().all(|row| {
         let label = row[0].trim();
         label.is_empty() || (label.chars().count() <= 30 && !label.contains('\n'))
     });
-    if eff_cols == 2 && label_col_is_short {
+    let first_row_looks_like_header = eff_rows >= 2
+        && trimmed
+            .first()
+            .map(|row| {
+                row.iter().all(|cell| {
+                    let cell = cell.trim();
+                    !cell.is_empty() && cell.chars().count() <= 20 && !cell.contains('\n')
+                })
+            })
+            .unwrap_or(false);
+    if eff_cols == 2 && eff_rows >= 2 && label_col_is_short && !first_row_looks_like_header {
         let mut out = String::new();
         for row in &trimmed {
             let label = row[0].trim();
