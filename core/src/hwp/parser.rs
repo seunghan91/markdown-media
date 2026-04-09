@@ -238,12 +238,47 @@ impl HwpParser {
                             i = end;
                             continue;
                         }
-                        // Footnote / endnote
+                        // Footnote / endnote — attach text to the paragraph
+                        // that contains the reference mark. Mirrors kordoc
+                        // v2.0 behavior (parser.ts:582-593) which stores the
+                        // note text alongside the paragraph block.
+                        //
+                        // Critical: we MUST flush `current_text_data` first.
+                        // Without the flush, the "last paragraph" in `blocks`
+                        // is the one BEFORE the one containing the footnote
+                        // mark, so the footnote gets attached to the wrong
+                        // paragraph.
                         else if id == b"  nf" || id == b"fn  " || id == b"  ne" || id == b"en  " {
+                            // Flush pending paragraph (holds the reference mark).
+                            if let Some(text_data) = current_text_data.take() {
+                                let text = extract_para_text_formatted(
+                                    &text_data,
+                                    current_char_shape_mapping.as_ref(),
+                                    &self.char_shapes,
+                                );
+                                if !text.trim().is_empty() {
+                                    blocks.push(text);
+                                }
+                                current_char_shape_mapping = None;
+                            }
+
                             if let Some(note) = extract_subtree_text(&records, i, 100, " ") {
                                 let trimmed = note.trim();
                                 if !trimmed.is_empty() {
-                                    blocks.push(format!("[각주] {}", trimmed));
+                                    let is_endnote = id == b"  ne" || id == b"en  ";
+                                    let label = if is_endnote { "[미주]" } else { "[각주]" };
+                                    // Attach inline to the most recent
+                                    // paragraph block. Skip tables (GFM rows
+                                    // start with `|`) to avoid breaking
+                                    // table structure.
+                                    match blocks.last_mut() {
+                                        Some(last) if !last.starts_with('|') => {
+                                            last.push_str(&format!(" {} {}", label, trimmed));
+                                        }
+                                        _ => {
+                                            blocks.push(format!("{} {}", label, trimmed));
+                                        }
+                                    }
                                 }
                             }
                             let end = subtree_end(&records, i, 100);
