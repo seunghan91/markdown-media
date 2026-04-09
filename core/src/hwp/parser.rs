@@ -8,6 +8,7 @@ use super::record::{
     HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE, HWPTAG_CTRL_HEADER,
     HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA,
 };
+use crate::ir::{blocks_to_markdown, IRBlock, IRCell, IRTable};
 use std::collections::HashMap;
 use std::io::{self};
 use std::path::Path;
@@ -140,6 +141,67 @@ impl HwpParser {
         }
     }
 
+    /// Structured block extraction.
+    ///
+    /// Returns the document body as a `Vec<IRBlock>` with full metadata
+    /// preserved: heading levels, hyperlink URLs on paragraphs, footnote
+    /// text attached to the referencing paragraph, image placeholders,
+    /// and table cell structure via `IRBlock::Table(IRTable)`. Use this
+    /// when the downstream consumer needs structural information —
+    /// document diff, form extraction, semantic chunking — instead of a
+    /// flat Markdown string.
+    ///
+    /// Dispatches on `FileHeader.distributed` the same way
+    /// [`extract_text`] does, so distribution-locked (`ViewText`) files
+    /// round-trip through the AES decryption path transparently.
+    /// Per-section errors emit a warning to stderr and are skipped.
+    pub fn extract_blocks(&mut self) -> io::Result<Vec<IRBlock>> {
+        if self.char_shapes.is_empty() {
+            let _ = self.parse_doc_info();
+        }
+
+        let flags = *self.ole_reader.flags();
+        let distributed = flags.distributed;
+        let compressed = flags.compressed;
+
+        let section_count = if distributed {
+            self.ole_reader.view_section_count()
+        } else {
+            self.ole_reader.section_count()
+        };
+        if section_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut out: Vec<IRBlock> = Vec::new();
+        for section_num in 0..section_count {
+            let section_data: io::Result<Vec<u8>> = if distributed {
+                self.ole_reader
+                    .read_view_text_raw(section_num)
+                    .and_then(|raw| {
+                        crate::hwp::crypto::decrypt_view_text(&raw, compressed)
+                    })
+            } else {
+                self.ole_reader.read_body_text(section_num)
+            };
+
+            match section_data {
+                Ok(data) => {
+                    out.extend(self.parse_section_records_to_blocks(&data));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Could not read {}Section{}: {}",
+                        if distributed { "View" } else { "Body" },
+                        section_num,
+                        e
+                    );
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Parse records from decompressed section data (without formatting - for compatibility)
     fn parse_section_records(&self, data: &[u8]) -> String {
         let mut parser = RecordParser::new(data);
@@ -170,6 +232,249 @@ impl HwpParser {
     /// Cell placement uses LIST_HEADER colAddr/rowAddr (HWP5 spec offsets 8/10)
     /// when present — this is the kordoc-verified path for correct merged-cell
     /// rendering. Falls back to sequential fill when addresses are absent.
+    ///
+    /// IR-emitting parallel of this function is
+    /// [`parse_section_records_to_blocks`]. Both walk the same HWP record
+    /// stream with identical state machines but emit different
+    /// representations. Phase 2c will collapse them into one path.
+
+    /// Parse one section's record stream into a `Vec<IRBlock>`.
+    ///
+    /// Primary IR-emitting walker. Preserves structural metadata that
+    /// the legacy string path had to encode as inline Markdown:
+    /// - hyperlink URLs → `IRBlock::Paragraph::href`
+    /// - footnote / endnote body → `IRBlock::Paragraph::footnote`
+    /// - heading levels → `IRBlock::Heading { level, .. }` (via
+    ///   [`push_paragraph`] + [`promote_korean_heading_level`])
+    /// - table cell structure → `IRBlock::Table(IRTable)` with
+    ///   `IRCell` cells built by [`build_ir_blocks_from_cells`]
+    /// - image placeholders → `IRBlock::Image { alt }`
+    ///
+    /// State machine is identical to [`parse_section_records_formatted`]:
+    /// same table termination (`HWPTAG_PARA_HEADER` at shallower level,
+    /// new `HWPTAG_TABLE`, end-of-section trailing flush), same
+    /// `LIST_HEADER` cell placement, same `gso` / `fn` / `en` subtree
+    /// skipping to prevent duplicate emission.
+    fn parse_section_records_to_blocks(&self, data: &[u8]) -> Vec<IRBlock> {
+        let mut parser = RecordParser::new(data);
+        let records = parser.parse_all();
+
+        let mut blocks: Vec<IRBlock> = Vec::new();
+        let mut current_text_data: Option<Vec<u8>> = None;
+        let mut current_char_shape_mapping: Option<ParaCharShapeMapping> = None;
+
+        let mut in_table = false;
+        let mut table_rows: usize = 0;
+        let mut table_cols: usize = 0;
+        let mut table_level: u16 = 0;
+        let mut cells: Vec<(CellSpan, String)> = Vec::new();
+
+        let mut i = 0usize;
+        while i < records.len() {
+            let record = &records[i];
+            match record.tag_id {
+                HWPTAG_CTRL_HEADER => {
+                    if record.data.len() >= 4 {
+                        let id = &record.data[0..4];
+                        // gso — text box / image / shape
+                        if id == b" osg" || id == b"gso " {
+                            if let Some(text_data) = current_text_data.take() {
+                                let text = extract_para_text_formatted(
+                                    &text_data,
+                                    current_char_shape_mapping.as_ref(),
+                                    &self.char_shapes,
+                                );
+                                push_paragraph(&mut blocks, text);
+                                current_char_shape_mapping = None;
+                            }
+                            if let Some(bin_id) = extract_subtree_image_id(&records, i, 200) {
+                                blocks.push(IRBlock::Image {
+                                    alt: format!("image{}", bin_id),
+                                });
+                            } else if let Some(box_text) =
+                                extract_subtree_text(&records, i, 200, "\n")
+                            {
+                                push_paragraph(&mut blocks, box_text);
+                            }
+                            let end = subtree_end(&records, i, 200);
+                            i = end;
+                            continue;
+                        }
+                        // Footnote / endnote — attach to the referencing paragraph
+                        else if id == b"  nf"
+                            || id == b"fn  "
+                            || id == b"  ne"
+                            || id == b"en  "
+                        {
+                            if let Some(text_data) = current_text_data.take() {
+                                let text = extract_para_text_formatted(
+                                    &text_data,
+                                    current_char_shape_mapping.as_ref(),
+                                    &self.char_shapes,
+                                );
+                                push_paragraph(&mut blocks, text);
+                                current_char_shape_mapping = None;
+                            }
+                            if let Some(note) = extract_subtree_text(&records, i, 100, " ") {
+                                let trimmed = note.trim();
+                                if !trimmed.is_empty() {
+                                    let is_endnote = id == b"  ne" || id == b"en  ";
+                                    let label = if is_endnote { "[미주]" } else { "[각주]" };
+                                    let body = format!("{} {}", label, trimmed);
+                                    match blocks.last_mut() {
+                                        Some(IRBlock::Paragraph { footnote, .. }) => {
+                                            match footnote {
+                                                Some(existing) => {
+                                                    existing.push_str("; ");
+                                                    existing.push_str(&body);
+                                                }
+                                                None => *footnote = Some(body),
+                                            }
+                                        }
+                                        _ => blocks.push(IRBlock::paragraph(body)),
+                                    }
+                                }
+                            }
+                            let end = subtree_end(&records, i, 100);
+                            i = end;
+                            continue;
+                        }
+                        // Hyperlink — attach URL to most recent Paragraph
+                        else if id == b"kot%"
+                            || id == b"%tok"
+                            || id == b"knlk"
+                            || id == b"klnk"
+                        {
+                            if let Some(url) = extract_hyperlink_url(&record.data) {
+                                match blocks.last_mut() {
+                                    Some(IRBlock::Paragraph { href, .. }) if href.is_none() => {
+                                        *href = Some(url);
+                                    }
+                                    _ => {
+                                        blocks.push(IRBlock::Paragraph {
+                                            text: String::new(),
+                                            footnote: None,
+                                            href: Some(url),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                HWPTAG_PARA_HEADER => {
+                    if in_table && record.level < table_level {
+                        if !cells.is_empty() {
+                            blocks.extend(build_ir_blocks_from_cells(
+                                table_rows,
+                                table_cols,
+                                &cells,
+                            ));
+                            cells.clear();
+                        }
+                        in_table = false;
+                        table_rows = 0;
+                        table_cols = 0;
+                    }
+                    if !in_table {
+                        if let Some(text_data) = current_text_data.take() {
+                            let text = extract_para_text_formatted(
+                                &text_data,
+                                current_char_shape_mapping.as_ref(),
+                                &self.char_shapes,
+                            );
+                            push_paragraph(&mut blocks, text);
+                            current_char_shape_mapping = None;
+                        }
+                    }
+                }
+                HWPTAG_TABLE => {
+                    if let Some(text_data) = current_text_data.take() {
+                        let text = extract_para_text_formatted(
+                            &text_data,
+                            current_char_shape_mapping.as_ref(),
+                            &self.char_shapes,
+                        );
+                        push_paragraph(&mut blocks, text);
+                        current_char_shape_mapping = None;
+                    }
+                    if in_table && !cells.is_empty() {
+                        blocks.extend(build_ir_blocks_from_cells(
+                            table_rows,
+                            table_cols,
+                            &cells,
+                        ));
+                        cells.clear();
+                    }
+                    if let Some(info) = parse_table_info(&record.data) {
+                        in_table = true;
+                        table_level = record.level;
+                        table_rows = info.rows as usize;
+                        table_cols = info.cols as usize;
+                        cells.clear();
+                    } else {
+                        in_table = false;
+                    }
+                }
+                HWPTAG_LIST_HEADER if in_table => {
+                    if let Some(span) = parse_cell_list_header(&record.data) {
+                        cells.push((span, String::new()));
+                    } else {
+                        cells.push((CellSpan::default(), String::new()));
+                    }
+                }
+                HWPTAG_PARA_TEXT => {
+                    if in_table {
+                        let raw = extract_para_text(&record.data);
+                        let text = raw.trim();
+                        if text.is_empty() {
+                            // skip
+                        } else if let Some(last) = cells.last_mut() {
+                            if !last.1.is_empty() {
+                                last.1.push('\n');
+                            }
+                            last.1.push_str(text);
+                        } else {
+                            cells.push((CellSpan::default(), text.to_string()));
+                        }
+                    } else if let Some(existing) = current_text_data.as_mut() {
+                        existing.extend_from_slice(&record.data);
+                    } else {
+                        current_text_data = Some(record.data.clone());
+                    }
+                }
+                HWPTAG_PARA_CHAR_SHAPE => {
+                    if !in_table {
+                        current_char_shape_mapping = parse_para_char_shape(&record.data);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        // Flush trailing paragraph
+        if let Some(text_data) = current_text_data {
+            let text = extract_para_text_formatted(
+                &text_data,
+                current_char_shape_mapping.as_ref(),
+                &self.char_shapes,
+            );
+            push_paragraph(&mut blocks, text);
+        }
+
+        // Flush trailing table
+        if in_table && !cells.is_empty() {
+            blocks.extend(build_ir_blocks_from_cells(
+                table_rows.max(1),
+                table_cols.max(1),
+                &cells,
+            ));
+        }
+
+        blocks
+    }
+
     fn parse_section_records_formatted(&self, data: &[u8]) -> String {
         let mut parser = RecordParser::new(data);
         let records = parser.parse_all();
@@ -647,21 +952,254 @@ impl HwpParser {
     }
 }
 
-/// Detect Korean legal-document headings and prefix the paragraph with the
-/// appropriate `#` markers. Returns `None` if the paragraph isn't a heading.
+/// Push a paragraph onto the IR block list, promoting to
+/// `IRBlock::Heading` when [`promote_korean_heading_level`] matches.
+/// Empty / whitespace-only text is dropped.
+fn push_paragraph(blocks: &mut Vec<IRBlock>, text: String) {
+    if text.trim().is_empty() {
+        return;
+    }
+    if let Some((level, cleaned)) = promote_korean_heading_level(&text) {
+        blocks.push(IRBlock::Heading {
+            level,
+            text: cleaned,
+        });
+    } else {
+        blocks.push(IRBlock::paragraph(text));
+    }
+}
+
+/// Korean legal-document heading detection returning `(level, cleaned_text)`.
+/// Same rules as the legacy [`promote_korean_heading`] but hands the level
+/// back to the caller so the IR path can emit `IRBlock::Heading { level, .. }`
+/// directly instead of prefixing `#`.
+fn promote_korean_heading_level(paragraph: &str) -> Option<(u8, String)> {
+    if paragraph.starts_with('|') || paragraph.starts_with('#') {
+        return None;
+    }
+    let trimmed = paragraph.trim_start();
+    if trimmed.is_empty() || trimmed.len() > 240 {
+        return None;
+    }
+    let first_line = trimmed.lines().next()?;
+    if first_line.len() > 80 {
+        return None;
+    }
+
+    let cleaned = paragraph.trim_start().to_string();
+
+    if first_line == "부칙"
+        || first_line.starts_with("부칙 ")
+        || first_line.starts_with("부칙(")
+    {
+        return Some((1, cleaned));
+    }
+    if first_line.starts_with("제")
+        && (first_line.contains("편") || first_line.contains("장"))
+        && matches_n_marker(first_line, &["편", "장"])
+    {
+        return Some((2, cleaned));
+    }
+    if first_line.starts_with("제") && matches_n_marker(first_line, &["절"]) {
+        return Some((3, cleaned));
+    }
+    if first_line.starts_with("제") && matches_n_marker(first_line, &["조"]) {
+        return Some((3, cleaned));
+    }
+    if first_line.starts_with("제") && matches_n_marker(first_line, &["목"]) {
+        return Some((4, cleaned));
+    }
+
+    None
+}
+
+/// Build IR blocks from HWP table cells.
 ///
-/// Patterns (mirrors kordoc parser.ts:158-218):
-///   부칙                              → # H1
-///   제N편 / 제N장                     → ## H2
-///   제N절                             → ### H3
-///   제N조 (가능한 항목 번호 포함)     → ### H3
-///   제N목                             → #### H4
-///
-/// Strict guards:
-///   - Heading text length ≤ 80 chars (longer = body text that happens to
-///     start with the keyword)
-///   - First non-whitespace character must match the pattern
-///   - GFM table rows (start with `|`) are never promoted
+/// Same 4-pass cleanup pipeline as the legacy [`build_gfm_table`]
+/// (address-based placement, empty-row/col trimming, 1-row → heading
+/// collapse, 2-col → label/body pair) but emits `Vec<IRBlock>` instead
+/// of a Markdown string. Single source of truth for table structural
+/// logic — the Markdown path goes through
+/// [`crate::ir::blocks_to_markdown`] over the same blocks.
+fn build_ir_blocks_from_cells(
+    rows: usize,
+    cols: usize,
+    cells: &[(CellSpan, String)],
+) -> Vec<IRBlock> {
+    if cells.is_empty() || cols == 0 {
+        return Vec::new();
+    }
+
+    let rows = rows.max(1).min(1024);
+    let cols = cols.max(1).min(256);
+
+    let mut grid: Vec<Vec<Option<String>>> = vec![vec![None; cols]; rows];
+    let has_addr = cells.iter().any(|(s, _)| s.has_addr);
+
+    if has_addr {
+        for (span, text) in cells {
+            let r = span.row_addr as usize;
+            let c = span.col_addr as usize;
+            if r >= rows || c >= cols {
+                continue;
+            }
+            grid[r][c] = Some(text.clone());
+            let rs = span.row_span.max(1) as usize;
+            let cs = span.col_span.max(1) as usize;
+            for dr in 0..rs {
+                for dc in 0..cs {
+                    if dr == 0 && dc == 0 {
+                        continue;
+                    }
+                    let rr = r + dr;
+                    let cc = c + dc;
+                    if rr < rows && cc < cols && grid[rr][cc].is_none() {
+                        grid[rr][cc] = Some(String::new());
+                    }
+                }
+            }
+        }
+    } else {
+        let mut idx = 0usize;
+        for r in 0..rows {
+            for c in 0..cols {
+                if grid[r][c].is_some() {
+                    continue;
+                }
+                if idx >= cells.len() {
+                    break;
+                }
+                let (span, text) = &cells[idx];
+                idx += 1;
+                grid[r][c] = Some(text.clone());
+                let rs = span.row_span.max(1) as usize;
+                let cs = span.col_span.max(1) as usize;
+                for dr in 0..rs {
+                    for dc in 0..cs {
+                        if dr == 0 && dc == 0 {
+                            continue;
+                        }
+                        let rr = r + dr;
+                        let cc = c + dc;
+                        if rr < rows && cc < cols && grid[rr][cc].is_none() {
+                            grid[rr][cc] = Some(String::new());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let cell_text = |row: usize, col: usize| -> String {
+        grid.get(row)
+            .and_then(|r| r.get(col))
+            .and_then(|c| c.clone())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    };
+    let nonempty_cols: Vec<usize> = (0..cols)
+        .filter(|&c| (0..rows).any(|r| !cell_text(r, c).is_empty()))
+        .collect();
+    let nonempty_rows: Vec<usize> = (0..rows)
+        .filter(|&r| (0..cols).any(|c| !cell_text(r, c).is_empty()))
+        .collect();
+    if nonempty_cols.is_empty() || nonempty_rows.is_empty() {
+        return Vec::new();
+    }
+
+    let eff_rows = nonempty_rows.len();
+    let eff_cols = nonempty_cols.len();
+    let trimmed: Vec<Vec<String>> = nonempty_rows
+        .iter()
+        .map(|&r| nonempty_cols.iter().map(|&c| cell_text(r, c)).collect())
+        .collect();
+
+    // 1-row → heading OR paragraph
+    if eff_rows == 1 {
+        let joined = trimmed[0].join(" ").trim().to_string();
+        if joined.is_empty() {
+            return Vec::new();
+        }
+        let looks_like_heading =
+            joined.chars().count() <= 60 && !joined.contains('\n');
+        if looks_like_heading {
+            return vec![IRBlock::Heading {
+                level: 3,
+                text: joined,
+            }];
+        }
+        return joined
+            .split('\n')
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| IRBlock::paragraph(s.trim()))
+            .collect();
+    }
+
+    // 1-col → paragraphs
+    if eff_cols == 1 {
+        return trimmed
+            .iter()
+            .map(|row| row[0].clone())
+            .filter(|s| !s.is_empty())
+            .map(IRBlock::paragraph)
+            .collect();
+    }
+
+    // 2-col label/body → paragraphs with **bold** label
+    let label_col_is_short = trimmed.iter().all(|row| {
+        let label = row[0].trim();
+        label.is_empty() || (label.chars().count() <= 30 && !label.contains('\n'))
+    });
+    let first_row_looks_like_header = eff_rows >= 2
+        && trimmed
+            .first()
+            .map(|row| {
+                row.iter().all(|cell| {
+                    let cell = cell.trim();
+                    !cell.is_empty() && cell.chars().count() <= 20 && !cell.contains('\n')
+                })
+            })
+            .unwrap_or(false);
+    if eff_cols == 2 && eff_rows >= 3 && label_col_is_short && !first_row_looks_like_header {
+        let mut out: Vec<IRBlock> = Vec::new();
+        for row in &trimmed {
+            let label = row[0].trim();
+            let body = row[1].trim();
+            if label.is_empty() && body.is_empty() {
+                continue;
+            }
+            if !label.is_empty() {
+                out.push(IRBlock::paragraph(format!("**{}**", label)));
+            }
+            if !body.is_empty() {
+                for line in body.split('\n') {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        out.push(IRBlock::paragraph(line));
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    // Default: IRTable from the trimmed grid
+    let ir_cells: Vec<Vec<IRCell>> = trimmed
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|s| IRCell::new(s.replace('\n', " ")))
+                .collect()
+        })
+        .collect();
+    vec![IRBlock::Table(IRTable::new(ir_cells))]
+}
+
+/// LEGACY: kept only as a reference implementation. All HWP heading
+/// promotion now goes through [`promote_korean_heading_level`] +
+/// [`push_paragraph`]. Marked dead_code to suppress the warning without
+/// deleting the documented reference.
+#[allow(dead_code)]
 fn promote_korean_heading(paragraph: &str) -> Option<String> {
     if paragraph.starts_with('|') || paragraph.starts_with('#') {
         return None;
@@ -1529,6 +2067,94 @@ impl MdmDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── push_paragraph + heading promotion ──
+
+    #[test]
+    fn push_paragraph_drops_empty() {
+        let mut blocks: Vec<IRBlock> = Vec::new();
+        push_paragraph(&mut blocks, String::new());
+        push_paragraph(&mut blocks, "   \n  ".to_string());
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn push_paragraph_promotes_legal_heading_to_h3() {
+        let mut blocks: Vec<IRBlock> = Vec::new();
+        push_paragraph(&mut blocks, "제1조 목적".to_string());
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            IRBlock::Heading { level, text } => {
+                assert_eq!(*level, 3);
+                assert_eq!(text, "제1조 목적");
+            }
+            other => panic!("expected Heading, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn push_paragraph_promotes_bchk_to_h1() {
+        let mut blocks: Vec<IRBlock> = Vec::new();
+        push_paragraph(&mut blocks, "부칙".to_string());
+        assert!(matches!(
+            blocks[0],
+            IRBlock::Heading { level: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn push_paragraph_keeps_normal_paragraph() {
+        let mut blocks: Vec<IRBlock> = Vec::new();
+        push_paragraph(&mut blocks, "이것은 일반 문단이다.".to_string());
+        assert!(matches!(blocks[0], IRBlock::Paragraph { .. }));
+    }
+
+    // ── build_ir_blocks_from_cells ──
+
+    fn mk_cell(text: &str) -> (CellSpan, String) {
+        (CellSpan::default(), text.to_string())
+    }
+
+    #[test]
+    fn ir_table_basic_2x2_emits_irtable() {
+        let cells = vec![
+            mk_cell("A"),
+            mk_cell("B"),
+            mk_cell("1"),
+            mk_cell("2"),
+        ];
+        let blocks = build_ir_blocks_from_cells(2, 2, &cells);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            IRBlock::Table(t) => {
+                assert_eq!(t.rows, 2);
+                assert_eq!(t.cols, 2);
+                assert_eq!(t.cells[0][0].text, "A");
+                assert_eq!(t.cells[1][1].text, "2");
+            }
+            other => panic!("expected Table, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ir_table_1_row_collapses_to_heading() {
+        // Short content → ### heading
+        let cells = vec![mk_cell("임용예정인원"), mk_cell("1명")];
+        let blocks = build_ir_blocks_from_cells(1, 2, &cells);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            blocks[0],
+            IRBlock::Heading { level: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn ir_table_empty_returns_no_blocks() {
+        let blocks = build_ir_blocks_from_cells(0, 0, &[]);
+        assert!(blocks.is_empty());
+    }
+
+    // ── parse_section_records_formatted round-trip through IR ──
 
     #[test]
     fn test_image_format_detection() {

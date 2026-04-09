@@ -2,6 +2,7 @@
 
 mod hwp;
 mod hwpx;
+mod ir;
 mod pdf;
 mod utils;
 
