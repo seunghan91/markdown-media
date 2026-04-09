@@ -10,6 +10,7 @@ pub mod hwp;
 pub mod hwpx;
 pub mod pdf;
 pub mod docx;
+pub mod ir;
 pub mod renderer;
 pub mod optimizer;
 pub mod cache;
