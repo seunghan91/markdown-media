@@ -1,8 +1,11 @@
 //! HWPX parser implementation with table and character formatting support
 
+use crate::utils::bounded_io::{
+    read_limited, read_limited_to_string, MAX_HWPX_BINDATA, MAX_HWPX_XML,
+};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
 use zip::ZipArchive;
 
@@ -137,8 +140,7 @@ impl HwpxParser {
     /// Parse header.xml to extract character style definitions
     fn parse_header_styles(&mut self) -> io::Result<()> {
         if let Ok(mut file) = self.archive.by_name("Contents/header.xml") {
-            let mut content = String::new();
-            file.read_to_string(&mut content)?;
+            let content = read_limited_to_string(&mut file, MAX_HWPX_XML)?;
             self.char_styles = parse_char_properties(&content);
         }
         Ok(())
@@ -147,8 +149,7 @@ impl HwpxParser {
     /// Read version info
     fn read_version(&mut self) -> io::Result<String> {
         if let Ok(mut file) = self.archive.by_name("version.xml") {
-            let mut content = String::new();
-            file.read_to_string(&mut content)?;
+            let content = read_limited_to_string(&mut file, MAX_HWPX_XML)?;
             if let Some(start) = content.find("version=\"") {
                 let start = start + 9;
                 if let Some(end) = content[start..].find('"') {
@@ -162,9 +163,7 @@ impl HwpxParser {
     /// Read preview text (fast method)
     fn read_preview_text(&mut self) -> io::Result<String> {
         let mut file = self.archive.by_name("Preview/PrvText.txt")?;
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
-        Ok(content)
+        read_limited_to_string(&mut file, MAX_HWPX_XML)
     }
 
     /// Extract text and tables from all sections
@@ -177,8 +176,7 @@ impl HwpxParser {
             let section_name = format!("Contents/section{}.xml", section_idx);
             match self.archive.by_name(&section_name) {
                 Ok(mut file) => {
-                    let mut content = String::new();
-                    file.read_to_string(&mut content)?;
+                    let content = read_limited_to_string(&mut file, MAX_HWPX_XML)?;
 
                     let (text, tables) = parse_section_xml(&content, &self.char_styles);
                     sections.push(text);
@@ -225,9 +223,8 @@ impl HwpxParser {
         
         // First, parse the manifest to get image metadata
         if let Ok(mut file) = self.archive.by_name("Contents/content.hpf") {
-            let mut content = String::new();
-            file.read_to_string(&mut content)?;
-            
+            let content = read_limited_to_string(&mut file, MAX_HWPX_XML)?;
+
             // Parse manifest for image items
             // Format: <opf:item id="image1" href="BinData/image1.bmp" media-type="image/bmp" .../>
             let mut pos = 0;
@@ -256,8 +253,7 @@ impl HwpxParser {
         let mut result = Vec::new();
         for (id, path, media_type) in image_list {
             if let Ok(mut file) = self.archive.by_name(&path) {
-                let mut data = Vec::new();
-                file.read_to_end(&mut data)?;
+                let data = read_limited(&mut file, MAX_HWPX_BINDATA)?;
                 result.push(ImageInfo {
                     id,
                     path,

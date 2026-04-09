@@ -3,10 +3,11 @@
 //! Provides text extraction from PDF files with page-by-page support,
 //! image extraction, metadata parsing, encryption detection, and layout preservation.
 
+use crate::utils::bounded_io::{read_limited, MAX_PDF_FILE, MAX_PDF_STREAM};
+use flate2::read::ZlibDecoder;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
-use flate2::read::ZlibDecoder;
 use thiserror::Error;
 
 /// PDF-specific errors
@@ -215,12 +216,14 @@ pub struct PdfMetadata {
 }
 
 impl PdfParser {
-    /// Open a PDF file
+    /// Open a PDF file.
+    ///
+    /// File size is capped at `MAX_PDF_FILE` (512 MB) so a pathological
+    /// input cannot exhaust process memory before we even start parsing.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut file = File::open(&path)?;
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)?;
+        let data = read_limited(&mut file, MAX_PDF_FILE)?;
 
         // Validate PDF magic bytes
         if data.len() < 5 || &data[0..5] != b"%PDF-" {
@@ -403,10 +406,9 @@ impl PdfParser {
         let _ = std::fs::remove_file(&temp_input);
 
         if success {
-            // Read decrypted file
-            let mut decrypted_data = Vec::new();
+            // Read decrypted file (same file-size ceiling as PdfParser::open)
             let mut file = File::open(&temp_output)?;
-            file.read_to_end(&mut decrypted_data)?;
+            let decrypted_data = read_limited(&mut file, MAX_PDF_FILE)?;
 
             // Clean up output temp file
             let _ = std::fs::remove_file(&temp_output);
@@ -886,6 +888,36 @@ impl PdfParser {
             Err(_) => return texts,
         };
 
+        // Resolve page `/Resources` → `/Font` subdictionary so we can look up
+        // the `/ToUnicode` CMap for each Tf-selected font. Without this,
+        // CID-encoded Korean fonts come out as garbage (we were decoding
+        // 2-byte CIDs as UTF-8) and the table detector sees empty rows.
+        let font_cmaps: std::collections::HashMap<String, ToUnicodeCMap> =
+            build_page_font_cmaps(doc, page_id);
+        let mut current_font: Option<String> = None;
+
+        // Current transformation matrix (graphics state) tracked across the
+        // whole content stream. PDF uses a 3×3 affine stored as (a b c d e f):
+        //   [ a c e ]
+        //   [ b d f ]
+        //   [ 0 0 1 ]
+        // Text positioning outside the text block is controlled by `cm`,
+        // which LEFT-multiplies the CTM. Without this, Tm/Td operands look
+        // like they're all at origin because the page translation lives in
+        // the cm chain. `q` saves the full state; `Q` pops it.
+        let mut ctm_a = 1.0_f64;
+        let mut ctm_b = 0.0_f64;
+        let mut ctm_c = 0.0_f64;
+        let mut ctm_d = 1.0_f64;
+        let mut ctm_e = 0.0_f64;
+        let mut ctm_f = 0.0_f64;
+        let mut gs_stack: Vec<(f64, f64, f64, f64, f64, f64)> = Vec::new();
+
+        // Apply the CTM to a point to get its page-space coordinates.
+        let apply_ctm = |x: f64, y: f64,
+                         a: f64, b: f64, c: f64, d: f64, e: f64, f: f64|
+         -> (f64, f64) { (a * x + c * y + e, b * x + d * y + f) };
+
         // Text state: matrix-derived position + per-show offset from TJ arrays
         // and relative Td/TD/T* moves. We track the text line matrix origin
         // (x, y) and emit text at that origin — good enough for row/column
@@ -904,30 +936,57 @@ impl PdfParser {
             }
         };
 
-        // Decode a PDF string operand (literal or hex) to UTF-8 lossy.
-        // lopdf already unwraps the outer markers, so we just decode bytes.
-        let obj_to_text = |obj: &Object| -> Option<String> {
-            match obj {
-                Object::String(bytes, _) => {
-                    let s = String::from_utf8_lossy(bytes).to_string();
-                    Some(s)
-                }
-                Object::Array(arr) => {
-                    // TJ array: strings interleaved with kerning numbers
-                    let mut buf = String::new();
-                    for el in arr {
-                        if let Object::String(bytes, _) = el {
-                            buf.push_str(&String::from_utf8_lossy(bytes));
-                        }
-                    }
-                    if buf.is_empty() { None } else { Some(buf) }
-                }
-                _ => None,
-            }
+        // Helper: resolve current font's CMap (if any) and decode bytes.
+        // Kept as a tiny closure so all show ops go through the same path.
+        let decode_show = |obj: &Object, current_font: &Option<String>| -> Option<String> {
+            let bytes = collect_show_bytes(obj)?;
+            if bytes.is_empty() { return None; }
+            let cmap = current_font.as_ref().and_then(|n| font_cmaps.get(n));
+            let text = match cmap {
+                Some(c) => c.decode(&bytes),
+                None => String::from_utf8_lossy(&bytes).to_string(),
+            };
+            if text.trim().is_empty() { None } else { Some(text) }
         };
 
         for op in &content.operations {
             match op.operator.as_str() {
+                // ── Graphics state outside text blocks ──
+                "q" => {
+                    gs_stack.push((ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f));
+                }
+                "Q" => {
+                    if let Some((a, b, c, d, e, f)) = gs_stack.pop() {
+                        ctm_a = a; ctm_b = b; ctm_c = c;
+                        ctm_d = d; ctm_e = e; ctm_f = f;
+                    }
+                }
+                // cm a b c d e f — left-multiply the CTM.
+                //   CTM_new = [cm_matrix] × [CTM_old]
+                // In the (a b c d e f) row representation, the product of
+                //   M1 = (a1 b1 c1 d1 e1 f1) and M2 = (a2 b2 c2 d2 e2 f2)  is
+                //   (a1*a2 + b1*c2,
+                //    a1*b2 + b1*d2,
+                //    c1*a2 + d1*c2,
+                //    c1*b2 + d1*d2,
+                //    e1*a2 + f1*c2 + e2,
+                //    e1*b2 + f1*d2 + f2)
+                "cm" => {
+                    if op.operands.len() >= 6 {
+                        let v: Vec<f64> = op.operands.iter()
+                            .take(6)
+                            .map(|o| read_num(o).unwrap_or(0.0))
+                            .collect();
+                        let (a1, b1, c1, d1, e1, f1) = (v[0], v[1], v[2], v[3], v[4], v[5]);
+                        let (a2, b2, c2, d2, e2, f2) = (ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
+                        ctm_a = a1 * a2 + b1 * c2;
+                        ctm_b = a1 * b2 + b1 * d2;
+                        ctm_c = c1 * a2 + d1 * c2;
+                        ctm_d = c1 * b2 + d1 * d2;
+                        ctm_e = e1 * a2 + f1 * c2 + e2;
+                        ctm_f = e1 * b2 + f1 * d2 + f2;
+                    }
+                }
                 "BT" => {
                     in_text = true;
                     tx = 0.0;
@@ -935,6 +994,13 @@ impl PdfParser {
                 }
                 "ET" => {
                     in_text = false;
+                }
+                // Tf /F1 12 — select font (name, size). We only track the name;
+                // size isn't needed for row clustering.
+                "Tf" => {
+                    if let Some(Object::Name(name_bytes)) = op.operands.first() {
+                        current_font = Some(String::from_utf8_lossy(name_bytes).to_string());
+                    }
                 }
                 _ if !in_text => continue,
                 // Tm a b c d e f — absolute text matrix; position = (e, f)
@@ -986,56 +1052,32 @@ impl PdfParser {
                 }
                 // Tj (string) — show text at current position
                 "Tj" => {
-                    if let Some(t) = op.operands.first().and_then(obj_to_text) {
-                        if !t.trim().is_empty() {
-                            texts.push(PositionedText {
-                                text: t,
-                                x: tx,
-                                y: ty,
-                                page: 0,
-                            });
-                        }
+                    if let Some(t) = op.operands.first().and_then(|o| decode_show(o, &current_font)) {
+                        let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
                     }
                 }
                 // TJ [ array ] — show with kerning
                 "TJ" => {
-                    if let Some(t) = op.operands.first().and_then(obj_to_text) {
-                        if !t.trim().is_empty() {
-                            texts.push(PositionedText {
-                                text: t,
-                                x: tx,
-                                y: ty,
-                                page: 0,
-                            });
-                        }
+                    if let Some(t) = op.operands.first().and_then(|o| decode_show(o, &current_font)) {
+                        let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
                     }
                 }
                 // ' (string) — next line + show
                 "'" => {
                     ty -= leading;
-                    if let Some(t) = op.operands.first().and_then(obj_to_text) {
-                        if !t.trim().is_empty() {
-                            texts.push(PositionedText {
-                                text: t,
-                                x: tx,
-                                y: ty,
-                                page: 0,
-                            });
-                        }
+                    if let Some(t) = op.operands.first().and_then(|o| decode_show(o, &current_font)) {
+                        let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
                     }
                 }
                 // " aw ac (string) — next line + show with spacing overrides
                 "\"" => {
                     ty -= leading;
-                    if let Some(t) = op.operands.get(2).and_then(obj_to_text) {
-                        if !t.trim().is_empty() {
-                            texts.push(PositionedText {
-                                text: t,
-                                x: tx,
-                                y: ty,
-                                page: 0,
-                            });
-                        }
+                    if let Some(t) = op.operands.get(2).and_then(|o| decode_show(o, &current_font)) {
+                        let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
                     }
                 }
                 _ => {}
@@ -1136,12 +1178,11 @@ fn get_pdf_string(_doc: &lopdf::Document, dict: &lopdf::Dictionary, key: &[u8]) 
     }
 }
 
-/// Decompress FlateDecode (zlib) data
+/// Decompress FlateDecode (zlib) data with a hard output ceiling
+/// (`MAX_PDF_STREAM` = 128 MB). Guards against PDF decompression bombs.
 fn decompress_flate(data: &[u8]) -> io::Result<Vec<u8>> {
     let mut decoder = ZlibDecoder::new(data);
-    let mut decompressed = Vec::new();
-    decoder.read_to_end(&mut decompressed)?;
-    Ok(decompressed)
+    read_limited(&mut decoder, MAX_PDF_STREAM)
 }
 
 /// Extract numeric value from PDF object (handles both Integer and Real types)
@@ -1316,6 +1357,325 @@ fn decode_hex_string(hex: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).to_string())
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// ToUnicode CMap support
+// ──────────────────────────────────────────────────────────────────────────────
+//
+// Korean / CJK corporate PDFs almost always embed Type0 fonts with CIDFont
+// descendants, where Tj/TJ operand bytes are 2-byte CIDs (not UTF-8). The
+// font dict carries a `/ToUnicode` stream: a PostScript-like CMap that maps
+// CID byte sequences to Unicode codepoints. Without applying it, our text
+// extractor emits garbage for these PDFs and the table detector sees nothing.
+//
+// We only implement the subset of the CMap spec used by ~99% of real fonts:
+// `beginbfchar`/`endbfchar` and `beginbfrange`/`endbfrange`. Multi-char targets
+// (`<0041 0042>` on the RHS) are supported. `beginrearrangedrange` and PS-level
+// logic are not.
+
+/// Parsed ToUnicode CMap for one font.
+#[derive(Debug, Default, Clone)]
+pub struct ToUnicodeCMap {
+    /// Exact-match mappings: src byte sequence → UTF-8 string
+    bfchar: std::collections::HashMap<Vec<u8>, String>,
+    /// Range mappings: (start_bytes, end_bytes, base_codepoint).
+    /// CID X in [start, end] maps to base + (X - start) as a single char.
+    bfrange: Vec<(Vec<u8>, Vec<u8>, u32)>,
+    /// Range mappings with per-entry array: (start_bytes, Vec<target>).
+    /// Covers `<0000> <0002> [<0041> <0042> <0043>]` form.
+    bfrange_array: Vec<(Vec<u8>, Vec<String>)>,
+}
+
+impl ToUnicodeCMap {
+    /// Decode a byte sequence using this CMap. Tries the longest match first
+    /// (4-byte, then 2-byte, then 1-byte) to handle variable-width codes.
+    pub fn decode(&self, bytes: &[u8]) -> String {
+        let mut out = String::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            // Try 2-byte first (dominant CID width), then 1-byte fallback
+            let mut consumed = 0;
+            for width in [2usize, 1] {
+                if i + width > bytes.len() { continue; }
+                let seg = &bytes[i..i + width];
+                if let Some(s) = self.lookup(seg) {
+                    out.push_str(&s);
+                    consumed = width;
+                    break;
+                }
+            }
+            if consumed == 0 {
+                // Unknown CID — skip one byte to avoid infinite loop.
+                // We deliberately do NOT push the raw byte, because that
+                // would reintroduce garbage into the output.
+                i += 1;
+            } else {
+                i += consumed;
+            }
+        }
+        out
+    }
+
+    fn lookup(&self, seg: &[u8]) -> Option<String> {
+        if let Some(s) = self.bfchar.get(seg) {
+            return Some(s.clone());
+        }
+        let cid = bytes_to_cid(seg);
+        for (start, end, base) in &self.bfrange {
+            if seg.len() == start.len()
+                && seg >= start.as_slice()
+                && seg <= end.as_slice()
+            {
+                let offset = cid - bytes_to_cid(start);
+                if let Some(ch) = char::from_u32(base + offset) {
+                    return Some(ch.to_string());
+                }
+            }
+        }
+        for (start, arr) in &self.bfrange_array {
+            if seg.len() == start.len() && seg >= start.as_slice() {
+                let offset = (cid - bytes_to_cid(start)) as usize;
+                if offset < arr.len() {
+                    return Some(arr[offset].clone());
+                }
+            }
+        }
+        None
+    }
+}
+
+fn bytes_to_cid(bytes: &[u8]) -> u32 {
+    let mut v = 0u32;
+    for b in bytes {
+        v = (v << 8) | (*b as u32);
+    }
+    v
+}
+
+/// Decode a hex string like "0041" / "00 41" / "0041 0042" to bytes.
+fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
+    let cleaned: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if cleaned.len() % 2 != 0 || cleaned.is_empty() { return None; }
+    let mut out = Vec::with_capacity(cleaned.len() / 2);
+    for i in (0..cleaned.len()).step_by(2) {
+        out.push(u8::from_str_radix(&cleaned[i..i + 2], 16).ok()?);
+    }
+    Some(out)
+}
+
+/// Decode a hex string as a UTF-16BE sequence → UTF-8 string.
+/// PDF ToUnicode targets are always UTF-16BE per the spec.
+fn hex_to_utf16_string(s: &str) -> Option<String> {
+    let bytes = hex_to_bytes(s)?;
+    if bytes.is_empty() || bytes.len() % 2 != 0 { return None; }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| ((c[0] as u16) << 8) | (c[1] as u16))
+        .collect();
+    String::from_utf16(&units).ok()
+}
+
+/// Tokenize a CMap stream by stripping comments and splitting on whitespace,
+/// keeping `<...>` hex literals and `[...]` array brackets intact.
+fn tokenize_cmap(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '%' => {
+                // comment until newline
+                while let Some(&nc) = chars.peek() {
+                    chars.next();
+                    if nc == '\n' { break; }
+                }
+            }
+            '<' => {
+                let mut buf = String::from("<");
+                while let Some(&nc) = chars.peek() {
+                    chars.next();
+                    buf.push(nc);
+                    if nc == '>' { break; }
+                }
+                tokens.push(buf);
+            }
+            '[' => tokens.push("[".to_string()),
+            ']' => tokens.push("]".to_string()),
+            c if c.is_whitespace() => {}
+            c => {
+                let mut buf = String::from(c);
+                while let Some(&nc) = chars.peek() {
+                    if nc.is_whitespace() || nc == '<' || nc == '[' || nc == ']' { break; }
+                    chars.next();
+                    buf.push(nc);
+                }
+                tokens.push(buf);
+            }
+        }
+    }
+    tokens
+}
+
+/// Parse a CMap stream (`/ToUnicode` content) into a ToUnicodeCMap.
+pub fn parse_tounicode_cmap(stream_bytes: &[u8]) -> ToUnicodeCMap {
+    let text = String::from_utf8_lossy(stream_bytes);
+    let tokens = tokenize_cmap(&text);
+    let mut cmap = ToUnicodeCMap::default();
+
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "beginbfchar" => {
+                i += 1;
+                while i < tokens.len() && tokens[i] != "endbfchar" {
+                    // <src> <dst>
+                    if i + 1 < tokens.len()
+                        && tokens[i].starts_with('<')
+                        && tokens[i + 1].starts_with('<')
+                    {
+                        let src = tokens[i].trim_matches(|c| c == '<' || c == '>');
+                        let dst = tokens[i + 1].trim_matches(|c| c == '<' || c == '>');
+                        if let (Some(sb), Some(ds)) =
+                            (hex_to_bytes(src), hex_to_utf16_string(dst))
+                        {
+                            cmap.bfchar.insert(sb, ds);
+                        }
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            "beginbfrange" => {
+                i += 1;
+                while i < tokens.len() && tokens[i] != "endbfrange" {
+                    // <start> <end> <base>  OR  <start> <end> [ <t0> <t1> ... ]
+                    if i + 2 < tokens.len()
+                        && tokens[i].starts_with('<')
+                        && tokens[i + 1].starts_with('<')
+                    {
+                        let start_hex = tokens[i].trim_matches(|c| c == '<' || c == '>');
+                        let end_hex = tokens[i + 1].trim_matches(|c| c == '<' || c == '>');
+                        let start_bytes = hex_to_bytes(start_hex);
+                        let end_bytes = hex_to_bytes(end_hex);
+
+                        if tokens[i + 2] == "[" {
+                            // Array form
+                            let mut j = i + 3;
+                            let mut arr = Vec::new();
+                            while j < tokens.len() && tokens[j] != "]" {
+                                if tokens[j].starts_with('<') {
+                                    let h = tokens[j].trim_matches(|c| c == '<' || c == '>');
+                                    if let Some(s) = hex_to_utf16_string(h) {
+                                        arr.push(s);
+                                    } else {
+                                        arr.push(String::new());
+                                    }
+                                }
+                                j += 1;
+                            }
+                            if let Some(sb) = start_bytes {
+                                cmap.bfrange_array.push((sb, arr));
+                            }
+                            i = j + 1;
+                        } else if tokens[i + 2].starts_with('<') {
+                            // Base codepoint form
+                            let base_hex =
+                                tokens[i + 2].trim_matches(|c| c == '<' || c == '>');
+                            if let (Some(sb), Some(eb)) = (start_bytes, end_bytes) {
+                                // base_hex is UTF-16BE; grab the first code unit
+                                if let Some(base_bytes) = hex_to_bytes(base_hex) {
+                                    let base = bytes_to_cid(&base_bytes);
+                                    cmap.bfrange.push((sb, eb, base));
+                                }
+                            }
+                            i += 3;
+                        } else {
+                            i += 1;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            _ => { i += 1; }
+        }
+    }
+
+    cmap
+}
+
+/// Walk a page's fonts (including inherited from `/Parent` Pages nodes) and
+/// build a CMap for every font that carries a `/ToUnicode` stream. Fonts
+/// without ToUnicode are silently skipped — the caller falls back to UTF-8
+/// lossy decoding for those.
+fn build_page_font_cmaps(
+    doc: &lopdf::Document,
+    page_id: lopdf::ObjectId,
+) -> std::collections::HashMap<String, ToUnicodeCMap> {
+    let mut out = std::collections::HashMap::new();
+
+    // `get_page_fonts` already walks the Resources chain up through parent
+    // Pages nodes and resolves every font reference to its dict. Reinventing
+    // that walk (as the first attempt did) silently missed PDFs that put
+    // fonts on the parent Pages node instead of the individual Page dict.
+    let fonts = match doc.get_page_fonts(page_id) {
+        Ok(f) => f,
+        Err(_) => return out,
+    };
+
+    for (name_bytes, font_dict) in fonts.iter() {
+        let font_name = String::from_utf8_lossy(name_bytes).to_string();
+
+        // Resolve /ToUnicode — always a stream (direct or by reference)
+        let tu = match font_dict.get(b"ToUnicode") {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let stream = match tu {
+            lopdf::Object::Reference(id) => match doc.get_object(*id) {
+                Ok(o) => o,
+                Err(_) => continue,
+            },
+            o => o,
+        };
+        let stream = match stream.as_stream() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // `decompressed_content` handles FlateDecode etc.
+        let bytes = match stream.decompressed_content() {
+            Ok(b) => b,
+            Err(_) => stream.content.clone(),
+        };
+        let cmap = parse_tounicode_cmap(&bytes);
+        if !cmap.bfchar.is_empty()
+            || !cmap.bfrange.is_empty()
+            || !cmap.bfrange_array.is_empty()
+        {
+            out.insert(font_name, cmap);
+        }
+    }
+
+    out
+}
+
+/// Pull the raw byte payload out of a `Tj`/`TJ`/`'`/`"` operand.
+/// For TJ arrays, concatenates every string element (skipping kerning nums).
+fn collect_show_bytes(obj: &lopdf::Object) -> Option<Vec<u8>> {
+    match obj {
+        lopdf::Object::String(bytes, _) => Some(bytes.clone()),
+        lopdf::Object::Array(arr) => {
+            let mut out = Vec::new();
+            for el in arr {
+                if let lopdf::Object::String(bytes, _) = el {
+                    out.extend_from_slice(bytes);
+                }
+            }
+            if out.is_empty() { None } else { Some(out) }
+        }
+        _ => None,
+    }
+}
+
 /// Detect multiple table structures on a single page from positioned text.
 ///
 /// Phase-1 improvement over the old single-table heuristic:
@@ -1438,6 +1798,16 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
             None => continue,
         };
         let anchor_xs: Vec<f64> = anchor_row.iter().map(|t| t.x).collect();
+
+        // Horizontal spread sanity check: a legit table spans a meaningful
+        // fraction of the content area. Prose paragraphs with two tab-stops
+        // at the left margin can otherwise pass every other heuristic and
+        // fabricate dozens of "tables" out of narrative text (novels were
+        // the canonical failure case). Require ≥ 80pt spread across anchors.
+        let spread = anchor_xs.last().copied().unwrap_or(0.0) - anchor_xs[0];
+        if spread.abs() < 50.0 {
+            continue;
+        }
 
         // Dynamic X tolerance = 0.45 × min inter-column gap, clamped [10, 40]
         let min_col_spacing = anchor_xs
