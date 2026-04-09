@@ -1,3 +1,4 @@
+pub mod cfb_lenient;
 pub mod crypto;
 pub mod ole;
 pub mod parser;

@@ -1,3 +1,4 @@
+use crate::hwp::cfb_lenient::LenientCfb;
 use crate::utils::bounded_io::{
     decompress_raw_deflate_limited, read_limited, MAX_HWP_SECTION,
 };
@@ -83,31 +84,65 @@ impl HwpFlags {
     }
 }
 
+/// Storage backend for an opened HWP file.
+///
+/// We try the strict `cfb` crate first because it's battle-tested and
+/// correctly handles the common case. When strict validation rejects a
+/// file (damaged FAT, non-conformant dir entries, etc.), we fall back to
+/// [`LenientCfb`] which walks the structure directly with guards instead
+/// of hard errors. This fallback recovers the large fraction of real-world
+/// Korean government documents that strict parsers reject.
+enum OleBackend {
+    Standard(CompoundFile<File>),
+    Lenient(Box<LenientCfb>),
+}
+
 /// OLE 파일 구조를 분석하고 스트림을 추출합니다
 pub struct OleReader {
-    compound_file: CompoundFile<File>,
+    backend: OleBackend,
     flags: HwpFlags,
 }
 
 impl OleReader {
-    /// HWP 파일을 OLE 구조로 엽니다
+    /// HWP 파일을 OLE 구조로 엽니다.
+    ///
+    /// Standard CFB 파싱을 먼저 시도하고, 실패 시 lenient 폴백으로
+    /// 손상된 FAT/디렉토리를 가진 파일도 복구 시도한다.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let compound_file = CompoundFile::open(file)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        
-        let mut reader = OleReader { 
-            compound_file,
+        let path_ref = path.as_ref();
+
+        // Strict path first — the happy case.
+        let file = File::open(path_ref)?;
+        let strict_result = CompoundFile::open(file);
+
+        let backend = match strict_result {
+            Ok(cf) => OleBackend::Standard(cf),
+            Err(_strict_err) => {
+                // Reopen & slurp; LenientCfb owns the bytes.
+                let mut file = File::open(path_ref)?;
+                let data = read_limited(&mut file, MAX_HWP_SECTION)?;
+                let lenient = LenientCfb::parse(data).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("both strict and lenient CFB parse failed: {}", e),
+                    )
+                })?;
+                OleBackend::Lenient(Box::new(lenient))
+            }
+        };
+
+        let mut reader = OleReader {
+            backend,
             flags: HwpFlags::default(),
         };
-        
-        // Try to read flags from FileHeader
+
+        // Try to read flags from FileHeader (same stream name in both backends).
         if let Ok(header) = reader.read_stream("FileHeader") {
             if header.len() >= 40 {
                 reader.flags = HwpFlags::from_bytes(&header[36..40]);
             }
         }
-        
+
         Ok(reader)
     }
 
@@ -116,30 +151,47 @@ impl OleReader {
         &self.flags
     }
 
+    /// True when we fell back to the lenient parser — useful for logging
+    /// / metadata reporting.
+    pub fn is_lenient(&self) -> bool {
+        matches!(self.backend, OleBackend::Lenient(_))
+    }
+
     /// 모든 스트림 이름 목록을 가져옵니다
     pub fn list_streams(&self) -> Vec<String> {
-        self.compound_file
-            .walk()
-            .filter_map(|entry| {
-                if entry.is_stream() {
-                    Some(entry.path().to_string_lossy().to_string())
-                } else {
-                    None
-                }
-            })
-            .collect()
+        match &self.backend {
+            OleBackend::Standard(cf) => cf
+                .walk()
+                .filter_map(|entry| {
+                    if entry.is_stream() {
+                        Some(entry.path().to_string_lossy().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            OleBackend::Lenient(lcfb) => lcfb.stream_names(),
+        }
     }
 
     /// 특정 스트림의 내용을 읽습니다 (raw, uncompressed).
     /// Capped at `MAX_HWP_SECTION` so a malformed CFB with a gigantic stream
     /// cannot exhaust memory.
     pub fn read_stream(&mut self, stream_name: &str) -> io::Result<Vec<u8>> {
-        let mut stream = self
-            .compound_file
-            .open_stream(stream_name)
-            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
-
-        read_limited(&mut stream, MAX_HWP_SECTION)
+        match &mut self.backend {
+            OleBackend::Standard(cf) => {
+                let mut stream = cf
+                    .open_stream(stream_name)
+                    .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+                read_limited(&mut stream, MAX_HWP_SECTION)
+            }
+            OleBackend::Lenient(lcfb) => lcfb.find_stream(stream_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("stream not found (lenient): {}", stream_name),
+                )
+            }),
+        }
     }
 
     /// 압축된 스트림을 읽고 해제합니다
@@ -183,14 +235,29 @@ impl OleReader {
     /// ViewText 섹션 개수 (배포용 문서 전용). 일반 BodyText 개수와는
     /// 별도 카운트된다.
     pub fn view_section_count(&self) -> usize {
-        let mut count = 0;
-        for entry in self.compound_file.walk() {
-            let path = entry.path().to_string_lossy();
-            if path.starts_with("/ViewText/Section") && entry.is_stream() {
-                count += 1;
+        match &self.backend {
+            OleBackend::Standard(cf) => cf
+                .walk()
+                .filter(|entry| {
+                    entry.is_stream()
+                        && entry
+                            .path()
+                            .to_string_lossy()
+                            .starts_with("/ViewText/Section")
+                })
+                .count(),
+            OleBackend::Lenient(lcfb) => {
+                // Lenient parser stores stream names without the parent
+                // storage prefix. In distribution-locked files only one of
+                // {BodyText, ViewText} is present, so a flat "Section*"
+                // count is accurate when callers dispatch on
+                // `flags.distributed` as HwpParser::extract_text does.
+                lcfb.stream_names()
+                    .iter()
+                    .filter(|n| n.starts_with("Section"))
+                    .count()
             }
         }
-        count
     }
 
     /// BinData 스트림을 읽습니다 (이미지, OLE 객체 등)
@@ -205,17 +272,28 @@ impl OleReader {
 
     /// 모든 BinData 스트림 이름을 가져옵니다
     pub fn list_bin_data(&self) -> Vec<String> {
-        self.compound_file
-            .walk()
-            .filter_map(|entry| {
-                let path = entry.path().to_string_lossy().to_string();
-                if entry.is_stream() && path.starts_with("/BinData/") {
-                    Some(path.strip_prefix("/BinData/").unwrap_or(&path).to_string())
-                } else {
-                    None
-                }
-            })
-            .collect()
+        match &self.backend {
+            OleBackend::Standard(cf) => cf
+                .walk()
+                .filter_map(|entry| {
+                    let path = entry.path().to_string_lossy().to_string();
+                    if entry.is_stream() && path.starts_with("/BinData/") {
+                        Some(path.strip_prefix("/BinData/").unwrap_or(&path).to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            OleBackend::Lenient(lcfb) => {
+                // Lenient parser loses the parent-storage prefix. HWP BinData
+                // streams are conventionally named BIN0001.{ext} etc., so we
+                // use the name pattern as a heuristic filter.
+                lcfb.stream_names()
+                    .into_iter()
+                    .filter(|n| n.starts_with("BIN"))
+                    .collect()
+            }
+        }
     }
 
     /// Read the OLE2 SummaryInformation stream (`\u{0005}HwpSummaryInformation`).
@@ -226,16 +304,29 @@ impl OleReader {
         self.read_stream("\u{0005}HwpSummaryInformation")
     }
 
-    /// Summary section count
+    /// Summary section count (BodyText sections)
     pub fn section_count(&self) -> usize {
-        let mut count = 0;
-        for entry in self.compound_file.walk() {
-            let path = entry.path().to_string_lossy();
-            if path.starts_with("/BodyText/Section") && entry.is_stream() {
-                count += 1;
+        match &self.backend {
+            OleBackend::Standard(cf) => cf
+                .walk()
+                .filter(|entry| {
+                    entry.is_stream()
+                        && entry
+                            .path()
+                            .to_string_lossy()
+                            .starts_with("/BodyText/Section")
+                })
+                .count(),
+            OleBackend::Lenient(lcfb) => {
+                // Same caveat as view_section_count: HwpParser dispatches by
+                // the distribution flag so the flat Section count is used
+                // for whichever stream family is actually present.
+                lcfb.stream_names()
+                    .iter()
+                    .filter(|n| n.starts_with("Section"))
+                    .count()
             }
         }
-        count
     }
 }
 
