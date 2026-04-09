@@ -171,6 +171,28 @@ impl OleReader {
         self.read_compressed_stream(&stream_name)
     }
 
+    /// ViewText 섹션(배포용 문서의 암호화된 본문)을 raw 바이트로 읽습니다.
+    /// 복호화는 `crate::hwp::crypto::decrypt_view_text` 에서 수행하며,
+    /// 이 스트림 자체는 AES 복호화 이전의 원본이므로 압축 해제를 하지
+    /// 않고 그대로 돌려줍니다.
+    pub fn read_view_text_raw(&mut self, section: usize) -> io::Result<Vec<u8>> {
+        let stream_name = format!("ViewText/Section{}", section);
+        self.read_stream(&stream_name)
+    }
+
+    /// ViewText 섹션 개수 (배포용 문서 전용). 일반 BodyText 개수와는
+    /// 별도 카운트된다.
+    pub fn view_section_count(&self) -> usize {
+        let mut count = 0;
+        for entry in self.compound_file.walk() {
+            let path = entry.path().to_string_lossy();
+            if path.starts_with("/ViewText/Section") && entry.is_stream() {
+                count += 1;
+            }
+        }
+        count
+    }
+
     /// BinData 스트림을 읽습니다 (이미지, OLE 객체 등)
     pub fn read_bin_data(&mut self, name: &str) -> io::Result<Vec<u8>> {
         let stream_name = format!("BinData/{}", name);

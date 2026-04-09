@@ -65,22 +65,51 @@ impl HwpParser {
         }
     }
 
-    /// 텍스트를 추출합니다
+    /// 텍스트를 추출합니다.
+    ///
+    /// `FileHeader` 의 `distributed` 플래그가 켜져 있으면 배포용(열람 제한)
+    /// 문서로 간주하고, 일반 `BodyText/Section{N}` 대신 `ViewText/Section{N}`
+    /// 에서 raw 스트림을 읽어 `crate::hwp::crypto::decrypt_view_text` 로 복호화
+    /// 한 뒤 동일한 레코드 파서에 흘려보낸다. 복호화 실패 시 해당 섹션은
+    /// 경고만 남기고 스킵한다.
     pub fn extract_text(&mut self) -> io::Result<String> {
         // First, parse DocInfo to get character shapes
         if self.char_shapes.is_empty() {
             let _ = self.parse_doc_info();
         }
 
-        let mut all_text = Vec::new();
-        let section_count = self.ole_reader.section_count();
+        let flags = *self.ole_reader.flags();
+        let distributed = flags.distributed;
+        let compressed = flags.compressed;
+
+        let section_count = if distributed {
+            self.ole_reader.view_section_count()
+        } else {
+            self.ole_reader.section_count()
+        };
 
         if section_count == 0 {
-            return Ok("No BodyText sections found.".to_string());
+            return Ok(if distributed {
+                "No ViewText sections found (distribution-locked HWP).".to_string()
+            } else {
+                "No BodyText sections found.".to_string()
+            });
         }
 
+        let mut all_text = Vec::new();
+
         for section_num in 0..section_count {
-            match self.ole_reader.read_body_text(section_num) {
+            let section_data: io::Result<Vec<u8>> = if distributed {
+                self.ole_reader
+                    .read_view_text_raw(section_num)
+                    .and_then(|raw| {
+                        crate::hwp::crypto::decrypt_view_text(&raw, compressed)
+                    })
+            } else {
+                self.ole_reader.read_body_text(section_num)
+            };
+
+            match section_data {
                 Ok(data) => {
                     // Parse records from decompressed data with formatting
                     let section_text = self.parse_section_records_formatted(&data);
@@ -94,7 +123,12 @@ impl HwpParser {
                 }
                 Err(e) => {
                     // Log error but continue with other sections
-                    eprintln!("Warning: Could not read Section{}: {}", section_num, e);
+                    eprintln!(
+                        "Warning: Could not read {}Section{}: {}",
+                        if distributed { "View" } else { "Body" },
+                        section_num,
+                        e
+                    );
                 }
             }
         }
@@ -528,11 +562,22 @@ impl HwpParser {
         let version = parse_version(&header_data);
         let flags = self.ole_reader.flags();
 
+        // Distribution-locked HWPs store their body in ViewText/Section{N}
+        // instead of BodyText. Report whichever stream family exists so the
+        // section_count in metadata reflects reality.
+        let body_sections = self.ole_reader.section_count();
+        let view_sections = self.ole_reader.view_section_count();
+        let section_count = if body_sections > 0 {
+            body_sections
+        } else {
+            view_sections
+        };
+
         let mut meta = Metadata {
             version,
             compressed: flags.compressed,
             encrypted: flags.encrypted,
-            section_count: self.ole_reader.section_count(),
+            section_count,
             bin_data_count: self.ole_reader.list_bin_data().len(),
             ..Default::default()
         };

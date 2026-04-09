@@ -1,3 +1,4 @@
+pub mod crypto;
 pub mod ole;
 pub mod parser;
 pub mod record;
