@@ -855,114 +855,190 @@ impl PdfParser {
                 continue;
             }
 
-            // Detect tables from positioned text
-            if let Some(table) = detect_table_from_positions(&positioned_texts, page_num as usize) {
-                tables.push(table);
-            }
+            // Detect tables from positioned text (multiple tables per page)
+            tables.extend(detect_tables_from_positions(&positioned_texts, page_num as usize));
         }
 
         tables
     }
 
-    /// Extract text with position from a PDF page
+    /// Extract text with position from a PDF page.
+    ///
+    /// Uses lopdf's content-stream decoder to walk PDF text operators
+    /// properly — the prior implementation line-split the stream and only
+    /// matched `line == "BT"` / `line.ends_with(" Tm")`, which misses the
+    /// majority of real-world PDFs where multiple operators share a line.
+    /// That silent failure is what kept mdm's table detector from seeing
+    /// positioned text on most corporate reports.
     fn extract_positioned_text(&self, doc: &lopdf::Document, page_id: lopdf::ObjectId) -> Vec<PositionedText> {
+        use lopdf::content::Content;
+        use lopdf::Object;
+
         let mut texts = Vec::new();
 
-        // Get page content stream
-        let content = match doc.get_page_content(page_id) {
+        let content_bytes = match doc.get_page_content(page_id) {
             Ok(c) => c,
             Err(_) => return texts,
         };
 
-        // Decompress if needed
-        let content_str = match String::from_utf8(content.clone()) {
-            Ok(s) => s,
-            Err(_) => {
-                // Try to decompress
-                match decompress_flate(&content) {
-                    Ok(decompressed) => String::from_utf8_lossy(&decompressed).to_string(),
-                    Err(_) => return texts,
-                }
+        let content = match Content::decode(&content_bytes) {
+            Ok(c) => c,
+            Err(_) => return texts,
+        };
+
+        // Text state: matrix-derived position + per-show offset from TJ arrays
+        // and relative Td/TD/T* moves. We track the text line matrix origin
+        // (x, y) and emit text at that origin — good enough for row/column
+        // clustering, which is the only thing the table detector cares about.
+        let mut tx = 0.0_f64;
+        let mut ty = 0.0_f64;
+        // Leading set by TD / TL, used by T* and single-quote operator.
+        let mut leading = 0.0_f64;
+        let mut in_text = false;
+
+        let read_num = |obj: &Object| -> Option<f64> {
+            match obj {
+                Object::Integer(n) => Some(*n as f64),
+                Object::Real(n) => Some(*n as f64),
+                _ => None,
             }
         };
 
-        // Parse content stream for text operators
-        // This is a simplified parser for common text positioning patterns
-        let mut current_x = 0.0;
-        let mut current_y = 0.0;
-        let mut in_text_block = false;
-
-        for line in content_str.lines() {
-            let line = line.trim();
-
-            // Text block markers
-            if line == "BT" {
-                in_text_block = true;
-                continue;
+        // Decode a PDF string operand (literal or hex) to UTF-8 lossy.
+        // lopdf already unwraps the outer markers, so we just decode bytes.
+        let obj_to_text = |obj: &Object| -> Option<String> {
+            match obj {
+                Object::String(bytes, _) => {
+                    let s = String::from_utf8_lossy(bytes).to_string();
+                    Some(s)
+                }
+                Object::Array(arr) => {
+                    // TJ array: strings interleaved with kerning numbers
+                    let mut buf = String::new();
+                    for el in arr {
+                        if let Object::String(bytes, _) = el {
+                            buf.push_str(&String::from_utf8_lossy(bytes));
+                        }
+                    }
+                    if buf.is_empty() { None } else { Some(buf) }
+                }
+                _ => None,
             }
-            if line == "ET" {
-                in_text_block = false;
-                continue;
-            }
+        };
 
-            if !in_text_block {
-                continue;
-            }
-
-            // Text matrix (Tm) - sets position directly
-            if line.ends_with(" Tm") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 6 {
-                    if let (Ok(x), Ok(y)) = (
-                        parts[4].parse::<f64>(),
-                        parts[5].parse::<f64>(),
-                    ) {
-                        current_x = x;
-                        current_y = y;
+        for op in &content.operations {
+            match op.operator.as_str() {
+                "BT" => {
+                    in_text = true;
+                    tx = 0.0;
+                    ty = 0.0;
+                }
+                "ET" => {
+                    in_text = false;
+                }
+                _ if !in_text => continue,
+                // Tm a b c d e f — absolute text matrix; position = (e, f)
+                "Tm" => {
+                    if op.operands.len() >= 6 {
+                        if let (Some(e), Some(f)) = (
+                            read_num(&op.operands[4]),
+                            read_num(&op.operands[5]),
+                        ) {
+                            tx = e;
+                            ty = f;
+                        }
                     }
                 }
-            }
-
-            // Text positioning (Td) - relative move
-            if line.ends_with(" Td") || line.ends_with(" TD") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let (Ok(dx), Ok(dy)) = (
-                        parts[0].parse::<f64>(),
-                        parts[1].parse::<f64>(),
-                    ) {
-                        current_x += dx;
-                        current_y += dy;
+                // Td tx ty — relative move
+                "Td" => {
+                    if op.operands.len() >= 2 {
+                        if let (Some(dx), Some(dy)) = (
+                            read_num(&op.operands[0]),
+                            read_num(&op.operands[1]),
+                        ) {
+                            tx += dx;
+                            ty += dy;
+                        }
                     }
                 }
-            }
-
-            // Show text (Tj) - simple string
-            if line.ends_with(" Tj") {
-                if let Some(text) = extract_pdf_string(line) {
-                    if !text.trim().is_empty() {
-                        texts.push(PositionedText {
-                            text,
-                            x: current_x,
-                            y: current_y,
-                            page: 0, // Will be set by caller
-                        });
+                // TD tx ty — relative move + sets leading to -ty
+                "TD" => {
+                    if op.operands.len() >= 2 {
+                        if let (Some(dx), Some(dy)) = (
+                            read_num(&op.operands[0]),
+                            read_num(&op.operands[1]),
+                        ) {
+                            tx += dx;
+                            ty += dy;
+                            leading = -dy;
+                        }
                     }
                 }
-            }
-
-            // Show text array (TJ)
-            if line.ends_with(" TJ") {
-                if let Some(text) = extract_pdf_text_array(line) {
-                    if !text.trim().is_empty() {
-                        texts.push(PositionedText {
-                            text,
-                            x: current_x,
-                            y: current_y,
-                            page: 0,
-                        });
+                // TL leading — set leading
+                "TL" => {
+                    if let Some(l) = op.operands.first().and_then(read_num) {
+                        leading = l;
                     }
                 }
+                // T* — move to next line (uses leading)
+                "T*" => {
+                    ty -= leading;
+                }
+                // Tj (string) — show text at current position
+                "Tj" => {
+                    if let Some(t) = op.operands.first().and_then(obj_to_text) {
+                        if !t.trim().is_empty() {
+                            texts.push(PositionedText {
+                                text: t,
+                                x: tx,
+                                y: ty,
+                                page: 0,
+                            });
+                        }
+                    }
+                }
+                // TJ [ array ] — show with kerning
+                "TJ" => {
+                    if let Some(t) = op.operands.first().and_then(obj_to_text) {
+                        if !t.trim().is_empty() {
+                            texts.push(PositionedText {
+                                text: t,
+                                x: tx,
+                                y: ty,
+                                page: 0,
+                            });
+                        }
+                    }
+                }
+                // ' (string) — next line + show
+                "'" => {
+                    ty -= leading;
+                    if let Some(t) = op.operands.first().and_then(obj_to_text) {
+                        if !t.trim().is_empty() {
+                            texts.push(PositionedText {
+                                text: t,
+                                x: tx,
+                                y: ty,
+                                page: 0,
+                            });
+                        }
+                    }
+                }
+                // " aw ac (string) — next line + show with spacing overrides
+                "\"" => {
+                    ty -= leading;
+                    if let Some(t) = op.operands.get(2).and_then(obj_to_text) {
+                        if !t.trim().is_empty() {
+                            texts.push(PositionedText {
+                                text: t,
+                                x: tx,
+                                y: ty,
+                                page: 0,
+                            });
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1240,16 +1316,25 @@ fn decode_hex_string(hex: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).to_string())
 }
 
-/// Detect table structure from positioned text elements
-fn detect_table_from_positions(texts: &[PositionedText], page: usize) -> Option<PdfTable> {
+/// Detect multiple table structures on a single page from positioned text.
+///
+/// Phase-1 improvement over the old single-table heuristic:
+///   1. Segments the page into contiguous row regions by Y-gap (median × 2.5)
+///      so a page with 3 stacked tables is no longer forced into one group.
+///   2. Picks each region's "mode column count" from the row length distribution
+///      and projects every row onto the mode row's X anchors — tolerates merged
+///      cells and short rows instead of filter-dropping them.
+///   3. Derives X tolerance dynamically from the minimum column spacing of the
+///      anchor row instead of a hard-coded 20pt (robust across font sizes).
+///   4. Accepts any region with ≥2 rows × ≥2 mode columns — no 50%-alignment gate.
+fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<PdfTable> {
     if texts.len() < 4 {
-        return None; // Need at least 2x2 cells
+        return vec![]; // Need at least 2x2 cells
     }
 
-    // Group texts by Y position (rows) with tolerance
+    // ── Step 1: group texts into rows by Y proximity ──────────────────────
     const Y_TOLERANCE: f64 = 5.0;
     let mut rows: Vec<Vec<&PositionedText>> = Vec::new();
-
     for text in texts {
         let mut found_row = false;
         for row in &mut rows {
@@ -1266,67 +1351,165 @@ fn detect_table_from_positions(texts: &[PositionedText], page: usize) -> Option<
         }
     }
 
-    // Sort rows by Y position (descending for PDF coordinate system)
+    // Sort rows top→bottom (PDF Y axis grows upward)
     rows.sort_by(|a, b| {
         let y_a = a.first().map(|t| t.y).unwrap_or(0.0);
         let y_b = b.first().map(|t| t.y).unwrap_or(0.0);
         y_b.partial_cmp(&y_a).unwrap_or(std::cmp::Ordering::Equal)
     });
-
-    // Sort each row by X position
     for row in &mut rows {
         row.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     }
 
-    // Check if we have consistent column structure (table heuristic)
-
-    // Need at least 2 rows with 2+ columns
-    let valid_rows: Vec<&Vec<&PositionedText>> = rows.iter()
-        .filter(|r| r.len() >= 2)
-        .collect();
-
-    if valid_rows.len() < 2 {
-        return None;
+    if rows.len() < 2 {
+        return vec![];
     }
 
-    // Check column alignment (within tolerance)
-    const X_TOLERANCE: f64 = 20.0;
-    let first_row_x: Vec<f64> = valid_rows[0].iter().map(|t| t.x).collect();
+    // ── Step 2: segment rows into contiguous regions by Y-gap ─────────────
+    let gaps: Vec<f64> = rows
+        .windows(2)
+        .map(|w| {
+            let y0 = w[0].first().map(|t| t.y).unwrap_or(0.0);
+            let y1 = w[1].first().map(|t| t.y).unwrap_or(0.0);
+            (y0 - y1).abs()
+        })
+        .collect();
 
-    let mut aligned_count = 0;
-    for row in &valid_rows[1..] {
-        let row_x: Vec<f64> = row.iter().map(|t| t.x).collect();
-        if row_x.len() == first_row_x.len() {
-            let is_aligned = row_x.iter()
-                .zip(first_row_x.iter())
-                .all(|(x1, x2)| (x1 - x2).abs() < X_TOLERANCE);
-            if is_aligned {
-                aligned_count += 1;
+    let median_gap = {
+        let mut g = gaps.clone();
+        g.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if g.is_empty() { Y_TOLERANCE } else { g[g.len() / 2] }
+    };
+    let gap_threshold = (median_gap * 2.5_f64).max(15.0);
+
+    let mut segments: Vec<Vec<&Vec<&PositionedText>>> = Vec::new();
+    let mut current: Vec<&Vec<&PositionedText>> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 && gaps[i - 1] > gap_threshold {
+            if current.len() >= 2 {
+                segments.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
             }
         }
+        current.push(row);
+    }
+    if current.len() >= 2 {
+        segments.push(current);
     }
 
-    // At least 50% of rows should be aligned
-    if aligned_count * 2 < valid_rows.len() - 1 {
-        return None;
+    // ── Step 3: detect a table per segment ────────────────────────────────
+    let mut out = Vec::new();
+    for seg in &segments {
+        // Need at least 2 rows carrying 2+ texts
+        let multi_col_rows: Vec<&&Vec<&PositionedText>> =
+            seg.iter().filter(|r| r.len() >= 2).collect();
+        if multi_col_rows.len() < 2 {
+            continue;
+        }
+
+        // Mode column count (dominant row width)
+        let mut len_counts: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        for r in &multi_col_rows {
+            *len_counts.entry(r.len()).or_insert(0) += 1;
+        }
+        let mode_cols = len_counts
+            .iter()
+            .max_by_key(|(len, count)| (*count, *len))
+            .map(|(len, _)| *len)
+            .unwrap_or(0);
+        if mode_cols < 2 {
+            continue;
+        }
+
+        // Require mode to represent a non-trivial share of the segment.
+        // Without this gate, text-heavy legal / guide PDFs fabricate dozens
+        // of "tables" out of numbered-list alignment. Floor at 3 hits OR
+        // 25% of multi-column rows (whichever is stricter in sparse segments).
+        let mode_hits = *len_counts.get(&mode_cols).unwrap_or(&0);
+        if mode_hits < 3 || mode_hits * 5 < multi_col_rows.len() {
+            continue;
+        }
+
+        // Anchor column X positions from the first mode-width row
+        let anchor_row = match multi_col_rows.iter().find(|r| r.len() == mode_cols) {
+            Some(r) => *r,
+            None => continue,
+        };
+        let anchor_xs: Vec<f64> = anchor_row.iter().map(|t| t.x).collect();
+
+        // Dynamic X tolerance = 0.45 × min inter-column gap, clamped [10, 40]
+        let min_col_spacing = anchor_xs
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(f64::INFINITY, f64::min);
+        let x_tol = if min_col_spacing.is_finite() {
+            (min_col_spacing * 0.45).clamp(10.0, 40.0)
+        } else {
+            20.0
+        };
+
+        // Project every row onto anchor columns (merged cells absorbed into
+        // the nearest anchor)
+        let mut table_rows: Vec<Vec<String>> = Vec::new();
+        for r in seg.iter() {
+            let mut cells: Vec<String> = vec![String::new(); mode_cols];
+            for t in r.iter() {
+                let mut best = 0usize;
+                let mut best_d = f64::INFINITY;
+                for (i, ax) in anchor_xs.iter().enumerate() {
+                    let d = (t.x - ax).abs();
+                    if d < best_d {
+                        best_d = d;
+                        best = i;
+                    }
+                }
+                // Accept text if it snaps to an anchor within 2× tolerance
+                if best_d <= x_tol * 2.0 {
+                    if !cells[best].is_empty() {
+                        cells[best].push(' ');
+                    }
+                    cells[best].push_str(&t.text);
+                }
+            }
+            // Keep row only if ≥2 non-empty cells (filter single-line headers/noise)
+            if cells.iter().filter(|c| !c.is_empty()).count() >= 2 {
+                table_rows.push(cells);
+            }
+        }
+
+        // Require at least 3 projected rows — a 2-row "table" is almost
+        // always a header + single line of body text that the heuristic
+        // grabbed from a bullet list.
+        if table_rows.len() < 3 {
+            continue;
+        }
+
+        // Prose-vs-table discriminator: real table cells are typically short
+        // (labels, numbers, keywords). If the median non-empty cell is long,
+        // we're almost certainly looking at paragraph text that happens to
+        // align on column boundaries (common in legal/guide PDFs).
+        let mut cell_lens: Vec<usize> = table_rows
+            .iter()
+            .flat_map(|r| r.iter().filter(|c| !c.is_empty()).map(|c| c.chars().count()))
+            .collect();
+        if cell_lens.len() >= 4 {
+            cell_lens.sort_unstable();
+            let median = cell_lens[cell_lens.len() / 2];
+            if median > 100 {
+                continue;
+            }
+        }
+
+        out.push(PdfTable {
+            page,
+            rows: table_rows,
+            column_count: mode_cols,
+        });
     }
 
-    // Build table structure
-    let column_count = valid_rows[0].len();
-    let table_rows: Vec<Vec<String>> = valid_rows.iter()
-        .filter(|r| r.len() == column_count)
-        .map(|r| r.iter().map(|t| t.text.clone()).collect())
-        .collect();
-
-    if table_rows.len() < 2 {
-        return None;
-    }
-
-    Some(PdfTable {
-        page,
-        rows: table_rows,
-        column_count,
-    })
+    out
 }
 
 impl ImageFormat {
