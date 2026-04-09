@@ -595,8 +595,45 @@ impl PdfParser {
         (default_width, default_height)
     }
 
-    /// Group positioned text into logical blocks
-    fn group_text_into_blocks(&self, texts: &[PositionedText], _page_height: f64) -> Vec<TextBlock> {
+    /// Group positioned text into logical blocks.
+    ///
+    /// Multi-column handling: before the normal Y-descending sort, we probe
+    /// for a 2-column layout via [`detect_column_split`]. When a column
+    /// gutter is detected the items are partitioned into left / right
+    /// columns and each column is walked top-to-bottom independently,
+    /// then concatenated (left first, then right). This is the kordoc v2.1
+    /// fix for 2-column academic papers and reports where the old
+    /// "sort by Y then X" ordering produced interleaved junk like
+    /// `L1 R1 L2 R2 L3 R3 …`.
+    fn group_text_into_blocks(&self, texts: &[PositionedText], page_height: f64) -> Vec<TextBlock> {
+        if texts.is_empty() {
+            return Vec::new();
+        }
+
+        // 2-column layout probe. When a split is detected, process each
+        // column independently and concatenate — otherwise fall through to
+        // the single-column walker below.
+        if let Some(split_x) = detect_column_split(texts) {
+            let (left, right): (Vec<PositionedText>, Vec<PositionedText>) = texts
+                .iter()
+                .cloned()
+                .partition(|t| approx_right_edge(t) / 2.0 + t.x / 2.0 < split_x);
+            let mut blocks = self.group_text_single_column(&left, page_height);
+            blocks.extend(self.group_text_single_column(&right, page_height));
+            return blocks;
+        }
+
+        self.group_text_single_column(texts, page_height)
+    }
+
+    /// Single-column text-to-block walker. Sort by Y descending (PDF
+    /// coordinates), then X ascending, coalesce lines within Y_TOLERANCE,
+    /// and emit one `TextBlock` per line.
+    fn group_text_single_column(
+        &self,
+        texts: &[PositionedText],
+        _page_height: f64,
+    ) -> Vec<TextBlock> {
         let mut blocks = Vec::new();
 
         if texts.is_empty() {
@@ -1687,6 +1724,93 @@ fn collect_show_bytes(obj: &lopdf::Object) -> Option<Vec<u8>> {
 ///   3. Derives X tolerance dynamically from the minimum column spacing of the
 ///      anchor row instead of a hard-coded 20pt (robust across font sizes).
 ///   4. Accepts any region with ≥2 rows × ≥2 mode columns — no 50%-alignment gate.
+
+/// Approximate right-edge X coordinate of a positioned text run.
+///
+/// `PositionedText` only stores the start `x`, not the run width, so we
+/// estimate the right edge as `x + char_count * 5pt`. The 5pt/char figure
+/// is a reasonable default for 10pt body fonts and is only used for the
+/// multi-column layout heuristic — false positives here just mean we
+/// process a single-column page as single-column.
+fn approx_right_edge(t: &PositionedText) -> f64 {
+    const PT_PER_CHAR: f64 = 5.0;
+    t.x + (t.text.chars().count() as f64) * PT_PER_CHAR
+}
+
+/// Detect a 2-column page layout and return the split X coordinate if
+/// present. Ported from kordoc pdf/parser.ts:676-711 `hasMultiColumnLayout`
+/// but returns the split itself so callers can partition text.
+///
+/// Heuristics:
+/// 1. At least 30 text runs (pages with less are headers/covers)
+/// 2. Page content width ≥ 200 pt
+/// 3. Biggest X-gap between consecutive runs (sorted by start X) ≥ 20 pt
+/// 4. Gap center lies in the 35%–65% band of the page width
+/// 5. Both sides have ≥ 15 runs
+/// 6. Item-count ratio min/max ≥ 0.35 (balanced columns)
+///
+/// Returns `None` when any check fails.
+pub(crate) fn detect_column_split(texts: &[PositionedText]) -> Option<f64> {
+    if texts.len() < 30 {
+        return None;
+    }
+
+    // Sort by start X so we can scan consecutive gaps.
+    let mut sorted: Vec<&PositionedText> = texts.iter().collect();
+    sorted.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+
+    let min_x = sorted[0].x;
+    let max_x = sorted
+        .iter()
+        .map(|t| approx_right_edge(t))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let page_width = max_x - min_x;
+    if page_width < 200.0 {
+        return None;
+    }
+
+    // Biggest X gap = largest (next.x) - (prev.x + prev_width_approx)
+    let mut best_gap = 0.0_f64;
+    let mut best_split = 0.0_f64;
+    for j in 1..sorted.len() {
+        let prev_right = approx_right_edge(sorted[j - 1]);
+        let gap = sorted[j].x - prev_right;
+        if gap > best_gap {
+            best_gap = gap;
+            best_split = (prev_right + sorted[j].x) / 2.0;
+        }
+    }
+    if best_gap < 20.0 {
+        return None;
+    }
+
+    // Gap center must be near page center (35–65%).
+    let split_ratio = (best_split - min_x) / page_width;
+    if !(0.35..=0.65).contains(&split_ratio) {
+        return None;
+    }
+
+    // Both sides need enough items and balanced counts.
+    let left_count = texts
+        .iter()
+        .filter(|t| (t.x + approx_right_edge(t)) / 2.0 < best_split)
+        .count();
+    let right_count = texts.len() - left_count;
+    if left_count < 15 || right_count < 15 {
+        return None;
+    }
+    let (lo, hi) = if left_count < right_count {
+        (left_count, right_count)
+    } else {
+        (right_count, left_count)
+    };
+    if (lo as f64) / (hi as f64) < 0.35 {
+        return None;
+    }
+
+    Some(best_split)
+}
+
 fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<PdfTable> {
     if texts.len() < 4 {
         return vec![]; // Need at least 2x2 cells
@@ -2228,6 +2352,76 @@ mod tests {
 
         let tables = detect_tables_from_positions(&texts, 1);
         assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn detects_two_column_layout() {
+        // Synthesize a 2-column page: 20 lines of ~short text on the left
+        // around x=50, another 20 lines on the right around x=320.
+        let mut texts = Vec::new();
+        for i in 0..20 {
+            let y = 700.0 - (i as f64) * 15.0;
+            texts.push(PositionedText {
+                text: "LeftCol".to_string(), // 7 chars * 5pt = 35pt wide approx
+                x: 50.0,
+                y,
+                page: 1,
+            });
+            texts.push(PositionedText {
+                text: "RightCol".to_string(),
+                x: 320.0,
+                y,
+                page: 1,
+            });
+        }
+
+        let split = detect_column_split(&texts).expect("expected column split");
+        // Split should land between ~85 (left right edge) and 320 (right start),
+        // i.e. around 200 — well within the 35-65% band of a 612pt page.
+        assert!(
+            (150.0..250.0).contains(&split),
+            "split {} outside expected range",
+            split
+        );
+    }
+
+    #[test]
+    fn single_column_returns_no_split() {
+        // One dense left column, nothing on the right.
+        let mut texts = Vec::new();
+        for i in 0..40 {
+            texts.push(PositionedText {
+                text: "Only column text".to_string(),
+                x: 72.0,
+                y: 700.0 - (i as f64) * 14.0,
+                page: 1,
+            });
+        }
+        assert!(detect_column_split(&texts).is_none());
+    }
+
+    #[test]
+    fn too_few_items_returns_no_split() {
+        // Below the 30-item floor — never a column candidate.
+        let texts: Vec<PositionedText> = (0..10)
+            .flat_map(|i| {
+                vec![
+                    PositionedText {
+                        text: "L".to_string(),
+                        x: 50.0,
+                        y: 700.0 - (i as f64) * 15.0,
+                        page: 1,
+                    },
+                    PositionedText {
+                        text: "R".to_string(),
+                        x: 320.0,
+                        y: 700.0 - (i as f64) * 15.0,
+                        page: 1,
+                    },
+                ]
+            })
+            .collect();
+        assert!(detect_column_split(&texts).is_none());
     }
 
     #[test]
