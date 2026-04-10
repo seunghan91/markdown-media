@@ -127,7 +127,13 @@ impl AnnexParser {
         use crate::hwp::HwpParser;
 
         let mut parser = HwpParser::open(path).map_err(|e| e.to_string())?;
-        let text = parser.extract_text().map_err(|e| e.to_string())?;
+        let raw_text = parser.extract_text().map_err(|e| e.to_string())?;
+        // Strip markdown formatting markers for pattern matching.
+        // extract_text() now applies bold/italic/underline markers which would
+        // break legal regex patterns like ^제(\d+)편 when text becomes **제1편 총칙**.
+        let text = raw_text
+            .replace("***", "").replace("**", "").replace("~~", "")
+            .replace("<u>", "").replace("</u>", "");
         let tables = parser.extract_tables().map_err(|e| e.to_string())?;
 
         let regions = Self::detect_regions(&text);
