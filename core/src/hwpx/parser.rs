@@ -375,7 +375,7 @@ fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (Strin
             if let Some(tbl_end) = find_matching_close(xml, scan_from, "<hp:tbl ", "</hp:tbl>") {
                 let table_xml = &xml[tbl_pos..tbl_end + 9];
 
-                if let Some(table) = parse_table(table_xml) {
+                if let Some(table) = parse_table(table_xml, char_styles) {
                     result.push_str("\n\n");
                     result.push_str(&table.to_markdown());
                     result.push('\n');
@@ -409,7 +409,7 @@ fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (Strin
 /// Without addr-based placement, mdm's HWPX parser previously rendered merged
 /// header tables with mis-aligned columns and dropped rows where the cell
 /// count didn't match `rowCnt × colCnt`.
-fn parse_table(xml: &str) -> Option<Table> {
+fn parse_table(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> Option<Table> {
     let rows: usize = extract_attr(xml, "rowCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
     let cols: usize = extract_attr(xml, "colCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
     if rows == 0 || cols == 0 {
@@ -476,7 +476,7 @@ fn parse_table(xml: &str) -> Option<Table> {
             None => (1, 1),
         };
 
-        let text = extract_cell_text(cell_xml);
+        let text = extract_cell_text(cell_xml, char_styles);
         collected.push(CellMeta {
             col_addr,
             row_addr,
@@ -572,13 +572,16 @@ fn parse_table(xml: &str) -> Option<Table> {
     })
 }
 
-/// Extract cell text from cell XML.
+/// Extract cell text from cell XML, applying bold/italic formatting from `<hp:run>` attributes.
 ///
 /// Walks all `<hp:t>` runs (with or without attrs) AND any nested `<hp:drawText>`
 /// (textbox) content. Multiple `<hp:p>` paragraphs inside a cell are joined
 /// with `\n` (preserved as `<br>` by the table renderer). Text is decoded for
 /// XML entities (`&amp;` → `&`, `&lt;` → `<`, etc).
-fn extract_cell_text(xml: &str) -> String {
+///
+/// For each `<hp:run>`, reads the `charPrIDRef` attribute and checks if the
+/// referenced style has bold/italic set. Applies `**` / `*` wrapping inline.
+fn extract_cell_text(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> String {
     // Collect text segments per <hp:p> paragraph
     let mut paragraphs: Vec<String> = Vec::new();
     let mut p_pos = 0;
@@ -599,7 +602,7 @@ fn extract_cell_text(xml: &str) -> String {
                     None => break,
                 };
                 let p_xml = &xml[after_open..p_end];
-                let p_text = extract_runs_text(p_xml);
+                let p_text = extract_runs_text_with_formatting(p_xml, char_styles);
                 if !p_text.trim().is_empty() {
                     paragraphs.push(p_text);
                 }
@@ -611,13 +614,83 @@ fn extract_cell_text(xml: &str) -> String {
 
     // Fallback: if no <hp:p> wrappers, just walk runs at the cell level
     if paragraphs.is_empty() {
-        let direct = extract_runs_text(xml);
+        let direct = extract_runs_text_with_formatting(xml, char_styles);
         if !direct.trim().is_empty() {
             paragraphs.push(direct);
         }
     }
 
     paragraphs.join("\n").trim().to_string()
+}
+
+/// Like `extract_runs_text` but reads `<hp:run>` wrapper attributes for formatting.
+/// Looks up `charPrIDRef` in `char_styles` to apply bold/italic wrapping.
+fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> String {
+    let mut out = String::new();
+    let mut pos = 0;
+
+    while pos < xml.len() {
+        // Find next <hp:run>
+        let run_start = xml[pos..].find("<hp:run").map(|i| pos + i);
+        let Some(run_abs) = run_start else { break; };
+
+        // Find end of opening tag
+        let after_open = match xml[run_abs..].find('>') {
+            Some(i) => run_abs + i + 1,
+            None => break,
+        };
+
+        // Self-closing <hp:run .../> — skip
+        if xml[run_abs..after_open].ends_with('/') {
+            pos = after_open;
+            continue;
+        }
+
+        let open_tag = &xml[run_abs..after_open];
+
+        // Lookup charPrIDRef → char_styles for bold/italic
+        let style = extract_attr(open_tag, "charPrIDRef")
+            .and_then(|id_str| id_str.parse::<u32>().ok())
+            .and_then(|id| char_styles.get(&id));
+
+        let run_end = match xml[after_open..].find("</hp:run>") {
+            Some(i) => after_open + i,
+            None => break,
+        };
+        let run_content = &xml[after_open..run_end];
+
+        // Extract text from <hp:t> inside this run
+        let text = extract_runs_text(run_content);
+        if !text.is_empty() {
+            match style {
+                Some(s) if s.bold && s.italic => {
+                    out.push_str("***");
+                    out.push_str(&text);
+                    out.push_str("***");
+                }
+                Some(s) if s.bold => {
+                    out.push_str("**");
+                    out.push_str(&text);
+                    out.push_str("**");
+                }
+                Some(s) if s.italic => {
+                    out.push_str("*");
+                    out.push_str(&text);
+                    out.push_str("*");
+                }
+                _ => out.push_str(&text),
+            }
+        }
+
+        pos = run_end + 9; // skip "</hp:run>"
+    }
+
+    // If no <hp:run> found, fall back to plain extraction
+    if out.is_empty() {
+        return extract_runs_text(xml);
+    }
+
+    out
 }
 
 /// Walk every `<hp:t>` run inside a fragment, decode XML entities, also pick up

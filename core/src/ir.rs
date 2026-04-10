@@ -237,7 +237,7 @@ pub fn blocks_to_markdown(blocks: &[IRBlock]) -> String {
                 }
             }
             IRBlock::Image { alt } => {
-                out.push_str(&format!("[이미지: {}]", alt));
+                out.push_str(&format!("![{}](assets/{})", alt, alt));
             }
             IRBlock::Separator => {
                 out.push_str("---");

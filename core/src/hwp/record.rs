@@ -9,17 +9,19 @@ use std::collections::HashMap;
 use std::io::{self, Read, Cursor};
 
 /// HWPTAG constants - Document Info section
-pub const HWPTAG_DOCUMENT_PROPERTIES: u16 = 0x00;
-pub const HWPTAG_ID_MAPPINGS: u16 = 0x01;
-pub const HWPTAG_BIN_DATA: u16 = 0x02;
-pub const HWPTAG_FACE_NAME: u16 = 0x03;
-pub const HWPTAG_BORDER_FILL: u16 = 0x04;
-pub const HWPTAG_CHAR_SHAPE: u16 = 0x05;
-pub const HWPTAG_TAB_DEF: u16 = 0x06;
-pub const HWPTAG_NUMBERING: u16 = 0x07;
-pub const HWPTAG_BULLET: u16 = 0x08;
-pub const HWPTAG_PARA_SHAPE: u16 = 0x09;
-pub const HWPTAG_STYLE: u16 = 0x0A;
+/// HWP 5.0 tag IDs start at HWPTAG_BEGIN = 0x10 (16)
+pub const HWPTAG_BEGIN: u16 = 0x10;
+pub const HWPTAG_DOCUMENT_PROPERTIES: u16 = HWPTAG_BEGIN + 0; // 16
+pub const HWPTAG_ID_MAPPINGS: u16 = HWPTAG_BEGIN + 1;         // 17
+pub const HWPTAG_BIN_DATA: u16 = HWPTAG_BEGIN + 2;            // 18
+pub const HWPTAG_FACE_NAME: u16 = HWPTAG_BEGIN + 3;           // 19
+pub const HWPTAG_BORDER_FILL: u16 = HWPTAG_BEGIN + 4;         // 20
+pub const HWPTAG_CHAR_SHAPE: u16 = HWPTAG_BEGIN + 5;          // 21
+pub const HWPTAG_TAB_DEF: u16 = HWPTAG_BEGIN + 6;             // 22
+pub const HWPTAG_NUMBERING: u16 = HWPTAG_BEGIN + 7;           // 23
+pub const HWPTAG_BULLET: u16 = HWPTAG_BEGIN + 8;              // 24
+pub const HWPTAG_PARA_SHAPE: u16 = HWPTAG_BEGIN + 9;          // 25
+pub const HWPTAG_STYLE: u16 = HWPTAG_BEGIN + 10;              // 26
 
 /// HWPTAG constants - Body section (offset 0x42 = 66)
 pub const HWPTAG_PARA_HEADER: u16 = 0x42;
@@ -697,6 +699,8 @@ pub struct CharShape {
     pub italic: bool,
     pub underline: bool,
     pub strikeout: bool,
+    /// Font size in points (BaseSize / 100.0). 0.0 means unknown.
+    pub font_size_pt: f32,
 }
 
 /// Parse HWPTAG_CHAR_SHAPE record to extract character formatting
@@ -742,12 +746,16 @@ pub fn parse_char_shape(data: &[u8]) -> Option<CharShape> {
         return None;
     }
 
+    // Read BaseSize at offset 42-45 (INT32, unit = 1/100 pt)
+    let base_size = i32::from_le_bytes([data[42], data[43], data[44], data[45]]);
+    let font_size_pt = base_size as f32 / 100.0;
+
     // Read Attr field at offset 46
     let attr = u32::from_le_bytes([data[46], data[47], data[48], data[49]]);
 
-    // Parse formatting flags
-    let italic = (attr & 0x01) != 0;      // Bit 0
-    let bold = (attr & 0x02) != 0;         // Bit 1
+    // Parse formatting flags (HWP 5.0 Spec 표 42)
+    let bold = (attr & 0x01) != 0;         // Bit 0 = Bold
+    let italic = (attr & 0x02) != 0;       // Bit 1 = Italic
     let underline_type = (attr >> 2) & 0x03; // Bits 2-3
     let strikeout_type = (attr >> 18) & 0x0F; // Bits 18-21
 
@@ -756,6 +764,7 @@ pub fn parse_char_shape(data: &[u8]) -> Option<CharShape> {
         italic,
         underline: underline_type != 0,
         strikeout: strikeout_type != 0,
+        font_size_pt,
     })
 }
 
@@ -795,7 +804,11 @@ pub fn apply_markdown_formatting(text: &str, style: &CharShape) -> String {
         return String::new();
     }
 
-    let mut result = text.to_string();
+    // Trim trailing whitespace/newlines inside formatting markers
+    let mut result = text.trim_end().to_string();
+    if result.is_empty() {
+        return String::new();
+    }
 
     // Apply formatting in order: strikeout, bold, italic, underline
     if style.strikeout {

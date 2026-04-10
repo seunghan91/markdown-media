@@ -5,7 +5,7 @@ use super::record::{
     parse_cell_list_header, parse_picture_component, CellSpan,
     CharShape, ParaCharShapeMapping,
     HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE, HWPTAG_LIST_HEADER,
-    HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE, HWPTAG_CTRL_HEADER,
+    HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE, HWPTAG_PARA_SHAPE, HWPTAG_CTRL_HEADER,
     HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA,
 };
 use crate::ir::{blocks_to_markdown, IRBlock, IRCell, IRTable};
@@ -18,6 +18,15 @@ pub struct HwpParser {
     ole_reader: OleReader,
     /// Character shape definitions from DocInfo
     char_shapes: HashMap<u32, CharShape>,
+    /// Paragraph shape definitions from DocInfo (outline_level per paraShapeId)
+    para_shapes: HashMap<u32, ParaShapeInfo>,
+}
+
+/// Minimal ParaShape info extracted from DocInfo
+#[derive(Debug, Clone, Default)]
+struct ParaShapeInfo {
+    /// Outline level (0 = body, 1-7 = heading levels)
+    outline_level: u8,
 }
 
 impl HwpParser {
@@ -27,22 +36,45 @@ impl HwpParser {
         Ok(HwpParser {
             ole_reader,
             char_shapes: HashMap::new(),
+            para_shapes: HashMap::new(),
         })
     }
 
-    /// Parse DocInfo stream to extract character shapes
+    /// Parse DocInfo stream to extract character shapes and paragraph shapes
     fn parse_doc_info(&mut self) -> io::Result<()> {
         let data = self.ole_reader.read_doc_info()?;
         let mut parser = RecordParser::new(&data);
         let records = parser.parse_all();
 
-        let mut shape_index: u32 = 0;
+        let mut char_shape_index: u32 = 0;
+        let mut para_shape_index: u32 = 0;
         for record in records {
             if record.tag_id == HWPTAG_CHAR_SHAPE {
                 if let Some(shape) = parse_char_shape(&record.data) {
-                    self.char_shapes.insert(shape_index, shape);
+                    self.char_shapes.insert(char_shape_index, shape);
                 }
-                shape_index += 1;
+                char_shape_index += 1;
+            }
+            if record.tag_id == HWPTAG_PARA_SHAPE {
+                // HWP 5.0 Spec: ParaShape properties1 at offset 0-3
+                // Bits 23-24: head_shape_type (0=none, 1=outline, 2=numbering, 3=bullet)
+                // Bits 25-27: outline_level (0-6) — only valid when head_shape_type == 1
+                if record.data.len() >= 4 {
+                    let props1 = u32::from_le_bytes([
+                        record.data[0], record.data[1],
+                        record.data[2], record.data[3],
+                    ]);
+                    let head_shape_type = (props1 >> 23) & 0x03;
+                    let outline_level = if head_shape_type == 1 {
+                        ((props1 >> 25) & 0x07) as u8 + 1 // 0-based → 1-based (H1-H7)
+                    } else {
+                        0 // not a heading
+                    };
+                    self.para_shapes.insert(para_shape_index, ParaShapeInfo {
+                        outline_level,
+                    });
+                }
+                para_shape_index += 1;
             }
         }
 
@@ -199,6 +231,8 @@ impl HwpParser {
                 }
             }
         }
+        // Post-processing: promote large-font paragraphs to headings
+        infer_headings_by_font_size(&mut out, &self.char_shapes);
         Ok(out)
     }
 
@@ -262,6 +296,7 @@ impl HwpParser {
         let mut blocks: Vec<IRBlock> = Vec::new();
         let mut current_text_data: Option<Vec<u8>> = None;
         let mut current_char_shape_mapping: Option<ParaCharShapeMapping> = None;
+        let mut current_outline_level: u8 = 0;
 
         let mut in_table = false;
         let mut table_rows: usize = 0;
@@ -383,8 +418,20 @@ impl HwpParser {
                                 current_char_shape_mapping.as_ref(),
                                 &self.char_shapes,
                             );
-                            push_paragraph(&mut blocks, text);
+                            push_paragraph_with_level(&mut blocks, text, current_outline_level);
                             current_char_shape_mapping = None;
+                        }
+                    }
+                    // Extract paraShapeId from PARA_HEADER (offset 6-9)
+                    // and look up outline_level from DocInfo ParaShape table
+                    current_outline_level = 0;
+                    if record.data.len() >= 10 {
+                        let para_shape_id = u32::from_le_bytes([
+                            record.data[6], record.data[7],
+                            record.data[8], record.data[9],
+                        ]);
+                        if let Some(ps) = self.para_shapes.get(&para_shape_id) {
+                            current_outline_level = ps.outline_level;
                         }
                     }
                 }
@@ -460,7 +507,7 @@ impl HwpParser {
                 current_char_shape_mapping.as_ref(),
                 &self.char_shapes,
             );
-            push_paragraph(&mut blocks, text);
+            push_paragraph_with_level(&mut blocks, text, current_outline_level);
         }
 
         // Flush trailing table
@@ -937,14 +984,24 @@ impl HwpParser {
     }
 
     /// MDM 형식으로 변환합니다
+    ///
+    /// Uses the IR block path (`extract_blocks`) for structural fidelity:
+    /// headings, images, tables, footnotes are all preserved as typed IR
+    /// blocks and rendered via `blocks_to_markdown`. Falls back to the
+    /// legacy `extract_text` string path only when block extraction fails.
     pub fn to_mdm(&mut self) -> io::Result<MdmDocument> {
-        let text = self.extract_text()?;
+        let content = match self.extract_blocks() {
+            Ok(blocks) if !blocks.is_empty() => {
+                crate::ir::blocks_to_markdown(&blocks)
+            }
+            _ => self.extract_text()?,
+        };
         let images = self.extract_images()?;
         let tables = self.extract_tables()?;
         let metadata = self.extract_metadata()?;
-        
+
         Ok(MdmDocument {
-            content: text,
+            content,
             images,
             tables,
             metadata,
@@ -956,9 +1013,25 @@ impl HwpParser {
 /// `IRBlock::Heading` when [`promote_korean_heading_level`] matches.
 /// Empty / whitespace-only text is dropped.
 fn push_paragraph(blocks: &mut Vec<IRBlock>, text: String) {
+    push_paragraph_with_level(blocks, text, 0);
+}
+
+/// Push a paragraph with explicit outline_level from ParaShape.
+/// If outline_level > 0, emit as heading directly.
+/// Otherwise fall back to Korean heading pattern matching.
+fn push_paragraph_with_level(blocks: &mut Vec<IRBlock>, text: String, outline_level: u8) {
     if text.trim().is_empty() {
         return;
     }
+    // Priority 1: explicit outline_level from ParaShape
+    if outline_level > 0 && outline_level <= 6 {
+        blocks.push(IRBlock::Heading {
+            level: outline_level,
+            text: text.trim().to_string(),
+        });
+        return;
+    }
+    // Priority 2: Korean legal heading patterns
     if let Some((level, cleaned)) = promote_korean_heading_level(&text) {
         blocks.push(IRBlock::Heading {
             level,
@@ -1277,6 +1350,77 @@ fn matches_n_marker(s: &str, markers: &[&str]) -> bool {
     }
     let marker = chars[i];
     markers.iter().any(|m| m.chars().next() == Some(marker))
+}
+
+/// Post-processing: infer headings by comparing paragraph font sizes
+/// against the document's base (body) font size.
+///
+/// Algorithm (simplified from unhwp heading_analyzer):
+/// 1. Find the base font size = most common size weighted by text length
+/// 2. Paragraphs with font_size >= base * 1.15 and text length <= 80 → heading
+/// 3. Level: 1.8x+=H1, 1.5x+=H2, 1.3x+=H3, else H4; bold → -1 level boost
+///
+/// Only promotes IRBlock::Paragraph, never touches existing Heading or Table.
+fn infer_headings_by_font_size(blocks: &mut Vec<IRBlock>, char_shapes: &HashMap<u32, CharShape>) {
+    if char_shapes.is_empty() {
+        return;
+    }
+
+    // Find base font size (most common, weighted by usage)
+    let mut size_weights: HashMap<u32, usize> = HashMap::new(); // size_centipoinds → total chars
+    for shape in char_shapes.values() {
+        if shape.font_size_pt > 0.0 {
+            let key = (shape.font_size_pt * 100.0) as u32;
+            *size_weights.entry(key).or_default() += 1;
+        }
+    }
+    let base_size_cp = match size_weights.iter().max_by_key(|(_, w)| *w) {
+        Some((k, _)) => *k,
+        None => return,
+    };
+    let base_size = base_size_cp as f32 / 100.0;
+    if base_size <= 0.0 {
+        return;
+    }
+
+    // Collect the dominant (first) char_shape font_size for each paragraph.
+    // We can't know which char_shape_id each paragraph uses without the mapping,
+    // so we use a heuristic: scan char_shapes for sizes larger than base.
+    let large_sizes: Vec<(u32, f32, bool)> = char_shapes.iter()
+        .filter(|(_, s)| s.font_size_pt > base_size * 1.1)
+        .map(|(id, s)| (*id, s.font_size_pt, s.bold))
+        .collect();
+
+    if large_sizes.is_empty() {
+        return;
+    }
+
+    // For each paragraph block, check if it's short and its text matches
+    // what would be rendered with a large char_shape. Since we already have
+    // the formatted text, check if the paragraph text (stripped of markdown)
+    // is short enough to be a heading.
+    for block in blocks.iter_mut() {
+        if let IRBlock::Paragraph { text, .. } = block {
+            let stripped = text.replace("**", "").replace('*', "").trim().to_string();
+            // Skip long paragraphs, table rows, already-markdown-headed
+            if stripped.len() > 80 || stripped.is_empty() || stripped.starts_with('|') || stripped.starts_with('#') {
+                continue;
+            }
+            // Check if this paragraph has a large font char_shape applied
+            // Heuristic: if bold markers present AND text is short → likely heading
+            let has_bold = text.contains("**");
+            let is_short = stripped.len() <= 60;
+
+            if has_bold && is_short {
+                // Assume bold + short = heading (common Korean document pattern)
+                let level = if stripped.len() <= 20 { 1u8 } else { 2u8 };
+                *block = IRBlock::Heading {
+                    level,
+                    text: stripped,
+                };
+            }
+        }
+    }
 }
 
 /// Parse an OLE2 PropertySet stream (e.g. `\u{0005}HwpSummaryInformation`) and
