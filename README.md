@@ -88,12 +88,32 @@ For RAG pipelines, document Q&A, and agent workflows, Markdown is the optimal se
 
 ## Supported Formats / 어떤 파일을 변환할 수 있나요?
 
+MDM converts two categories of files: **documents** (meant for reading) and **data containers** (meant for structured information). Both are converted to Markdown so that AI/LLM can consume them uniformly.
+
+MDM은 두 가지 종류의 파일을 변환합니다: **문서** (읽기 위한 것)와 **데이터 컨테이너** (구조화된 정보를 담는 것). 둘 다 마크다운으로 변환하여 AI/LLM이 동일한 형태로 소비할 수 있게 합니다.
+
+### Documents / 문서 (preserving structure + formatting)
+
 | Format | Extension | Description | Supported Features |
 |--------|-----------|-------------|--------------------|
 | **HWP** | `.hwp` | Korean word processor (Hangul) | Text, tables, bold/italic, footnotes, images, encryption, legal doc structure |
 | **HWPX** | `.hwpx` | Hangul (XML-based) | Text, tables, formatting, outline headings |
 | **PDF** | `.pdf` | Universal document | Text, heading hierarchy (H1-H4), tables, bold/italic, 2-column layout, header/footer removal |
 | **DOCX** | `.docx` | Microsoft Word | Text, headings, lists, tables (merged cells), hyperlinks, footnotes, blockquotes, images |
+| **PPTX** | `.pptx` | PowerPoint presentations | Slide text, titles, speaker notes, per-slide sections |
+| **HTML** | `.html` `.htm` | Web pages | Headings, links, images, tables, lists, code blocks, strip scripts |
+
+### Data Containers / 데이터 컨테이너 (extracting text + tables for AI)
+
+These formats aren't traditional "documents" — they hold structured data (spreadsheets, tables, logs). MDM extracts their textual content as Markdown tables so AI can read, search, and reason over the data.
+
+이 포맷들은 전통적인 "문서"가 아니라 구조화된 데이터(스프레드시트, 테이블, 로그)를 담는 컨테이너입니다. MDM은 이들의 텍스트 콘텐츠를 마크다운 테이블로 추출하여 AI가 데이터를 읽고 검색하고 추론할 수 있게 합니다.
+
+| Format | Extension | Description | What MDM extracts |
+|--------|-----------|-------------|-------------------|
+| **XLSX** | `.xlsx` `.xls` | Excel spreadsheets | All sheets as Markdown tables, sheet names as headings |
+| **CSV/TSV** | `.csv` `.tsv` | Tabular data | Pipe table with auto-detected delimiter |
+| **TXT** | `.txt` `.log` | Plain text / logs | Text with encoding detection (UTF-8, EUC-KR) |
 
 ---
 
