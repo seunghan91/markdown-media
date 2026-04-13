@@ -1,0 +1,432 @@
+{
+  "metadata": {
+    "title": "ko바탕 en바탕 cn바탕 jp바탕 other바탕 symbol바탕 user바탕",
+    "author": "mete0r",
+    "subject": "",
+    "keywords": [],
+    "created": "2013-07-24T10:46:21Z",
+    "modified": "2014-11-09T13:20:47Z",
+    "creator_app": null,
+    "format_version": "5.0.1.7",
+    "is_distribution": false
+  },
+  "sections": [
+    {
+      "index": 0,
+      "content": [
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko바탕 en바탕 cn바탕 jp바탕 other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko한컴돋움 en바탕 cn바탕 jp바탕 other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "한컴돋움",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko바탕 enTimesNewRoman cn바탕 jp바탕 other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko바탕 enArial cn바탕 jp바탕 other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko바탕 en바탕 cn약자漢字 jp바탕 other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko바탕 en바탕 cn간자漢字 jp바탕 other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko바탕 en바탕 cn바탕 jp명조あ other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "ko바탕 en바탕 cn바탕 jp고딕あ other바탕 symbol바탕 user바탕",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "header": null,
+      "footer": null
+    }
+  ],
+  "styles": {
+    "char_styles": {
+      "7": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "1": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "4": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "2": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "6": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "5": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "3": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "한컴돋움",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "0": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      }
+    },
+    "para_styles": {},
+    "named_styles": {
+      "바탕글": 0,
+      "영문-TimesNewRoman": 2,
+      "일문-명조": 6,
+      "한글-한컴돋움": 1,
+      "중문-약자": 4,
+      "일문-고딕": 7,
+      "중문-간자": 5,
+      "영문-Arial": 3
+    },
+    "named_style_defs": {
+      "2": {
+        "name": "영문-TimesNewRoman",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "0": {
+        "name": "바탕글",
+        "para_shape_id": 0,
+        "char_shape_id": 0
+      },
+      "3": {
+        "name": "영문-Arial",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "4": {
+        "name": "중문-약자",
+        "para_shape_id": 1280,
+        "char_shape_id": 0
+      },
+      "5": {
+        "name": "중문-간자",
+        "para_shape_id": 1536,
+        "char_shape_id": 0
+      },
+      "1": {
+        "name": "한글-한컴돋움",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      },
+      "6": {
+        "name": "일문-명조",
+        "para_shape_id": 1792,
+        "char_shape_id": 0
+      },
+      "7": {
+        "name": "일문-고딕",
+        "para_shape_id": 512,
+        "char_shape_id": 0
+      }
+    }
+  },
+  "resources": {}
+}

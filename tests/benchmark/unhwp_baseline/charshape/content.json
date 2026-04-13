@@ -1,0 +1,755 @@
+{
+  "metadata": {
+    "title": "가나다",
+    "author": "mete0r",
+    "subject": "",
+    "keywords": [],
+    "created": "2011-08-24T23:25:15Z",
+    "modified": "2014-11-04T19:15:55Z",
+    "creator_app": null,
+    "format_version": "5.0.1.7",
+    "is_distribution": false
+  },
+  "sections": [
+    {
+      "index": 0,
+      "content": [
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "가",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "기울임",
+                  "style": {
+                    "bold": true,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "진하게",
+                  "style": {
+                    "bold": false,
+                    "italic": true,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "밑줄없음",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "굴림",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "밑줄",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": true,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "가운데줄",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "윗줄",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": true,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "글자크기:",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 기준크기10pt",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 한글90%",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 영문80%",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 기타70%",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "폰트:",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 한글돋움",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "돋움",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 영문CourierNew",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 기타قLucidaSansUnicode",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "붉은밑줄",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": true,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "점선밑줄",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": true,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "header": null,
+      "footer": null
+    }
+  ],
+  "styles": {
+    "char_styles": {
+      "11": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "6": {
+        "bold": true,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "1": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "18": {
+        "bold": false,
+        "italic": false,
+        "underline": true,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "7": {
+        "bold": false,
+        "italic": false,
+        "underline": true,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "0": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "10": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "9": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "16": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "4": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "14": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "15": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "돋움",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "17": {
+        "bold": false,
+        "italic": false,
+        "underline": true,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "13": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "3": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "2": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "5": {
+        "bold": false,
+        "italic": true,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "8": {
+        "bold": false,
+        "italic": false,
+        "underline": true,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "12": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      }
+    },
+    "para_styles": {},
+    "named_styles": {
+      "본문": 1,
+      "쪽 번호": 9,
+      "머리말": 10,
+      "개요 5": 6,
+      "개요 2": 3,
+      "바탕글": 0,
+      "개요 6": 7,
+      "개요 7": 8,
+      "각주": 11,
+      "미주": 12,
+      "개요 1": 2,
+      "개요 4": 5,
+      "개요 3": 4,
+      "메모": 13
+    },
+    "named_style_defs": {
+      "1": {
+        "name": "본문",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "7": {
+        "name": "개요 6",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "8": {
+        "name": "개요 7",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "10": {
+        "name": "머리말",
+        "para_shape_id": 512,
+        "char_shape_id": 0
+      },
+      "11": {
+        "name": "각주",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      },
+      "9": {
+        "name": "쪽 번호",
+        "para_shape_id": 0,
+        "char_shape_id": 0
+      },
+      "4": {
+        "name": "개요 3",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "0": {
+        "name": "바탕글",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "2": {
+        "name": "개요 1",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "12": {
+        "name": "미주",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      },
+      "3": {
+        "name": "개요 2",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "13": {
+        "name": "메모",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "6": {
+        "name": "개요 5",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "5": {
+        "name": "개요 4",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      }
+    }
+  },
+  "resources": {}
+}

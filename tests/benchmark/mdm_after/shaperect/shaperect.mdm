@@ -1,0 +1,16 @@
+{
+  "resources": {
+    "BIN0001.jpg.jpeg": {
+      "format": "jpeg",
+      "src": "assets/BIN0001.jpg.jpeg",
+      "type": "image"
+    },
+    "BIN0002.jpg.jpeg": {
+      "format": "jpeg",
+      "src": "assets/BIN0002.jpg.jpeg",
+      "type": "image"
+    }
+  },
+  "source": "shaperect.hwp",
+  "version": "1.0"
+}

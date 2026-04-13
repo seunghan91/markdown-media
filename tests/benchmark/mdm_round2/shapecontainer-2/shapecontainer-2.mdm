@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "BIN0001.jpg.jpeg": {
+      "format": "jpeg",
+      "src": "assets/BIN0001.jpg.jpeg",
+      "type": "image"
+    }
+  },
+  "source": "shapecontainer-2.hwp",
+  "version": "1.0"
+}

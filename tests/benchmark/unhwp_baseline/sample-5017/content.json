@@ -1,0 +1,1093 @@
+{
+  "metadata": {
+    "title": "제목입니다.",
+    "author": "지은이입니다.",
+    "subject": "주제입니다.",
+    "keywords": [
+      "키워드입니다."
+    ],
+    "created": "2010-07-02T03:36:13Z",
+    "modified": "2011-06-14T12:54:58Z",
+    "creator_app": null,
+    "format_version": "5.0.1.7",
+    "is_distribution": false
+  },
+  "sections": [
+    {
+      "index": 0,
+      "content": [
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "한글 ",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 20.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "2005",
+                  "style": {
+                    "bold": false,
+                    "italic": true,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 20.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " ",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 20.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "예제",
+                  "style": {
+                    "bold": true,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 20.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": " 파일입니다.",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 20.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "머리말입니다",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "굴림",
+                    "font_size": 9.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "본문 ",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "내용",
+                  "style": {
+                    "bold": false,
+                    "italic": true,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "입니다. 본 문서는 글 워드 프로세서의 파일 저장 형식 중, 글 2002 이후 제품에서 사용되는 글 문서 파일 형식 5.0 및 글 97 문서 파일 형식, HWPML에 관하여 설명한다.",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "표",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "표",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "끝",
+                  "style": {
+                    "bold": false,
+                    "italic": true,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Table": {
+            "rows": [
+              {
+                "cells": [
+                  {
+                    "content": [
+                      {
+                        "style": {
+                          "heading_level": 0,
+                          "alignment": "Left",
+                          "list_style": null,
+                          "indent_level": 0,
+                          "line_spacing": null,
+                          "space_before": null,
+                          "space_after": null
+                        },
+                        "content": [
+                          {
+                            "Text": {
+                              "text": "A0",
+                              "style": {
+                                "bold": false,
+                                "italic": false,
+                                "underline": false,
+                                "strikethrough": false,
+                                "superscript": false,
+                                "subscript": false,
+                                "font_name": "바탕",
+                                "font_size": 10.0,
+                                "color": "#000000",
+                                "background_color": null
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  },
+                  {
+                    "content": [
+                      {
+                        "style": {
+                          "heading_level": 0,
+                          "alignment": "Left",
+                          "list_style": null,
+                          "indent_level": 0,
+                          "line_spacing": null,
+                          "space_before": null,
+                          "space_after": null
+                        },
+                        "content": [
+                          {
+                            "Text": {
+                              "text": "B0",
+                              "style": {
+                                "bold": false,
+                                "italic": false,
+                                "underline": false,
+                                "strikethrough": false,
+                                "superscript": false,
+                                "subscript": false,
+                                "font_name": "바탕",
+                                "font_size": 10.0,
+                                "color": "#000000",
+                                "background_color": null
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  }
+                ],
+                "is_header": true
+              },
+              {
+                "cells": [
+                  {
+                    "content": [
+                      {
+                        "style": {
+                          "heading_level": 0,
+                          "alignment": "Left",
+                          "list_style": null,
+                          "indent_level": 0,
+                          "line_spacing": null,
+                          "space_before": null,
+                          "space_after": null
+                        },
+                        "content": [
+                          {
+                            "Text": {
+                              "text": "A1",
+                              "style": {
+                                "bold": false,
+                                "italic": false,
+                                "underline": false,
+                                "strikethrough": false,
+                                "superscript": false,
+                                "subscript": false,
+                                "font_name": "바탕",
+                                "font_size": 10.0,
+                                "color": "#000000",
+                                "background_color": null
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  },
+                  {
+                    "content": [
+                      {
+                        "style": {
+                          "heading_level": 0,
+                          "alignment": "Left",
+                          "list_style": null,
+                          "indent_level": 0,
+                          "line_spacing": null,
+                          "space_before": null,
+                          "space_after": null
+                        },
+                        "content": [
+                          {
+                            "Text": {
+                              "text": "B10",
+                              "style": {
+                                "bold": false,
+                                "italic": false,
+                                "underline": false,
+                                "strikethrough": false,
+                                "superscript": false,
+                                "subscript": false,
+                                "font_name": "바탕",
+                                "font_size": 10.0,
+                                "color": "#000000",
+                                "background_color": null
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      {
+                        "style": {
+                          "heading_level": 0,
+                          "alignment": "Left",
+                          "list_style": null,
+                          "indent_level": 0,
+                          "line_spacing": null,
+                          "space_before": null,
+                          "space_after": null
+                        },
+                        "content": [
+                          {
+                            "Text": {
+                              "text": "B11",
+                              "style": {
+                                "bold": false,
+                                "italic": false,
+                                "underline": false,
+                                "strikethrough": false,
+                                "superscript": false,
+                                "subscript": false,
+                                "font_name": "바탕",
+                                "font_size": 10.0,
+                                "color": "#000000",
+                                "background_color": null
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  }
+                ],
+                "is_header": false
+              }
+            ],
+            "column_widths": [],
+            "has_header": true
+          }
+        },
+        {
+          "Table": {
+            "rows": [
+              {
+                "cells": [
+                  {
+                    "content": [
+                      {
+                        "style": {
+                          "heading_level": 0,
+                          "alignment": "Left",
+                          "list_style": null,
+                          "indent_level": 0,
+                          "line_spacing": null,
+                          "space_before": null,
+                          "space_after": null
+                        },
+                        "content": [
+                          {
+                            "Text": {
+                              "text": "table2",
+                              "style": {
+                                "bold": false,
+                                "italic": false,
+                                "underline": false,
+                                "strikethrough": false,
+                                "superscript": false,
+                                "subscript": false,
+                                "font_name": "바탕",
+                                "font_size": 10.0,
+                                "color": "#000000",
+                                "background_color": null
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  }
+                ],
+                "is_header": true
+              }
+            ],
+            "column_widths": [],
+            "has_header": true
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "표  2x2짜리표",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "가나다",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Table": {
+            "rows": [
+              {
+                "cells": [
+                  {
+                    "content": [],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  },
+                  {
+                    "content": [],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  }
+                ],
+                "is_header": true
+              },
+              {
+                "cells": [
+                  {
+                    "content": [],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  },
+                  {
+                    "content": [],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  }
+                ],
+                "is_header": false
+              }
+            ],
+            "column_widths": [],
+            "has_header": true
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "다음 문단",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "본 ",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "문서",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Text": {
+                  "text": "는 먼저 글 문서 파일 형식 5.0에 관하여 설명한 후, 글 97 문서 파일 형식, HWPML에 관하여 설명한다. 각 형식에 대한 설명은 문서 파일 형식 내의 주요한 자료 형식 및 파일 구조, 레코드 구조에 대해서 설명한다.",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "미주입니다.",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 9.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "이건 각주이지요.",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 9.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "다음 페이지",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Image": {
+                  "id": "BIN0002.jpg",
+                  "alt_text": null,
+                  "width": null,
+                  "height": null
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "header": null,
+      "footer": null
+    }
+  ],
+  "styles": {
+    "char_styles": {
+      "0": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "1": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "3": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "2": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "7": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 20.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "6": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "8": {
+        "bold": false,
+        "italic": true,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 20.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "9": {
+        "bold": true,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 20.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "5": {
+        "bold": false,
+        "italic": true,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "4": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      }
+    },
+    "para_styles": {},
+    "named_styles": {
+      "각주": 11,
+      "미주": 12,
+      "개요 1": 2,
+      "개요 2": 3,
+      "개요 6": 7,
+      "개요 7": 8,
+      "쪽 번호": 9,
+      "머리말": 10,
+      "메모": 13,
+      "바탕글": 0,
+      "본문": 1,
+      "개요 5": 6,
+      "개요 4": 5,
+      "개요 3": 4
+    },
+    "named_style_defs": {
+      "7": {
+        "name": "개요 6",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "12": {
+        "name": "미주",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      },
+      "0": {
+        "name": "바탕글",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "3": {
+        "name": "개요 2",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "10": {
+        "name": "머리말",
+        "para_shape_id": 512,
+        "char_shape_id": 0
+      },
+      "1": {
+        "name": "본문",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "13": {
+        "name": "메모",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "4": {
+        "name": "개요 3",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "9": {
+        "name": "쪽 번호",
+        "para_shape_id": 0,
+        "char_shape_id": 0
+      },
+      "5": {
+        "name": "개요 4",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "6": {
+        "name": "개요 5",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "8": {
+        "name": "개요 7",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "2": {
+        "name": "개요 1",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "11": {
+        "name": "각주",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      }
+    }
+  },
+  "resources": {
+    "BIN0002.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0002.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0002.png": {
+      "resource_type": "Image",
+      "filename": "BIN0002.png",
+      "mime_type": "image/png",
+      "size": 989
+    },
+    "BIN0003.png": {
+      "resource_type": "Image",
+      "filename": "BIN0003.png",
+      "mime_type": "image/png",
+      "size": 989
+    }
+  }
+}

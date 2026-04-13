@@ -1,0 +1,11 @@
+{
+  "format": "pdf",
+  "metadata": {
+    "author": "Seunghan Kim",
+    "pages": 1,
+    "pdf_version": "1.4",
+    "title": "MDM PDF Parser Benchmark"
+  },
+  "source": "test_comprehensive.pdf",
+  "version": "1.0"
+}

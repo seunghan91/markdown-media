@@ -1,0 +1,705 @@
+{
+  "metadata": {
+    "title": "",
+    "author": "mete0r",
+    "subject": "",
+    "keywords": [],
+    "created": "2010-07-20T14:34:24Z",
+    "modified": "2010-07-24T03:22:47Z",
+    "creator_app": null,
+    "format_version": "5.0.1.7",
+    "is_distribution": false
+  },
+  "sections": [
+    {
+      "index": 0,
+      "content": [
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "글자취급",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "어울림 (양쪽 본문)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "어울림 (왼쪽 본문)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "어울림 (오른쪽 본문)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림 어울림",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "자리차지 (왼쪽정렬)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "자리차지 (오른쪽정렬)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "자리차지 (가운데정렬)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "자리차지 (안쪽정렬)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "자리차지 (바깥쪽정렬)",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "글뒤로",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "Paragraph": {
+            "style": {
+              "heading_level": 0,
+              "alignment": "Left",
+              "list_style": null,
+              "indent_level": 0,
+              "line_spacing": null,
+              "space_before": null,
+              "space_after": null
+            },
+            "content": [
+              {
+                "Text": {
+                  "text": "글 앞으로",
+                  "style": {
+                    "bold": false,
+                    "italic": false,
+                    "underline": false,
+                    "strikethrough": false,
+                    "superscript": false,
+                    "subscript": false,
+                    "font_name": "바탕",
+                    "font_size": 10.0,
+                    "color": "#000000",
+                    "background_color": null
+                  }
+                }
+              },
+              {
+                "Image": {
+                  "id": "BIN000B.jpg",
+                  "alt_text": null,
+                  "width": null,
+                  "height": null
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "header": null,
+      "footer": null
+    }
+  ],
+  "styles": {
+    "char_styles": {
+      "4": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "1": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "2": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "0": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "3": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      }
+    },
+    "para_styles": {},
+    "named_styles": {
+      "개요 3": 4,
+      "머리말": 10,
+      "미주": 12,
+      "본문": 1,
+      "개요 5": 6,
+      "개요 4": 5,
+      "각주": 11,
+      "개요 1": 2,
+      "메모": 13,
+      "개요 7": 8,
+      "개요 6": 7,
+      "바탕글": 0,
+      "개요 2": 3,
+      "쪽 번호": 9
+    },
+    "named_style_defs": {
+      "10": {
+        "name": "머리말",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      },
+      "11": {
+        "name": "각주",
+        "para_shape_id": 0,
+        "char_shape_id": 0
+      },
+      "13": {
+        "name": "메모",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "7": {
+        "name": "개요 6",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "0": {
+        "name": "바탕글",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "6": {
+        "name": "개요 5",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "3": {
+        "name": "개요 2",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "8": {
+        "name": "개요 7",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "9": {
+        "name": "쪽 번호",
+        "para_shape_id": 512,
+        "char_shape_id": 0
+      },
+      "4": {
+        "name": "개요 3",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "5": {
+        "name": "개요 4",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "12": {
+        "name": "미주",
+        "para_shape_id": 0,
+        "char_shape_id": 0
+      },
+      "1": {
+        "name": "본문",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "2": {
+        "name": "개요 1",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      }
+    }
+  },
+  "resources": {
+    "BIN0009.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0009.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0005.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0005.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN000A.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN000A.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0001.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0001.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0004.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0004.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0006.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0006.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0007.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0007.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0003.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0003.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0008.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0008.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN000B.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN000B.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN000C.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN000C.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    },
+    "BIN0002.jpg": {
+      "resource_type": "Image",
+      "filename": "BIN0002.jpg",
+      "mime_type": "image/jpeg",
+      "size": 15895
+    }
+  }
+}

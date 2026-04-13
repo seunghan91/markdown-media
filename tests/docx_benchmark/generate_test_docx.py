@@ -149,7 +149,7 @@ def create_comprehensive_test():
     p.add_run(" for more info.")
 
     p2 = doc.add_paragraph("Also check ")
-    add_hyperlink(p2, "https://dcode-labs.com", "Dcode Labs")
+    add_hyperlink(p2, "https://example.com", "Example Site")
     p2.add_run(".")
 
     # --- Footnotes (python-docx limited support, add via XML) ---

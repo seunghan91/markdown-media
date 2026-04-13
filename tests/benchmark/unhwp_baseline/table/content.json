@@ -1,0 +1,226 @@
+{
+  "metadata": {
+    "title": "",
+    "author": "mete0r",
+    "subject": "",
+    "keywords": [],
+    "created": "2011-08-25T09:18:35Z",
+    "modified": "2011-08-25T09:22:47Z",
+    "creator_app": null,
+    "format_version": "5.0.1.7",
+    "is_distribution": false
+  },
+  "sections": [
+    {
+      "index": 0,
+      "content": [
+        {
+          "Table": {
+            "rows": [
+              {
+                "cells": [
+                  {
+                    "content": [],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  },
+                  {
+                    "content": [],
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  },
+                  {
+                    "content": [],
+                    "rowspan": 2,
+                    "colspan": 1,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  }
+                ],
+                "is_header": true
+              },
+              {
+                "cells": [
+                  {
+                    "content": [],
+                    "rowspan": 1,
+                    "colspan": 2,
+                    "alignment": "Left",
+                    "vertical_alignment": "Top",
+                    "background_color": null
+                  }
+                ],
+                "is_header": false
+              }
+            ],
+            "column_widths": [],
+            "has_header": true
+          }
+        }
+      ],
+      "header": null,
+      "footer": null
+    }
+  ],
+  "styles": {
+    "char_styles": {
+      "2": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "1": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "3": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "바탕",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "4": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 9.0,
+        "color": "#000000",
+        "background_color": null
+      },
+      "0": {
+        "bold": false,
+        "italic": false,
+        "underline": false,
+        "strikethrough": false,
+        "superscript": false,
+        "subscript": false,
+        "font_name": "굴림",
+        "font_size": 10.0,
+        "color": "#000000",
+        "background_color": null
+      }
+    },
+    "para_styles": {},
+    "named_styles": {
+      "개요 6": 7,
+      "개요 7": 8,
+      "머리말": 10,
+      "개요 1": 2,
+      "각주": 11,
+      "개요 5": 6,
+      "미주": 12,
+      "메모": 13,
+      "개요 3": 4,
+      "개요 4": 5,
+      "개요 2": 3,
+      "쪽 번호": 9,
+      "바탕글": 0,
+      "본문": 1
+    },
+    "named_style_defs": {
+      "11": {
+        "name": "각주",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      },
+      "6": {
+        "name": "개요 5",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "2": {
+        "name": "개요 1",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "7": {
+        "name": "개요 6",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "8": {
+        "name": "개요 7",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "0": {
+        "name": "바탕글",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "9": {
+        "name": "쪽 번호",
+        "para_shape_id": 0,
+        "char_shape_id": 0
+      },
+      "12": {
+        "name": "미주",
+        "para_shape_id": 768,
+        "char_shape_id": 0
+      },
+      "13": {
+        "name": "메모",
+        "para_shape_id": 1024,
+        "char_shape_id": 0
+      },
+      "4": {
+        "name": "개요 3",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "5": {
+        "name": "개요 4",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "1": {
+        "name": "본문",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "3": {
+        "name": "개요 2",
+        "para_shape_id": 256,
+        "char_shape_id": 0
+      },
+      "10": {
+        "name": "머리말",
+        "para_shape_id": 512,
+        "char_shape_id": 0
+      }
+    }
+  },
+  "resources": {}
+}

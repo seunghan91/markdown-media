@@ -1,0 +1,21 @@
+{
+  "resources": {
+    "BIN0002.jpg.jpeg": {
+      "format": "jpeg",
+      "src": "assets/BIN0002.jpg.jpeg",
+      "type": "image"
+    },
+    "BIN0002.png": {
+      "format": "png",
+      "src": "assets/BIN0002.png",
+      "type": "image"
+    },
+    "BIN0003.png": {
+      "format": "png",
+      "src": "assets/BIN0003.png",
+      "type": "image"
+    }
+  },
+  "source": "sample-5017.hwp",
+  "version": "1.0"
+}

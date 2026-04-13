@@ -1,0 +1,11 @@
+{
+  "format": "pdf",
+  "metadata": {
+    "author": "(anonymous)",
+    "pages": 1,
+    "pdf_version": "1.4",
+    "title": "Heading Hierarchy Test"
+  },
+  "source": "test_headings.pdf",
+  "version": "1.0"
+}
