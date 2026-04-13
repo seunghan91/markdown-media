@@ -427,6 +427,80 @@ maturin build --release
 pip install target/wheels/mdm_core-*.whl
 ```
 
+### Desktop App Build (macOS / Windows)
+
+데스크톱 앱은 **Tauri 2** (Rust + Svelte) 기반입니다.
+
+**Prerequisites:**
+- Node.js 20+
+- Rust 1.70+ ([rustup.rs](https://rustup.rs/))
+- **macOS 전용**: Xcode Command Line Tools (`xcode-select --install`)
+- **Windows 전용**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (C++ 워크로드 포함)
+
+#### macOS
+
+```bash
+cd desktop
+npm install
+
+# 개발 서버 (핫 리로드)
+npm run tauri dev
+
+# 릴리즈 빌드 (.dmg + .app)
+npm run tauri build
+```
+
+출력 위치: `desktop/src-tauri/target/release/bundle/`
+- `macos/MDM Desktop.app`
+- `dmg/MDM Desktop_0.1.0_aarch64.dmg`
+
+#### Windows
+
+> **주의**: Windows 설치파일은 **Windows 환경에서만 빌드 가능**합니다.
+> macOS에서 빌드하려면 아래 [GitHub Actions](#github-actions-cross-build) 방법을 사용하세요.
+
+Windows 머신에서:
+
+```bat
+cd desktop
+npm install
+
+:: 개발 서버
+npm run tauri dev
+
+:: 릴리즈 빌드 (.msi + .exe)
+npm run tauri build
+```
+
+출력 위치: `desktop\src-tauri\target\release\bundle\`
+- `msi\MDM Desktop_0.1.0_x64_en-US.msi`
+- `nsis\MDM Desktop_0.1.0_x64-setup.exe`
+
+#### GitHub Actions Cross-Build
+
+macOS에서 Windows 설치파일을 만들려면 CI를 사용합니다:
+
+```yaml
+# .github/workflows/release.yml
+jobs:
+  build-desktop:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest   # → .dmg
+          - os: windows-latest # → .msi / .exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cd desktop && npm ci
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: desktop/
+```
+
 ---
 
 ## Run Benchmarks / 벤치마크 직접 돌려보기
