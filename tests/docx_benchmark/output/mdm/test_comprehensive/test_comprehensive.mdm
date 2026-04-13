@@ -1,0 +1,10 @@
+{
+  "format": "docx",
+  "metadata": {
+    "author": "Seunghan Kim",
+    "title": "MDM DOCX Parser Benchmark"
+  },
+  "resources": {},
+  "source": "test_comprehensive.docx",
+  "version": "1.0"
+}

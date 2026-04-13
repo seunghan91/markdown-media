@@ -1,0 +1,10 @@
+{
+  "format": "docx",
+  "metadata": {
+    "author": "python-docx",
+    "title": null
+  },
+  "resources": {},
+  "source": "test_tables.docx",
+  "version": "1.0"
+}

@@ -1,0 +1,41 @@
+Header Footer Test Confidential
+
+## **Main Document Title**
+
+This document tests header and footer detection. The header contains 'Header Footer Test' and 'Confidential'. The footer contains 'MDM Parser Benchmark' and page numbers. These should be stripped from the main content.
+
+## **Section One**
+
+Paragraph 1 of section one. This content should be preserved while headers and footers are removed from the output.
+
+Paragraph 2 of section one. This content should be preserved while headers and footers are removed from the output.
+
+Paragraph 3 of section one. This content should be preserved while headers and footers are removed from the output.
+
+Paragraph 4 of section one. This content should be preserved while headers and footers are removed from the output.
+
+Paragraph 5 of section one. This content should be preserved while headers and footers are removed from the output.
+
+Paragraph 6 of section one. This content should be preserved while headers and footers are removed from the output.
+
+Paragraph 7 of section one. This content should be preserved while headers and footers are removed from the output.
+
+Paragraph 8 of section one. This content should be preserved while headers and footers are removed from the output.
+
+MDM Parser Benchmark Page 1
+
+Header Footer Test Confidential
+
+## **Section Two (Page 2)**
+
+Paragraph 1 of section two on page two. The same header and footer should repeat on this page.
+
+Paragraph 2 of section two on page two. The same header and footer should repeat on this page.
+
+Paragraph 3 of section two on page two. The same header and footer should repeat on this page.
+
+Paragraph 4 of section two on page two. The same header and footer should repeat on this page.
+
+Paragraph 5 of section two on page two. The same header and footer should repeat on this page.
+
+MDM Parser Benchmark Page 2

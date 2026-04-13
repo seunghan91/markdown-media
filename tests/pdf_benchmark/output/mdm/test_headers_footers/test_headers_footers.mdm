@@ -1,0 +1,11 @@
+{
+  "format": "pdf",
+  "metadata": {
+    "author": "Seunghan Kim",
+    "pages": 2,
+    "pdf_version": "1.4",
+    "title": "Header Footer Test"
+  },
+  "source": "test_headers_footers.pdf",
+  "version": "1.0"
+}
