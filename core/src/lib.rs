@@ -3,6 +3,10 @@
 //! This crate provides core functionality for:
 //! - HWP document parsing (HWP 5.0 and HWPX)
 //! - SVG generation from media descriptions
+
+// Allow dead code and unused imports during active development.
+// These will be cleaned up before v1.0 release.
+#![allow(dead_code, unused_imports, unused_variables, unreachable_patterns, unused_assignments)]
 //! - Image optimization and caching
 //! - Placeholder generation
 

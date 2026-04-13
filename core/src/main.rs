@@ -1,5 +1,7 @@
 //! hwp2mdm - HWP/HWPX/PDF to MDM converter CLI tool
 
+#![allow(dead_code, unused_imports, unused_variables, unreachable_patterns, unused_assignments)]
+
 mod docx;
 mod hwp;
 mod hwpx;

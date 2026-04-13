@@ -6,9 +6,12 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use serde::{Serialize, Deserialize};
 
-// Word XML namespaces
+// Word XML namespaces (kept for reference; suppress unused warnings)
+#[allow(dead_code)]
 const WORD_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+#[allow(dead_code)]
 const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+#[allow(dead_code)]
 const DC_NS: &str = "http://purl.org/dc/elements/1.1/";
 
 /// Numbering level definition parsed from numbering.xml
