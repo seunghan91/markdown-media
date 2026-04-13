@@ -5,6 +5,7 @@
 
 use crate::utils::bounded_io::{read_limited, MAX_PDF_FILE, MAX_PDF_STREAM};
 use flate2::read::ZlibDecoder;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
@@ -497,122 +498,37 @@ impl PdfParser {
     ///
     /// Returns a vector of layout elements that preserve the visual structure
     /// of the PDF, including text positions, images, and detected regions.
+    /// Pages are processed in parallel using Rayon for improved performance
+    /// on multi-page documents.
     pub fn extract_layout(&self) -> Vec<LayoutElement> {
-        let mut elements = Vec::new();
-
         let doc = match lopdf::Document::load_mem(&self.data) {
             Ok(d) => d,
-            Err(_) => return elements,
+            Err(_) => return vec![],
         };
 
-        // Get page dimensions for relative positioning
-        for (page_num, page_id) in doc.get_pages() {
-            let page_num = page_num as usize;
+        // Collect page info sequentially (fast, just reads the page tree)
+        let pages: Vec<(u32, lopdf::ObjectId)> = doc.get_pages().into_iter().collect();
 
-            // Get page dimensions
-            let (page_width, page_height) = self.get_page_dimensions(&doc, page_id);
+        // Extract images once upfront (avoids redundant work per page)
+        let all_images = self.extract_images();
 
-            // Add page break marker for pages after the first
-            if page_num > 1 {
-                elements.push(LayoutElement {
-                    element_type: LayoutElementType::PageBreak,
-                    content: String::new(),
-                    page: page_num,
-                    x: 0.0,
-                    y: page_height,
-                    width: page_width,
-                    height: 0.0,
-                    font_size: None,
-                    font_name: None,
-                    alignment: TextAlignment::Left,
-                    is_bold: false,
-                    is_italic: false,
-                    line_spacing: 1.0,
-                    indent_level: 0,
-                    ref_id: None,
-                });
-            }
+        let data = &self.data;
 
-            // Extract positioned text elements
-            let positioned_texts = self.extract_positioned_text(&doc, page_id);
-
-            // Group text by visual blocks and detect formatting
-            let text_blocks = self.group_text_into_blocks(&positioned_texts, page_height);
-
-            for block in text_blocks {
-                // Detect if this might be a header/footer
-                // Use 95%/6% thresholds to avoid clipping heading text near page top
-                let element_type = if block.y > page_height * 0.95 {
-                    LayoutElementType::Header
-                } else if block.y < page_height * 0.06 {
-                    LayoutElementType::Footer
-                } else if block.content.starts_with('•') || block.content.starts_with('-')
-                    || block.content.starts_with("* ")
-                    || block.content.starts_with("\u{2022}")  // bullet character
-                    || block.content.starts_with("\u{2013}")  // en-dash
-                {
-                    LayoutElementType::ListItem
-                } else {
-                    LayoutElementType::Text
+        // Process pages in parallel — each thread loads its own Document
+        // because lopdf::Document is neither Send nor Sync.
+        let mut all_elements: Vec<LayoutElement> = pages
+            .par_iter()
+            .flat_map(|(page_num, page_id)| {
+                let thread_doc = match lopdf::Document::load_mem(data) {
+                    Ok(d) => d,
+                    Err(_) => return vec![],
                 };
-
-                // Detect alignment from position
-                let alignment = if block.x < page_width * 0.2 {
-                    TextAlignment::Left
-                } else if block.x > page_width * 0.6 {
-                    TextAlignment::Right
-                } else {
-                    TextAlignment::Center
-                };
-
-                // Calculate indent level
-                let indent_level = ((block.x / 36.0) as u32).min(10); // 36pt = 0.5 inch
-
-                elements.push(LayoutElement {
-                    element_type,
-                    content: block.content,
-                    page: page_num,
-                    x: block.x,
-                    y: block.y,
-                    width: block.width,
-                    height: block.height,
-                    font_size: block.font_size,
-                    font_name: block.font_name,
-                    alignment,
-                    is_bold: block.is_bold,
-                    is_italic: block.is_italic,
-                    line_spacing: 1.2, // Default line spacing
-                    indent_level,
-                    ref_id: None,
-                });
-            }
-
-            // Add image elements
-            for image in &self.extract_images() {
-                if image.page == Some(page_num) || image.page.is_none() {
-                    elements.push(LayoutElement {
-                        element_type: LayoutElementType::Image,
-                        content: String::new(),
-                        page: page_num,
-                        x: 0.0, // Position not available from image extraction
-                        y: 0.0,
-                        width: image.width as f64,
-                        height: image.height as f64,
-                        font_size: None,
-                        font_name: None,
-                        alignment: TextAlignment::Center,
-                        is_bold: false,
-                        is_italic: false,
-                        line_spacing: 1.0,
-                        indent_level: 0,
-                        ref_id: Some(image.id.clone()),
-                    });
-                }
-            }
-        }
+                self.extract_layout_for_page(&thread_doc, *page_num as usize, *page_id, &all_images)
+            })
+            .collect();
 
         // Sort elements by page and Y position (top to bottom)
-        elements.sort_by(|a, b| {
+        all_elements.sort_by(|a, b| {
             match a.page.cmp(&b.page) {
                 std::cmp::Ordering::Equal => {
                     // Within same page, sort by Y (descending for PDF coords) then X
@@ -626,6 +542,124 @@ impl PdfParser {
                 other => other,
             }
         });
+
+        all_elements
+    }
+
+    /// Extract layout elements for a single page.
+    ///
+    /// This is the per-page workhorse called from `extract_layout()`.
+    /// It is designed to be called from parallel iterators — each invocation
+    /// receives its own `doc` reference (loaded per-thread).
+    fn extract_layout_for_page(
+        &self,
+        doc: &lopdf::Document,
+        page_num: usize,
+        page_id: lopdf::ObjectId,
+        all_images: &[PdfImage],
+    ) -> Vec<LayoutElement> {
+        let mut elements = Vec::new();
+
+        // Get page dimensions
+        let (page_width, page_height) = self.get_page_dimensions(doc, page_id);
+
+        // Add page break marker for pages after the first
+        if page_num > 1 {
+            elements.push(LayoutElement {
+                element_type: LayoutElementType::PageBreak,
+                content: String::new(),
+                page: page_num,
+                x: 0.0,
+                y: page_height,
+                width: page_width,
+                height: 0.0,
+                font_size: None,
+                font_name: None,
+                alignment: TextAlignment::Left,
+                is_bold: false,
+                is_italic: false,
+                line_spacing: 1.0,
+                indent_level: 0,
+                ref_id: None,
+            });
+        }
+
+        // Extract positioned text elements
+        let positioned_texts = self.extract_positioned_text(doc, page_id);
+
+        // Group text by visual blocks and detect formatting
+        let text_blocks = self.group_text_into_blocks(&positioned_texts, page_height);
+
+        for block in text_blocks {
+            // Detect if this might be a header/footer
+            // Use 95%/6% thresholds to avoid clipping heading text near page top
+            let element_type = if block.y > page_height * 0.95 {
+                LayoutElementType::Header
+            } else if block.y < page_height * 0.06 {
+                LayoutElementType::Footer
+            } else if block.content.starts_with('•') || block.content.starts_with('-')
+                || block.content.starts_with("* ")
+                || block.content.starts_with("\u{2022}")  // bullet character
+                || block.content.starts_with("\u{2013}")  // en-dash
+            {
+                LayoutElementType::ListItem
+            } else {
+                LayoutElementType::Text
+            };
+
+            // Detect alignment from position
+            let alignment = if block.x < page_width * 0.2 {
+                TextAlignment::Left
+            } else if block.x > page_width * 0.6 {
+                TextAlignment::Right
+            } else {
+                TextAlignment::Center
+            };
+
+            // Calculate indent level
+            let indent_level = ((block.x / 36.0) as u32).min(10); // 36pt = 0.5 inch
+
+            elements.push(LayoutElement {
+                element_type,
+                content: block.content,
+                page: page_num,
+                x: block.x,
+                y: block.y,
+                width: block.width,
+                height: block.height,
+                font_size: block.font_size,
+                font_name: block.font_name,
+                alignment,
+                is_bold: block.is_bold,
+                is_italic: block.is_italic,
+                line_spacing: 1.2, // Default line spacing
+                indent_level,
+                ref_id: None,
+            });
+        }
+
+        // Add image elements that belong to this page
+        for image in all_images {
+            if image.page == Some(page_num) || image.page.is_none() {
+                elements.push(LayoutElement {
+                    element_type: LayoutElementType::Image,
+                    content: String::new(),
+                    page: page_num,
+                    x: 0.0, // Position not available from image extraction
+                    y: 0.0,
+                    width: image.width as f64,
+                    height: image.height as f64,
+                    font_size: None,
+                    font_name: None,
+                    alignment: TextAlignment::Center,
+                    is_bold: false,
+                    is_italic: false,
+                    line_spacing: 1.0,
+                    indent_level: 0,
+                    ref_id: Some(image.id.clone()),
+                });
+            }
+        }
 
         elements
     }

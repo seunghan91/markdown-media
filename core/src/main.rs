@@ -46,6 +46,10 @@ struct Cli {
     /// Extract images to assets directory
     #[arg(long)]
     extract_images: bool,
+
+    /// Number of threads for parallel PDF processing (0 = auto-detect CPU cores)
+    #[arg(short = 'j', long, default_value = "0")]
+    threads: usize,
 }
 
 #[derive(Subcommand)]
@@ -113,7 +117,14 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    
+
+    // Configure Rayon global thread pool for parallel PDF processing
+    let threads = if cli.threads == 0 { num_cpus::get() } else { cli.threads };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .ok(); // Ignore if already initialized
+
     match cli.command {
         Some(Commands::Convert { input, output, format, extract_images }) => {
             convert_file(&input, &output, &format, extract_images, true);
@@ -748,6 +759,7 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
                             println!("  - Title: {}", doc.metadata.title);
                         }
                         println!("  - Text length: {} chars", doc.full_text().len());
+                        println!("  - Using {} threads", rayon::current_num_threads());
                     }
 
                     println!("✅ Conversion complete!");

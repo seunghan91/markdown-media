@@ -117,6 +117,18 @@ fn detect_format(data: &[u8], filename: &str) -> String {
     "unknown".into()
 }
 
+/// Configure the number of threads for parallel PDF processing.
+///
+/// Must be called before any PDF conversion. Pass 0 for auto-detect (CPU cores).
+#[pyfunction]
+fn set_threads(n: usize) -> PyResult<()> {
+    let threads = if n == 0 { num_cpus::get() } else { n };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .map_err(|e| PyValueError::new_err(format!("Thread pool error: {}", e)))
+}
+
 /// Get MDM core version.
 #[pyfunction]
 fn version() -> String {
@@ -130,6 +142,7 @@ fn _mdm_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(convert_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(convert_file_to_json, m)?)?;
     m.add_function(wrap_pyfunction!(detect_format, m)?)?;
+    m.add_function(wrap_pyfunction!(set_threads, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }
