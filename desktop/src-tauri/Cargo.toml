@@ -1,0 +1,31 @@
+[package]
+name = "mdm-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "MDM Desktop Tauri shell"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+chrono = "0.4"
+dirs = "5.0"
+mdm-core = { path = "../../core" }
+printpdf = "0.7"
+pulldown-cmark = "0.12"
+quick-xml = "0.31"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.0.0", features = [] }
+tauri-plugin-dialog = "2.0.0"
+tauri-plugin-shell = "2.0.0"
+tauri-plugin-window-state = "2.0.0"
+tauri-plugin-single-instance = "2.0.0"
+tauri-plugin-fs = "2.0.0"
+walkdir = "2.5"
+zip = "2.2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

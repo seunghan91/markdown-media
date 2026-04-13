@@ -1,0 +1,171 @@
+:root {
+  --color-accent: #0088ff;
+  --color-accent-hover: #0091ff;
+  --color-accent-soft: rgba(0, 136, 255, 0.12);
+  --color-label-primary: rgba(0, 0, 0, 1);
+  --color-label-secondary: rgba(60, 60, 67, 0.6);
+  --color-label-tertiary: rgba(60, 60, 67, 0.3);
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f2f2f7;
+  --color-bg-tertiary: #ffffff;
+  /* Grouped: page=#f2f2f7, card=#ffffff (ios26 HIG pattern) */
+  --color-bg-page: #f2f2f7;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #fafafa;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --card-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --color-fill-primary: rgba(120, 120, 128, 0.2);
+  --color-fill-secondary: rgba(120, 120, 128, 0.16);
+  --color-separator: #c6c6c8;
+  --color-gray: #8e8e93;
+  --color-gray4: #d1d1d6;
+  --color-gray5: #e5e5ea;
+  --color-gray6: #f2f2f7;
+  --color-success: #34c759;
+  --color-warning: #ff9f0a;
+  --color-error: #ff383c;
+  --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+  --radius-card: 12px;
+  --radius-button: 12px;
+  --radius-menu: 14px;
+  --radius-popover: 14px;
+  --duration-micro: 0.1s;
+  --duration-fast: 0.2s;
+  --duration-normal: 0.3s;
+  --duration-slow: 0.4s;
+  --ease-default: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --ease-spring-snappy: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --shadow-soft: 0 20px 50px rgba(15, 23, 42, 0.08);
+  --shadow-card: 0 14px 35px rgba(15, 23, 42, 0.08);
+  --shadow-card-hover: 0 20px 36px rgba(15, 23, 42, 0.15);
+
+  /* Traffic light dots (macOS-native, no dark override needed) */
+  --dot-red: #ff5f57;
+  --dot-yellow: #febc2e;
+  --dot-green: #28c840;
+
+  /* Liquid Glass surfaces */
+  --glass-sidebar-bg-start: rgba(255, 255, 255, 0.82);
+  --glass-sidebar-bg-end: rgba(255, 255, 255, 0.55);
+  --glass-sidebar-tint: rgba(0, 136, 255, 0.16);
+  --glass-sidebar-shadow: rgba(0, 0, 0, 0.08);
+  --glass-toolbar-bg-start: rgba(255, 255, 255, 0.68);
+  --glass-toolbar-bg-end: rgba(255, 255, 255, 0.48);
+  --glass-toolbar-tint: rgba(0, 136, 255, 0.09);
+  --glass-segment-bg: rgba(247, 247, 247, 0.86);
+  --glass-segment-inset: rgba(255, 255, 255, 0.6);
+  --glass-segment-shadow: rgba(15, 23, 42, 0.08);
+  --glass-panel-bg-start: rgba(255, 255, 255, 0.82);
+  --glass-panel-bg-end: rgba(255, 255, 255, 0.66);
+  --glass-panel-tint: rgba(52, 199, 89, 0.12);
+
+  /* Quick Action card backgrounds */
+  --card-blue-start: rgba(186, 224, 255, 0.9);
+  --card-blue-end: rgba(228, 242, 255, 0.95);
+  --card-blue-border: rgba(0, 136, 255, 0.3);
+  --card-green-start: rgba(203, 245, 214, 0.92);
+  --card-green-end: rgba(234, 255, 240, 0.96);
+  --card-green-border: rgba(52, 199, 89, 0.3);
+  --card-orange-start: rgba(255, 224, 182, 0.92);
+  --card-orange-end: rgba(255, 245, 229, 0.96);
+  --card-orange-border: rgba(255, 159, 10, 0.3);
+  --card-text-primary: #04111f;
+  --card-text-secondary: rgba(4, 17, 31, 0.72);
+
+  /* Misc surfaces */
+  --overlay-light: rgba(15, 23, 42, 0.06);
+  --overlay-medium: rgba(15, 23, 42, 0.05);
+  --dropzone-bg: rgba(255, 255, 255, 0.75);
+  --export-surface: rgba(255, 255, 255, 0.55);
+  --progress-gradient-end: #4cc4ff;
+
+  --text-large-title: 34px;
+  --text-title1: 28px;
+  --text-title2: 22px;
+  --text-title3: 20px;
+  --text-headline: 17px;
+  --text-body: 17px;
+  --text-subheadline: 15px;
+  --text-footnote: 13px;
+  --text-caption1: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-accent: #0091ff;
+    --color-accent-hover: #46aaff;
+    --color-accent-soft: rgba(0, 145, 255, 0.18);
+    --color-label-primary: rgba(255, 255, 255, 1);
+    --color-label-secondary: rgba(235, 235, 245, 0.7);
+    --color-label-tertiary: rgba(235, 235, 245, 0.3);
+    --color-bg-primary: #0a0a0c;
+    --color-bg-secondary: #17171b;
+    --color-bg-tertiary: #232328;
+    --color-bg-page: #000000;
+    --color-bg-card: #1c1c1e;
+    --color-bg-card-hover: #252528;
+    --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+    --card-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.2);
+    --color-fill-primary: rgba(120, 120, 128, 0.36);
+    --color-fill-secondary: rgba(120, 120, 128, 0.32);
+    --color-separator: #38383a;
+    --color-gray4: #3a3a3c;
+    --color-gray5: #2c2c2e;
+    --color-gray6: #1c1c1e;
+    --color-success: #30d158;
+    --color-error: #ff4245;
+    --shadow-soft: 0 24px 60px rgba(0, 0, 0, 0.35);
+    --shadow-card: 0 20px 40px rgba(0, 0, 0, 0.28);
+    --shadow-card-hover: 0 20px 36px rgba(0, 0, 0, 0.35);
+
+    /* Liquid Glass surfaces (dark) */
+    --glass-sidebar-bg-start: rgba(14, 14, 18, 0.82);
+    --glass-sidebar-bg-end: rgba(14, 14, 18, 0.65);
+    --glass-sidebar-tint: rgba(0, 145, 255, 0.18);
+    --glass-sidebar-shadow: rgba(0, 0, 0, 0.28);
+    --glass-toolbar-bg-start: rgba(12, 12, 15, 0.72);
+    --glass-toolbar-bg-end: rgba(12, 12, 15, 0.55);
+    --glass-toolbar-tint: rgba(0, 145, 255, 0.12);
+    --glass-segment-bg: rgba(34, 34, 38, 0.88);
+    --glass-segment-inset: rgba(255, 255, 255, 0.04);
+    --glass-segment-shadow: rgba(0, 0, 0, 0.22);
+    --glass-panel-bg-start: rgba(20, 20, 24, 0.8);
+    --glass-panel-bg-end: rgba(20, 20, 24, 0.66);
+    --glass-panel-tint: rgba(0, 145, 255, 0.15);
+
+    /* Quick Action card backgrounds (dark) */
+    --card-blue-start: rgba(0, 80, 160, 0.3);
+    --card-blue-end: rgba(0, 60, 120, 0.2);
+    --card-blue-border: rgba(0, 145, 255, 0.35);
+    --card-green-start: rgba(20, 120, 50, 0.3);
+    --card-green-end: rgba(15, 80, 35, 0.2);
+    --card-green-border: rgba(48, 209, 88, 0.35);
+    --card-orange-start: rgba(160, 80, 0, 0.3);
+    --card-orange-end: rgba(120, 60, 0, 0.2);
+    --card-orange-border: rgba(255, 159, 10, 0.35);
+    --card-text-primary: rgba(255, 255, 255, 1);
+    --card-text-secondary: rgba(235, 235, 245, 0.7);
+
+    /* Misc surfaces (dark) */
+    --overlay-light: rgba(255, 255, 255, 0.06);
+    --overlay-medium: rgba(255, 255, 255, 0.05);
+    --dropzone-bg: rgba(30, 30, 34, 0.75);
+    --export-surface: rgba(30, 30, 34, 0.55);
+    --progress-gradient-end: #2a8fd4;
+  }
+}

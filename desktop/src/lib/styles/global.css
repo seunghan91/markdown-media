@@ -1,0 +1,183 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:global(html, body) {
+  margin: 0;
+  min-height: 100%;
+}
+
+:global(body) {
+  color: var(--color-label-primary);
+  font-family: var(--font-family);
+  background: var(--color-bg-page);
+  line-height: 1.45;
+}
+
+:global(*) {
+  box-sizing: border-box;
+}
+
+:global(button),
+:global(input),
+:global(select),
+:global(textarea) {
+  font: inherit;
+}
+
+:global(button) {
+  cursor: pointer;
+}
+
+:global(:focus-visible) {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+:global(.app-shell) {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+:global(.content-shell) {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+  overflow: hidden;
+}
+
+:global(.page-shell) {
+  padding: 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+:global(.page-grid) {
+  display: grid;
+  gap: 20px;
+}
+
+:global(.panel) {
+  border: 1px solid color-mix(in srgb, var(--color-separator) 72%, transparent);
+  border-radius: var(--radius-xl);
+}
+
+:global(.eyebrow) {
+  color: var(--color-label-secondary);
+  font-size: var(--text-caption1);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+:global(.section-title) {
+  margin: 0;
+  font-size: var(--text-title2);
+  line-height: 1.2;
+}
+
+:global(.section-copy) {
+  margin: 0;
+  color: var(--color-label-secondary);
+}
+
+:global(.button) {
+  border: 0;
+  border-radius: var(--radius-button);
+  padding: 11px 16px;
+  color: var(--color-bg-primary);
+  background: linear-gradient(180deg, var(--color-accent-hover), var(--color-accent));
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--color-accent) 24%, transparent);
+  transition:
+    transform var(--duration-fast) var(--ease-default),
+    box-shadow var(--duration-fast) var(--ease-default),
+    opacity var(--duration-fast) var(--ease-default);
+}
+
+:global(.button:hover) {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 28px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+:global(.button.secondary) {
+  color: var(--color-label-primary);
+  background: color-mix(in srgb, var(--color-fill-secondary) 88%, white);
+  box-shadow: none;
+}
+
+:global(.button:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:global(.field),
+:global(.textarea),
+:global(.select) {
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--color-separator) 80%, transparent);
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: var(--color-label-primary);
+  background: color-mix(in srgb, var(--color-bg-tertiary) 92%, transparent);
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-default);
+}
+
+:global(.field:focus),
+:global(.textarea:focus),
+:global(.select:focus) {
+  border-color: var(--color-accent);
+}
+
+:global(.textarea) {
+  min-height: 220px;
+  resize: vertical;
+  font-family: var(--font-mono);
+}
+
+:global(.meta-list) {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+:global(.meta-row) {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--color-label-secondary);
+  font-size: var(--text-footnote);
+}
+
+:global(.pill) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--radius-full);
+  padding: 7px 12px;
+  color: var(--color-label-secondary);
+  background: color-mix(in srgb, var(--color-fill-secondary) 92%, transparent);
+}
+
+:global(.status-success) {
+  color: var(--color-success);
+}
+
+:global(.status-warning) {
+  color: var(--color-warning);
+}
+
+:global(.status-error) {
+  color: var(--color-error);
+}
+
+@media (max-width: 960px) {
+  :global(.app-shell) {
+    grid-template-columns: 1fr;
+  }
+
+  :global(.page-shell) {
+    padding: 16px;
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "MDM Desktop",
+  "version": "0.1.0",
+  "identifier": "com.seunghan.markdownmedia.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MDM Desktop",
+        "label": "main",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 900,
+        "minHeight": 600,
+        "decorations": true,
+        "transparent": false,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [],
+    "fileAssociations": [
+      {
+        "ext": ["hwp"],
+        "mimeType": "application/x-hwp",
+        "description": "한글 워드프로세서 문서"
+      },
+      {
+        "ext": ["hwpx"],
+        "mimeType": "application/hwpx",
+        "description": "한글 워드프로세서 XML 문서"
+      },
+      {
+        "ext": ["pdf"],
+        "mimeType": "application/pdf",
+        "description": "PDF 문서"
+      },
+      {
+        "ext": ["docx"],
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "description": "Microsoft Word 문서"
+      },
+      {
+        "ext": ["md", "mdx", "markdown"],
+        "mimeType": "text/markdown",
+        "description": "Markdown 문서"
+      }
+    ]
+  },
+  "plugins": {}
+}

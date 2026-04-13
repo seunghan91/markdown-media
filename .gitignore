@@ -34,3 +34,6 @@ npm-debug.log*
 /packages/parser-rs/target/
 /packages/core-native/target/
 /packages/core-native/*.node
+*.png
+.superpowers/
+.playwright-mcp/
