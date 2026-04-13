@@ -21,6 +21,10 @@ report.pdf    ──┼──▶  MDM Engine (Rust)  ──▶  Clean Markdown +
 proposal.docx ──┘
 ```
 
+> **Scope note**: MDM is a **one-way pipeline — existing documents → Markdown**. Converting Markdown back to HWP/DOCX is out of scope. The mission is to unlock the content already trapped in proprietary formats, not to author new documents in those formats.
+>
+> **방향 명시**: MDM은 **기존 문서 → Markdown 단방향 파이프라인**입니다. Markdown을 HWP/DOCX로 역변환하는 기능은 이 프로젝트의 범위 밖입니다. 독점 포맷에 갇혀 있는 콘텐츠를 해방하는 것이 목적이며, 그 포맷으로 새 문서를 저작하는 도구가 아닙니다.
+
 ---
 
 ## 5분 만에 시작하기 / Quick Start
@@ -197,6 +201,24 @@ MDM:             문서 → 마크다운 + 미디어 번들 (미디어 보존 + 
 > MDM is a "Document-to-AI Infrastructure Layer" — not just a converter, but infrastructure that structures every component of a document for AI consumption.
 
 > MDM은 "Document-to-AI 인프라 레이어" — 단순 변환기가 아니라, 문서의 모든 구성 요소를 AI가 소비할 수 있는 형태로 구조화하는 인프라입니다.
+
+### Conversion Direction / 변환 방향
+
+MDM deliberately covers **only one direction**:
+
+```
+HWP / HWPX / PDF / DOCX / PPTX / XLSX  ──▶  Markdown (+ Media Bundle)
+```
+
+Markdown → HWP or Markdown → DOCX is **not a goal**. Tools like Pandoc already handle document authoring workflows. MDM's focus is **reading and extracting** — liberating content locked inside proprietary formats so that AI and humans can work with it.
+
+MDM은 의도적으로 **단방향만 지원**합니다:
+
+```
+HWP / HWPX / PDF / DOCX / PPTX / XLSX  ──▶  Markdown (+ 미디어 번들)
+```
+
+Markdown → HWP 또는 Markdown → DOCX 변환은 **이 프로젝트의 목표가 아닙니다**. 문서 저작 워크플로는 Pandoc 등 기존 도구가 이미 담당합니다. MDM의 집중 영역은 **읽기와 추출** — 독점 포맷 안에 갇힌 콘텐츠를 AI와 사람이 활용할 수 있도록 해방하는 것입니다.
 
 ---
 
