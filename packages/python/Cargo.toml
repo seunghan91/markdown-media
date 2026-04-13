@@ -1,0 +1,16 @@
+[package]
+name = "mdm-python"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for MDM Core - HWP/HWPX/PDF/DOCX to Markdown converter"
+license = "MIT"
+
+[lib]
+name = "_mdm_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+mdm-core = { path = "../../core" }
+pyo3 = { version = "0.28", features = ["extension-module"] }
+serde_json = "1"
+zip = "2.2"
