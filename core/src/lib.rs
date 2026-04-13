@@ -22,6 +22,7 @@ pub mod renderer;
 pub mod optimizer;
 pub mod cache;
 pub mod legal;
+pub mod manifest;
 pub mod utils;
 
 #[cfg(feature = "wasm")]
