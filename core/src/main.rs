@@ -6,6 +6,7 @@ mod docx;
 mod hwp;
 mod hwpx;
 mod ir;
+mod manifest;
 mod pdf;
 mod xlsx;
 mod pptx;
@@ -18,6 +19,7 @@ use clap::{Parser, Subcommand};
 use docx::DocxParser;
 use hwp::HwpParser;
 use hwpx::HwpxParser;
+use manifest::{ManifestV2, MediaType, AssetMetadata};
 use pdf::PdfParser;
 use xlsx::XlsxParser;
 use pptx::PptxParser;
@@ -28,6 +30,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde_json::json;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -218,6 +221,25 @@ fn detect_zip_format(path: &Path) -> String {
     "unknown".to_string()
 }
 
+/// Save ManifestV2 JSON as `.mdm` and create the assets directory structure.
+fn save_manifest(manifest: &ManifestV2, output_dir: &Path, stem: &str) -> io::Result<()> {
+    let mdm_path = output_dir.join(format!("{}.mdm", stem));
+    let json = manifest.to_json().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    fs::write(&mdm_path, json)?;
+    println!("  \u{2713} Created: {}", mdm_path.display());
+    Ok(())
+}
+
+/// Save a single asset file under `output_dir` using the asset's `src` path.
+fn save_asset_file(output_dir: &Path, asset: &manifest::Asset, data: &[u8]) -> io::Result<()> {
+    let full_path = output_dir.join(&asset.src);
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&full_path, data)?;
+    Ok(())
+}
+
 fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool) {
     println!("📄 Converting: {}", input.display());
 
@@ -335,34 +357,56 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         Ok(mut parser) => {
             // Create output directory
             fs::create_dir_all(output).expect("Failed to create output directory");
-            
+
             // Extract content
             let mdm = match parser.to_mdm() {
                 Ok(doc) => doc,
                 Err(e) => {
-                    eprintln!("❌ Error extracting content: {}", e);
+                    eprintln!("\u{274c} Error extracting content: {}", e);
                     return;
                 }
             };
-            
+
             let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-            
-            // Save images if requested
-            if extract_images && !mdm.images.is_empty() {
-                let assets_dir = output.join("assets");
-                fs::create_dir_all(&assets_dir).expect("Failed to create assets directory");
-                
-                for img in &mdm.images {
-                    let img_path = assets_dir.join(&img.name);
-                    if let Err(e) = fs::write(&img_path, &img.data) {
-                        eprintln!("  ⚠️  Failed to save {}: {}", img.name, e);
-                    } else if verbose {
-                        println!("  📷 Saved: {}", img.name);
+
+            // Build ManifestV2
+            let mut mv2 = ManifestV2::new(input, "hwp");
+
+            // Register and save images via ManifestV2
+            let mut image_map: Vec<(String, String)> = Vec::new();
+            for img in &mdm.images {
+                let ext = Path::new(&img.name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("bin");
+                let meta = AssetMetadata {
+                    format: Some(img.format.clone()),
+                    ..Default::default()
+                };
+                let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, meta);
+                image_map.push((img.name.clone(), hash_filename));
+            }
+
+            // Save images to disk (always when present, not just with --extract-images)
+            if !mdm.images.is_empty() {
+                let mut saved = 0usize;
+                for (idx, img) in mdm.images.iter().enumerate() {
+                    if let Some(asset) = mv2.assets.get(idx) {
+                        if let Err(e) = save_asset_file(output, asset, &img.data) {
+                            eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", img.name, e);
+                        } else {
+                            saved += 1;
+                            if verbose {
+                                println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, img.data.len());
+                            }
+                        }
                     }
                 }
-                println!("  ✓ Extracted {} images", mdm.images.len());
+                if saved > 0 {
+                    println!("  \u{2713} Extracted {} images to assets/images/", saved);
+                }
             }
-            
+
             // Save output based on format
             match format {
                 "json" => {
@@ -388,51 +432,45 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                             "size": i.data.len(),
                         })).collect::<Vec<_>>(),
                     });
-                    
+
                     fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                         .expect("Failed to write JSON");
-                    println!("  ✓ Created: {}", json_path.display());
+                    println!("  \u{2713} Created: {}", json_path.display());
                 }
                 _ => {
-                    // Default: MDX format
+                    // Default: MDX format with @[[]] media references
+                    let mut mdx_content = mdm.to_mdx();
+                    for (orig_name, _hash_fn) in &image_map {
+                        let md_img = format!("![{}](assets/{})", orig_name, orig_name);
+                        let replacement = format!("@[[{}]]", orig_name);
+                        mdx_content = mdx_content.replace(&md_img, &replacement);
+                    }
                     let mdx_path = output.join(format!("{}.mdx", stem));
-                    let mdx_content = mdm.to_mdx();
-                    
                     fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
-                    println!("  ✓ Created: {}", mdx_path.display());
-                    
-                    // Also create .mdm manifest
-                    let mdm_path = output.join(format!("{}.mdm", stem));
-                    let mdm_manifest = json!({
-                        "version": "1.0",
-                        "source": input.file_name().unwrap_or_default().to_string_lossy(),
-                        "resources": mdm.images.iter().map(|i| {
-                            (i.name.clone(), json!({
-                                "type": "image",
-                                "format": i.format,
-                                "src": format!("assets/{}", i.name),
-                            }))
-                        }).collect::<serde_json::Map<String, serde_json::Value>>(),
-                    });
-                    
-                    fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                        .expect("Failed to write MDM manifest");
-                    println!("  ✓ Created: {}", mdm_path.display());
+                    println!("  \u{2713} Created: {}", mdx_path.display());
                 }
             }
-            
+
+            // Update stats and save manifest
+            mv2.stats.markdown_lines = mdm.content.lines().count();
+            mv2.stats.markdown_chars = mdm.content.len();
+
+            if let Err(e) = save_manifest(&mv2, output, &stem) {
+                eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+            }
+
             if verbose {
-                println!("\n📊 Summary:");
+                println!("\n\u{1f4ca} Summary:");
                 println!("  - Sections: {}", mdm.metadata.section_count);
                 println!("  - Images: {}", mdm.images.len());
                 println!("  - Tables: {}", mdm.tables.len());
                 println!("  - Text length: {} chars", mdm.content.len());
             }
-            
-            println!("✅ Conversion complete!");
+
+            println!("\u{2705} Conversion complete!");
         }
         Err(e) => {
-            eprintln!("❌ Error opening file: {}", e);
+            eprintln!("\u{274c} Error opening file: {}", e);
         }
     }
 }
@@ -441,7 +479,7 @@ fn convert_hwpml(input: &Path, output: &Path, format: &str, verbose: bool) {
     let xml = match fs::read_to_string(input) {
         Ok(xml) => xml,
         Err(e) => {
-            eprintln!("❌ Error reading XML file: {}", e);
+            eprintln!("\u{274c} Error reading XML file: {}", e);
             return;
         }
     };
@@ -449,13 +487,19 @@ fn convert_hwpml(input: &Path, output: &Path, format: &str, verbose: bool) {
     let (version, title, content, sections) = match parse_hwpml(&xml) {
         Ok(parsed) => parsed,
         Err(e) => {
-            eprintln!("❌ Error parsing HWPML: {}", e);
+            eprintln!("\u{274c} Error parsing HWPML: {}", e);
             return;
         }
     };
 
     fs::create_dir_all(output).expect("Failed to create output directory");
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+
+    // Build ManifestV2
+    let mut mv2 = ManifestV2::new(input, "hwpml");
+    if !title.is_empty() {
+        mv2.source.title = Some(title.clone());
+    }
 
     match format {
         "json" => {
@@ -472,7 +516,7 @@ fn convert_hwpml(input: &Path, output: &Path, format: &str, verbose: bool) {
             });
             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                 .expect("Failed to write JSON");
-            println!("  ✓ Created: {}", json_path.display());
+            println!("  \u{2713} Created: {}", json_path.display());
         }
         _ => {
             let mdx_path = output.join(format!("{}.mdx", stem));
@@ -484,29 +528,25 @@ fn convert_hwpml(input: &Path, output: &Path, format: &str, verbose: bool) {
                 content
             );
             fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
-            println!("  ✓ Created: {}", mdx_path.display());
-
-            let mdm_path = output.join(format!("{}.mdm", stem));
-            let mdm_manifest = json!({
-                "version": "1.0",
-                "format": "hwpml",
-                "source": input.file_name().unwrap_or_default().to_string_lossy(),
-                "resources": {},
-            });
-            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                .expect("Failed to write MDM manifest");
-            println!("  ✓ Created: {}", mdm_path.display());
+            println!("  \u{2713} Created: {}", mdx_path.display());
         }
     }
 
+    mv2.stats.markdown_lines = content.lines().count();
+    mv2.stats.markdown_chars = content.len();
+
+    if let Err(e) = save_manifest(&mv2, output, &stem) {
+        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+    }
+
     if verbose {
-        println!("\n📊 Summary:");
+        println!("\n\u{1f4ca} Summary:");
         println!("  - Format: HWPML (raw XML)");
         println!("  - Sections: {}", sections);
         println!("  - Text length: {} chars", content.len());
     }
 
-    println!("✅ Conversion complete!");
+    println!("\u{2705} Conversion complete!");
 }
 
 fn parse_hwpml(xml: &str) -> Result<(String, String, String, usize), String> {
@@ -597,7 +637,7 @@ fn input_fallback_title(xml: &str) -> String {
     }
 }
 
-fn convert_hwpx(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool) {
+fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool, verbose: bool) {
     match HwpxParser::open(input) {
         Ok(mut parser) => {
             fs::create_dir_all(output).expect("Failed to create output directory");
@@ -606,27 +646,38 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, extract_images: bool,
                 Ok(doc) => {
                     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
-                    // Extract and save images if requested
-                    let mut saved_images = Vec::new();
-                    if extract_images && !doc.image_info.is_empty() {
-                        let assets_dir = output.join("assets");
-                        fs::create_dir_all(&assets_dir).expect("Failed to create assets directory");
-                        
-                        for img in &doc.image_info {
-                            // Get filename from path
-                            let filename = img.path.split('/').last().unwrap_or(&img.id);
-                            let img_path = assets_dir.join(filename);
-                            
-                            if let Err(e) = fs::write(&img_path, &img.data) {
-                                eprintln!("  ⚠️  Failed to save {}: {}", filename, e);
+                    // Build ManifestV2
+                    let mut mv2 = ManifestV2::new(input, "hwpx");
+
+                    // Extract and save images via ManifestV2 (always, not just when --extract-images)
+                    let mut saved_count = 0usize;
+                    let mut image_map: Vec<(String, String)> = Vec::new();
+                    for img in &doc.image_info {
+                        let filename = img.path.split('/').last().unwrap_or(&img.id);
+                        let ext = Path::new(filename)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("bin");
+                        let meta = AssetMetadata {
+                            format: Some(ext.to_string()),
+                            ..Default::default()
+                        };
+                        let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, meta);
+                        image_map.push((img.id.clone(), hash_filename.clone()));
+
+                        if let Some(asset) = mv2.assets.iter().rev().find(|a| a.src.ends_with(&hash_filename)) {
+                            if let Err(e) = save_asset_file(output, asset, &img.data) {
+                                eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", filename, e);
                             } else {
+                                saved_count += 1;
                                 if verbose {
-                                    println!("  📷 Saved: {} ({} bytes)", filename, img.data.len());
+                                    println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, img.data.len());
                                 }
-                                saved_images.push((img.id.clone(), filename.to_string(), img.media_type.clone(), img.data.len()));
                             }
                         }
-                        println!("  ✓ Extracted {} images to assets/", saved_images.len());
+                    }
+                    if saved_count > 0 {
+                        println!("  \u{2713} Extracted {} images to assets/images/", saved_count);
                     }
 
                     // Use sections (with embedded tables) instead of preview text
@@ -659,77 +710,47 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, extract_images: bool,
 
                             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                                 .expect("Failed to write JSON");
-                            println!("  ✓ Created: {}", json_path.display());
+                            println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
-                            // MDX format with image references
+                            // MDX format with @[[]] image references
                             let mdx_path = output.join(format!("{}.mdx", stem));
-                            
-                            // Build image list for frontmatter
-                            let image_yaml = if !saved_images.is_empty() {
-                                let imgs: Vec<String> = saved_images.iter()
-                                    .map(|(id, name, _, _)| format!("  - id: {}\n    src: ./assets/{}", id, name))
-                                    .collect();
-                                format!("\nimages:\n{}", imgs.join("\n"))
-                            } else {
-                                String::new()
-                            };
-                            
+
                             let mdx_content = format!(
-                                "---\nformat: hwpx\nversion: \"{}\"\nsections: {}{}\n---\n\n{}",
+                                "---\nformat: hwpx\nversion: \"{}\"\nsections: {}\nimages: {}\n---\n\n{}",
                                 doc.version,
                                 doc.sections.len(),
-                                image_yaml,
+                                doc.image_info.len(),
                                 content
                             );
 
                             fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
-                            println!("  ✓ Created: {}", mdx_path.display());
-
-                            // MDM manifest with full media information
-                            let mdm_path = output.join(format!("{}.mdm", stem));
-                            
-                            // Build resources map
-                            let resources: serde_json::Map<String, serde_json::Value> = saved_images.iter()
-                                .map(|(id, name, media_type, size)| {
-                                    (id.clone(), json!({
-                                        "type": "image",
-                                        "format": media_type.split('/').last().unwrap_or("unknown"),
-                                        "mediaType": media_type,
-                                        "src": format!("assets/{}", name),
-                                        "size": size,
-                                    }))
-                                })
-                                .collect();
-                            
-                            let mdm_manifest = json!({
-                                "version": "1.0",
-                                "format": "hwpx",
-                                "source": input.file_name().unwrap_or_default().to_string_lossy(),
-                                "resources": resources,
-                            });
-
-                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                                .expect("Failed to write MDM manifest");
-                            println!("  ✓ Created: {}", mdm_path.display());
+                            println!("  \u{2713} Created: {}", mdx_path.display());
                         }
                     }
 
+                    mv2.stats.markdown_lines = content.lines().count();
+                    mv2.stats.markdown_chars = content.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
                     if verbose {
-                        println!("\n📊 Summary:");
+                        println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: HWPX (ZIP-based)");
                         println!("  - Sections: {}", doc.sections.len());
                         println!("  - Tables: {}", doc.tables.len());
-                        println!("  - Images: {} (extracted: {})", doc.image_info.len(), saved_images.len());
+                        println!("  - Images: {} (extracted: {})", doc.image_info.len(), saved_count);
                         println!("  - Text length: {} chars", content.len());
                     }
 
-                    println!("✅ Conversion complete!");
+                    println!("\u{2705} Conversion complete!");
                 }
-                Err(e) => eprintln!("❌ Error parsing HWPX: {}", e),
+                Err(e) => eprintln!("\u{274c} Error parsing HWPX: {}", e),
             }
         }
-        Err(e) => eprintln!("❌ Error opening HWPX file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening HWPX file: {}", e),
     }
 }
 
@@ -741,6 +762,41 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
             match parser.parse() {
                 Ok(doc) => {
                     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+
+                    // Build ManifestV2
+                    let mut mv2 = ManifestV2::new(input, "pdf");
+                    mv2.source.title = if doc.metadata.title.is_empty() { None } else { Some(doc.metadata.title.clone()) };
+                    mv2.source.author = if doc.metadata.author.is_empty() { None } else { Some(doc.metadata.author.clone()) };
+                    mv2.source.pages = Some(doc.page_count);
+
+                    // Extract images and register in manifest
+                    let mut image_map: Vec<(String, String)> = Vec::new(); // (original_id, hash_filename)
+                    for image in &doc.images {
+                        let ext = image.format.extension();
+                        let meta = AssetMetadata {
+                            page: image.page,
+                            width: Some(image.width),
+                            height: Some(image.height),
+                            format: Some(ext.to_string()),
+                            ..Default::default()
+                        };
+                        let hash_filename = mv2.add_asset(&image.data, MediaType::Image, ext, meta);
+                        image_map.push((image.id.clone(), hash_filename));
+                    }
+
+                    // Save image files to disk
+                    for (idx, image) in doc.images.iter().enumerate() {
+                        if let Some(asset) = mv2.assets.get(idx) {
+                            if let Err(e) = save_asset_file(output, asset, &image.data) {
+                                eprintln!("  \u{26a0}\u{fe0f}  Failed to save image {}: {}", image.id, e);
+                            } else if verbose {
+                                println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, image.data.len());
+                            }
+                        }
+                    }
+                    if !doc.images.is_empty() {
+                        println!("  \u{2713} Extracted {} images to assets/images/", doc.images.len());
+                    }
 
                     match format {
                         "json" => {
@@ -763,52 +819,56 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
 
                             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                                 .expect("Failed to write JSON");
-                            println!("  ✓ Created: {}", json_path.display());
+                            println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
-                            // MDX format
+                            // MDX format — replace image refs with @[[]] syntax
+                            let mut mdx_content = doc.to_mdx();
+                            for (orig_id, _hash_fn) in &image_map {
+                                // Replace ![image_N](image_N) or similar with @[[image_N]]
+                                let md_pattern = format!("![{}]({})", orig_id, orig_id);
+                                let replacement = format!("@[[{}]]", orig_id);
+                                mdx_content = mdx_content.replace(&md_pattern, &replacement);
+                                // Also replace plain - image_id references in ## Images section
+                                let list_pattern = format!("- {} (", orig_id);
+                                let list_replacement = format!("- @[[{}]] (", orig_id);
+                                mdx_content = mdx_content.replace(&list_pattern, &list_replacement);
+                            }
                             let mdx_path = output.join(format!("{}.mdx", stem));
-                            fs::write(&mdx_path, doc.to_mdx()).expect("Failed to write MDX");
-                            println!("  ✓ Created: {}", mdx_path.display());
-
-                            // MDM manifest
-                            let mdm_path = output.join(format!("{}.mdm", stem));
-                            let mdm_manifest = json!({
-                                "version": "1.0",
-                                "format": "pdf",
-                                "source": input.file_name().unwrap_or_default().to_string_lossy(),
-                                "metadata": {
-                                    "pdf_version": doc.version,
-                                    "pages": doc.page_count,
-                                    "title": doc.metadata.title,
-                                    "author": doc.metadata.author,
-                                },
-                            });
-
-                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                                .expect("Failed to write MDM manifest");
-                            println!("  ✓ Created: {}", mdm_path.display());
+                            fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
+                            println!("  \u{2713} Created: {}", mdx_path.display());
                         }
                     }
 
+                    // Update stats
+                    let mdx_content = doc.to_mdx();
+                    mv2.stats.markdown_lines = mdx_content.lines().count();
+                    mv2.stats.markdown_chars = mdx_content.len();
+
+                    // Save ManifestV2 as .mdm
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
                     if verbose {
-                        println!("\n📊 Summary:");
+                        println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: PDF");
                         println!("  - Version: {}", doc.version);
                         println!("  - Pages: {}", doc.page_count);
                         if !doc.metadata.title.is_empty() {
                             println!("  - Title: {}", doc.metadata.title);
                         }
+                        println!("  - Images: {}", doc.images.len());
                         println!("  - Text length: {} chars", doc.full_text().len());
                         println!("  - Using {} threads", rayon::current_num_threads());
                     }
 
-                    println!("✅ Conversion complete!");
+                    println!("\u{2705} Conversion complete!");
                 }
-                Err(e) => eprintln!("❌ Error parsing PDF: {}", e),
+                Err(e) => eprintln!("\u{274c} Error parsing PDF: {}", e),
             }
         }
-        Err(e) => eprintln!("❌ Error opening PDF file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening PDF file: {}", e),
     }
 }
 
@@ -824,27 +884,46 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "document.docx".to_string());
 
-                    // Save images
-                    let assets_dir = output.join("assets");
-                    if !doc.images.is_empty() {
-                        fs::create_dir_all(&assets_dir).expect("Failed to create assets directory");
-                        let mut saved = 0usize;
-                        for image in &doc.images {
-                            if let Some(ref data) = image.data {
-                                let img_path = assets_dir.join(&image.filename);
-                                if let Err(e) = fs::write(&img_path, data) {
-                                    eprintln!("  ⚠️  Failed to save {}: {}", image.filename, e);
+                    // Build ManifestV2
+                    let mut mv2 = ManifestV2::new(input, "docx");
+                    mv2.source.title = doc.metadata.title.clone();
+                    mv2.source.author = doc.metadata.author.clone();
+                    mv2.source.pages = doc.metadata.page_count.map(|p| p as usize);
+
+                    // Extract images via ManifestV2 and save to content-addressed paths
+                    let mut image_map: Vec<(String, String)> = Vec::new();
+                    let mut saved = 0usize;
+                    for image in &doc.images {
+                        if let Some(ref data) = image.data {
+                            let ext = Path::new(&image.filename)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("bin");
+                            let meta = AssetMetadata {
+                                width: image.width,
+                                height: image.height,
+                                format: Some(ext.to_string()),
+                                alt_text: image.alt_text.clone(),
+                                ..Default::default()
+                            };
+                            let hash_filename = mv2.add_asset(data, MediaType::Image, ext, meta);
+                            image_map.push((image.id.clone(), hash_filename.clone()));
+
+                            // Save image using manifest asset path
+                            if let Some(asset) = mv2.assets.iter().rev().find(|a| a.src.ends_with(&hash_filename)) {
+                                if let Err(e) = save_asset_file(output, asset, data) {
+                                    eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", image.filename, e);
                                 } else {
                                     saved += 1;
                                     if verbose {
-                                        println!("  📷 Saved: {} ({} bytes)", image.filename, data.len());
+                                        println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, data.len());
                                     }
                                 }
                             }
                         }
-                        if saved > 0 {
-                            println!("  ✓ Extracted {} images to assets/", saved);
-                        }
+                    }
+                    if saved > 0 {
+                        println!("  \u{2713} Extracted {} images to assets/images/", saved);
                     }
 
                     match format {
@@ -873,47 +952,39 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
 
                             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                                 .expect("Failed to write JSON");
-                            println!("  ✓ Created: {}", json_path.display());
+                            println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
-                            // MDX format
+                            // MDX format — replace image refs with @[[]] syntax
+                            let mut mdx_content = doc.to_mdx(&source_name);
+                            for (orig_id, _hash_fn) in &image_map {
+                                let md_img = format!("![{}](assets/{})", orig_id, _hash_fn);
+                                let replacement = format!("@[[{}]]", orig_id);
+                                mdx_content = mdx_content.replace(&md_img, &replacement);
+                                // Also handle original filename references
+                                if let Some(img) = doc.images.iter().find(|i| i.id == *orig_id) {
+                                    let orig_ref = format!("![{}](assets/{})", orig_id, img.filename);
+                                    mdx_content = mdx_content.replace(&orig_ref, &replacement);
+                                }
+                            }
                             let mdx_path = output.join(format!("{}.mdx", stem));
-                            let mdx_content = doc.to_mdx(&source_name);
                             fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
-                            println!("  ✓ Created: {}", mdx_path.display());
-
-                            // MDM manifest
-                            let mdm_path = output.join(format!("{}.mdm", stem));
-                            let resources: serde_json::Map<String, serde_json::Value> = doc.images.iter()
-                                .map(|i| {
-                                    (i.id.clone(), json!({
-                                        "type": "image",
-                                        "filename": i.filename,
-                                        "src": format!("assets/{}", i.filename),
-                                        "size": i.data.as_ref().map(|d| d.len()).unwrap_or(0),
-                                    }))
-                                })
-                                .collect();
-
-                            let mdm_manifest = json!({
-                                "version": "1.0",
-                                "format": "docx",
-                                "source": source_name,
-                                "metadata": {
-                                    "title": doc.metadata.title,
-                                    "author": doc.metadata.author,
-                                },
-                                "resources": resources,
-                            });
-
-                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                                .expect("Failed to write MDM manifest");
-                            println!("  ✓ Created: {}", mdm_path.display());
+                            println!("  \u{2713} Created: {}", mdx_path.display());
                         }
                     }
 
+                    // Update stats
+                    let md_content = doc.to_markdown();
+                    mv2.stats.markdown_lines = md_content.lines().count();
+                    mv2.stats.markdown_chars = md_content.len();
+
+                    // Save ManifestV2 as .mdm
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
                     if verbose {
-                        println!("\n📊 Summary:");
+                        println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: DOCX");
                         if let Some(ref title) = doc.metadata.title {
                             println!("  - Title: {}", title);
@@ -924,12 +995,12 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                         println!("  - Text length: {} chars", doc.text().len());
                     }
 
-                    println!("✅ Conversion complete!");
+                    println!("\u{2705} Conversion complete!");
                 }
-                Err(e) => eprintln!("❌ Error parsing DOCX: {}", e),
+                Err(e) => eprintln!("\u{274c} Error parsing DOCX: {}", e),
             }
         }
-        Err(e) => eprintln!("❌ Error opening DOCX file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening DOCX file: {}", e),
     }
 }
 
@@ -945,6 +1016,9 @@ fn convert_xlsx(input: &Path, output: &Path, format: &str, verbose: bool) {
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "spreadsheet.xlsx".to_string());
 
+                    // Build ManifestV2 (no images for XLSX)
+                    let mut mv2 = ManifestV2::new(input, "xlsx");
+
                     match format {
                         "json" => {
                             let json_path = output.join(format!("{}.json", stem));
@@ -958,29 +1032,25 @@ fn convert_xlsx(input: &Path, output: &Path, format: &str, verbose: bool) {
                             });
                             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                                 .expect("Failed to write JSON");
-                            println!("  ✓ Created: {}", json_path.display());
+                            println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
                             let mdx_path = output.join(format!("{}.mdx", stem));
                             fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
-                            println!("  ✓ Created: {}", mdx_path.display());
-
-                            let mdm_path = output.join(format!("{}.mdm", stem));
-                            let mdm_manifest = json!({
-                                "version": "1.0",
-                                "format": "xlsx",
-                                "source": source_name,
-                                "metadata": { "sheets": doc.metadata.sheet_count },
-                                "resources": {},
-                            });
-                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                                .expect("Failed to write MDM manifest");
-                            println!("  ✓ Created: {}", mdm_path.display());
+                            println!("  \u{2713} Created: {}", mdx_path.display());
                         }
                     }
 
+                    let md = doc.to_markdown();
+                    mv2.stats.markdown_lines = md.lines().count();
+                    mv2.stats.markdown_chars = md.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
                     if verbose {
-                        println!("\n📊 Summary:");
+                        println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: XLSX");
                         println!("  - Sheets: {}", doc.metadata.sheet_count);
                         for sheet in &doc.sheets {
@@ -988,12 +1058,12 @@ fn convert_xlsx(input: &Path, output: &Path, format: &str, verbose: bool) {
                         }
                     }
 
-                    println!("✅ Conversion complete!");
+                    println!("\u{2705} Conversion complete!");
                 }
-                Err(e) => eprintln!("❌ Error parsing XLSX: {}", e),
+                Err(e) => eprintln!("\u{274c} Error parsing XLSX: {}", e),
             }
         }
-        Err(e) => eprintln!("❌ Error opening XLSX file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening XLSX file: {}", e),
     }
 }
 
@@ -1008,6 +1078,9 @@ fn convert_pptx(input: &Path, output: &Path, format: &str, verbose: bool) {
                     let source_name = input.file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "presentation.pptx".to_string());
+
+                    // Build ManifestV2 (no images for PPTX yet)
+                    let mut mv2 = ManifestV2::new(input, "pptx");
 
                     match format {
                         "json" => {
@@ -1028,29 +1101,25 @@ fn convert_pptx(input: &Path, output: &Path, format: &str, verbose: bool) {
                             });
                             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                                 .expect("Failed to write JSON");
-                            println!("  ✓ Created: {}", json_path.display());
+                            println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
                             let mdx_path = output.join(format!("{}.mdx", stem));
                             fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
-                            println!("  ✓ Created: {}", mdx_path.display());
-
-                            let mdm_path = output.join(format!("{}.mdm", stem));
-                            let mdm_manifest = json!({
-                                "version": "1.0",
-                                "format": "pptx",
-                                "source": source_name,
-                                "metadata": { "slides": doc.metadata.slide_count },
-                                "resources": {},
-                            });
-                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                                .expect("Failed to write MDM manifest");
-                            println!("  ✓ Created: {}", mdm_path.display());
+                            println!("  \u{2713} Created: {}", mdx_path.display());
                         }
                     }
 
+                    let md = doc.to_markdown();
+                    mv2.stats.markdown_lines = md.lines().count();
+                    mv2.stats.markdown_chars = md.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
                     if verbose {
-                        println!("\n📊 Summary:");
+                        println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: PPTX");
                         println!("  - Slides: {}", doc.metadata.slide_count);
                         for slide in &doc.slides {
@@ -1059,12 +1128,12 @@ fn convert_pptx(input: &Path, output: &Path, format: &str, verbose: bool) {
                         }
                     }
 
-                    println!("✅ Conversion complete!");
+                    println!("\u{2705} Conversion complete!");
                 }
-                Err(e) => eprintln!("❌ Error parsing PPTX: {}", e),
+                Err(e) => eprintln!("\u{274c} Error parsing PPTX: {}", e),
             }
         }
-        Err(e) => eprintln!("❌ Error opening PPTX file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening PPTX file: {}", e),
     }
 }
 
@@ -1080,6 +1149,10 @@ fn convert_html(input: &Path, output: &Path, format: &str, verbose: bool) {
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "page.html".to_string());
 
+                    // Build ManifestV2
+                    let mut mv2 = ManifestV2::new(input, "html");
+                    mv2.source.title = doc.title.clone();
+
                     match format {
                         "json" => {
                             let json_path = output.join(format!("{}.json", stem));
@@ -1093,29 +1166,24 @@ fn convert_html(input: &Path, output: &Path, format: &str, verbose: bool) {
                             });
                             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                                 .expect("Failed to write JSON");
-                            println!("  ✓ Created: {}", json_path.display());
+                            println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
                             let mdx_path = output.join(format!("{}.mdx", stem));
                             fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
-                            println!("  ✓ Created: {}", mdx_path.display());
-
-                            let mdm_path = output.join(format!("{}.mdm", stem));
-                            let mdm_manifest = json!({
-                                "version": "1.0",
-                                "format": "html",
-                                "source": source_name,
-                                "metadata": { "title": doc.title },
-                                "resources": {},
-                            });
-                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                                .expect("Failed to write MDM manifest");
-                            println!("  ✓ Created: {}", mdm_path.display());
+                            println!("  \u{2713} Created: {}", mdx_path.display());
                         }
                     }
 
+                    mv2.stats.markdown_lines = doc.markdown.lines().count();
+                    mv2.stats.markdown_chars = doc.markdown.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
                     if verbose {
-                        println!("\n📊 Summary:");
+                        println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: HTML");
                         if let Some(ref title) = doc.title {
                             println!("  - Title: {}", title);
@@ -1123,12 +1191,12 @@ fn convert_html(input: &Path, output: &Path, format: &str, verbose: bool) {
                         println!("  - Markdown length: {} chars", doc.markdown.len());
                     }
 
-                    println!("✅ Conversion complete!");
+                    println!("\u{2705} Conversion complete!");
                 }
-                Err(e) => eprintln!("❌ Error parsing HTML: {}", e),
+                Err(e) => eprintln!("\u{274c} Error parsing HTML: {}", e),
             }
         }
-        Err(e) => eprintln!("❌ Error opening HTML file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening HTML file: {}", e),
     }
 }
 
@@ -1144,6 +1212,9 @@ fn convert_csv(input: &Path, output: &Path, format: &str, verbose: bool) {
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "data.csv".to_string());
 
+                    // Build ManifestV2
+                    let mut mv2 = ManifestV2::new(input, "csv");
+
                     match format {
                         "json" => {
                             let json_path = output.join(format!("{}.json", stem));
@@ -1158,43 +1229,36 @@ fn convert_csv(input: &Path, output: &Path, format: &str, verbose: bool) {
                             });
                             fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                                 .expect("Failed to write JSON");
-                            println!("  ✓ Created: {}", json_path.display());
+                            println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
                             let mdx_path = output.join(format!("{}.mdx", stem));
                             fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
-                            println!("  ✓ Created: {}", mdx_path.display());
-
-                            let mdm_path = output.join(format!("{}.mdm", stem));
-                            let mdm_manifest = json!({
-                                "version": "1.0",
-                                "format": "csv",
-                                "source": source_name,
-                                "metadata": {
-                                    "rows": doc.rows.len(),
-                                    "columns": doc.rows.first().map(|r| r.len()).unwrap_or(0),
-                                },
-                                "resources": {},
-                            });
-                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                                .expect("Failed to write MDM manifest");
-                            println!("  ✓ Created: {}", mdm_path.display());
+                            println!("  \u{2713} Created: {}", mdx_path.display());
                         }
                     }
 
+                    let md = doc.to_markdown();
+                    mv2.stats.markdown_lines = md.lines().count();
+                    mv2.stats.markdown_chars = md.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
                     if verbose {
-                        println!("\n📊 Summary:");
+                        println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: CSV");
                         println!("  - Rows: {}", doc.rows.len());
                         println!("  - Columns: {}", doc.rows.first().map(|r| r.len()).unwrap_or(0));
                     }
 
-                    println!("✅ Conversion complete!");
+                    println!("\u{2705} Conversion complete!");
                 }
-                Err(e) => eprintln!("❌ Error parsing CSV: {}", e),
+                Err(e) => eprintln!("\u{274c} Error parsing CSV: {}", e),
             }
         }
-        Err(e) => eprintln!("❌ Error opening CSV file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening CSV file: {}", e),
     }
 }
 
@@ -1209,6 +1273,9 @@ fn convert_txt(input: &Path, output: &Path, format: &str, verbose: bool) {
                 .unwrap_or_else(|| "file.txt".to_string());
             let markdown = parser.to_markdown();
 
+            // Build ManifestV2
+            let mut mv2 = ManifestV2::new(input, "txt");
+
             match format {
                 "json" => {
                     let json_path = output.join(format!("{}.json", stem));
@@ -1222,37 +1289,32 @@ fn convert_txt(input: &Path, output: &Path, format: &str, verbose: bool) {
                     });
                     fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
                         .expect("Failed to write JSON");
-                    println!("  ✓ Created: {}", json_path.display());
+                    println!("  \u{2713} Created: {}", json_path.display());
                 }
                 _ => {
                     let mdx_path = output.join(format!("{}.mdx", stem));
                     fs::write(&mdx_path, parser.to_mdx(&source_name)).expect("Failed to write MDX");
-                    println!("  ✓ Created: {}", mdx_path.display());
-
-                    let mdm_path = output.join(format!("{}.mdm", stem));
-                    let mdm_manifest = json!({
-                        "version": "1.0",
-                        "format": "txt",
-                        "source": source_name,
-                        "metadata": { "lines": markdown.lines().count() },
-                        "resources": {},
-                    });
-                    fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
-                        .expect("Failed to write MDM manifest");
-                    println!("  ✓ Created: {}", mdm_path.display());
+                    println!("  \u{2713} Created: {}", mdx_path.display());
                 }
             }
 
+            mv2.stats.markdown_lines = markdown.lines().count();
+            mv2.stats.markdown_chars = markdown.len();
+
+            if let Err(e) = save_manifest(&mv2, output, &stem) {
+                eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+            }
+
             if verbose {
-                println!("\n📊 Summary:");
+                println!("\n\u{1f4ca} Summary:");
                 println!("  - Format: TXT");
                 println!("  - Lines: {}", markdown.lines().count());
                 println!("  - Characters: {}", markdown.len());
             }
 
-            println!("✅ Conversion complete!");
+            println!("\u{2705} Conversion complete!");
         }
-        Err(e) => eprintln!("❌ Error opening text file: {}", e),
+        Err(e) => eprintln!("\u{274c} Error opening text file: {}", e),
     }
 }
 
