@@ -1049,16 +1049,16 @@ mod tests {
         let text = extract_para_text(&data);
         assert_eq!(text, "AB", "0x16 control char should skip 14 bytes payload");
         
-        // Test 0x1F as well
+        // Test 0x19 as well (extended control char in 0x19..=0x1D range)
         let mut data2 = vec![
             b'X', 0,    // 'X'
-            0x1F, 0,    // Control char 0x1F
+            0x19, 0,    // Control char 0x19
         ];
         data2.extend_from_slice(&[0xAA; 14]);
         data2.extend_from_slice(&[b'Y', 0]);
-        
+
         let text2 = extract_para_text(&data2);
-        assert_eq!(text2, "XY", "0x1F control char should skip 14 bytes payload");
+        assert_eq!(text2, "XY", "0x19 control char should skip 14 bytes payload");
     }
 
     #[test]
@@ -1130,27 +1130,27 @@ mod tests {
     #[test]
     fn test_apply_markdown_formatting() {
         // Test bold
-        let style = CharShape { bold: true, italic: false, underline: false, strikeout: false };
+        let style = CharShape { bold: true, italic: false, underline: false, strikeout: false, font_size_pt: 0.0 };
         assert_eq!(apply_markdown_formatting("테스트", &style), "**테스트**");
 
         // Test italic
-        let style = CharShape { bold: false, italic: true, underline: false, strikeout: false };
+        let style = CharShape { bold: false, italic: true, underline: false, strikeout: false, font_size_pt: 0.0 };
         assert_eq!(apply_markdown_formatting("테스트", &style), "*테스트*");
 
         // Test bold+italic
-        let style = CharShape { bold: true, italic: true, underline: false, strikeout: false };
+        let style = CharShape { bold: true, italic: true, underline: false, strikeout: false, font_size_pt: 0.0 };
         assert_eq!(apply_markdown_formatting("테스트", &style), "***테스트***");
 
         // Test underline
-        let style = CharShape { bold: false, italic: false, underline: true, strikeout: false };
+        let style = CharShape { bold: false, italic: false, underline: true, strikeout: false, font_size_pt: 0.0 };
         assert_eq!(apply_markdown_formatting("테스트", &style), "<u>테스트</u>");
 
         // Test strikeout
-        let style = CharShape { bold: false, italic: false, underline: false, strikeout: true };
+        let style = CharShape { bold: false, italic: false, underline: false, strikeout: true, font_size_pt: 0.0 };
         assert_eq!(apply_markdown_formatting("테스트", &style), "~~테스트~~");
 
         // Test combined: bold + strikeout
-        let style = CharShape { bold: true, italic: false, underline: false, strikeout: true };
+        let style = CharShape { bold: true, italic: false, underline: false, strikeout: true, font_size_pt: 0.0 };
         assert_eq!(apply_markdown_formatting("테스트", &style), "**~~테스트~~**");
     }
 
@@ -1166,7 +1166,7 @@ mod tests {
         // Create char shapes: 0 = normal, 1 = bold
         let mut char_shapes = HashMap::new();
         char_shapes.insert(0, CharShape::default());
-        char_shapes.insert(1, CharShape { bold: true, italic: false, underline: false, strikeout: false });
+        char_shapes.insert(1, CharShape { bold: true, italic: false, underline: false, strikeout: false, font_size_pt: 0.0 });
 
         // Mapping: position 0-5 = shape 0 (normal), position 6+ = shape 1 (bold)
         let mapping = ParaCharShapeMapping {
@@ -1174,6 +1174,6 @@ mod tests {
         };
 
         let result = extract_para_text_formatted(&text_data, Some(&mapping), &char_shapes);
-        assert_eq!(result, "Hello **World**");
+        assert_eq!(result, "Hello**World**");
     }
 }

@@ -1,5 +1,6 @@
 //! hwp2mdm - HWP/HWPX/PDF to MDM converter CLI tool
 
+mod docx;
 mod hwp;
 mod hwpx;
 mod ir;
@@ -7,6 +8,7 @@ mod pdf;
 mod utils;
 
 use clap::{Parser, Subcommand};
+use docx::DocxParser;
 use hwp::HwpParser;
 use hwpx::HwpxParser;
 use pdf::PdfParser;
@@ -186,6 +188,12 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         && magic[3] == b'F';
     let is_cfb = magic.len() >= 8
         && magic == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+
+    // DOCX is also ZIP-based — check extension before HWPX fallback
+    if ext.eq_ignore_ascii_case("docx") {
+        convert_docx(input, output, format, verbose);
+        return;
+    }
 
     // ZIP magic → HWPX (regardless of extension)
     if is_zip || ext.eq_ignore_ascii_case("hwpx") {
@@ -705,6 +713,127 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
     }
 }
 
+fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match DocxParser::open(input) {
+        Ok(mut parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "document.docx".to_string());
+
+                    // Save images
+                    let assets_dir = output.join("assets");
+                    if !doc.images.is_empty() {
+                        fs::create_dir_all(&assets_dir).expect("Failed to create assets directory");
+                        let mut saved = 0usize;
+                        for image in &doc.images {
+                            if let Some(ref data) = image.data {
+                                let img_path = assets_dir.join(&image.filename);
+                                if let Err(e) = fs::write(&img_path, data) {
+                                    eprintln!("  ⚠️  Failed to save {}: {}", image.filename, e);
+                                } else {
+                                    saved += 1;
+                                    if verbose {
+                                        println!("  📷 Saved: {} ({} bytes)", image.filename, data.len());
+                                    }
+                                }
+                            }
+                        }
+                        if saved > 0 {
+                            println!("  ✓ Extracted {} images to assets/", saved);
+                        }
+                    }
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "docx",
+                                "metadata": {
+                                    "title": doc.metadata.title,
+                                    "author": doc.metadata.author,
+                                    "subject": doc.metadata.subject,
+                                    "pages": doc.metadata.page_count,
+                                    "words": doc.metadata.word_count,
+                                },
+                                "content": doc.to_markdown(),
+                                "tables": doc.tables.iter().map(|t| json!({
+                                    "markdown": t.to_markdown(),
+                                })).collect::<Vec<_>>(),
+                                "images": doc.images.iter().map(|i| json!({
+                                    "id": i.id,
+                                    "filename": i.filename,
+                                    "size": i.data.as_ref().map(|d| d.len()).unwrap_or(0),
+                                })).collect::<Vec<_>>(),
+                            });
+
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  ✓ Created: {}", json_path.display());
+                        }
+                        _ => {
+                            // MDX format
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            let mdx_content = doc.to_mdx(&source_name);
+                            fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
+                            println!("  ✓ Created: {}", mdx_path.display());
+
+                            // MDM manifest
+                            let mdm_path = output.join(format!("{}.mdm", stem));
+                            let resources: serde_json::Map<String, serde_json::Value> = doc.images.iter()
+                                .map(|i| {
+                                    (i.id.clone(), json!({
+                                        "type": "image",
+                                        "filename": i.filename,
+                                        "src": format!("assets/{}", i.filename),
+                                        "size": i.data.as_ref().map(|d| d.len()).unwrap_or(0),
+                                    }))
+                                })
+                                .collect();
+
+                            let mdm_manifest = json!({
+                                "version": "1.0",
+                                "format": "docx",
+                                "source": source_name,
+                                "metadata": {
+                                    "title": doc.metadata.title,
+                                    "author": doc.metadata.author,
+                                },
+                                "resources": resources,
+                            });
+
+                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                                .expect("Failed to write MDM manifest");
+                            println!("  ✓ Created: {}", mdm_path.display());
+                        }
+                    }
+
+                    if verbose {
+                        println!("\n📊 Summary:");
+                        println!("  - Format: DOCX");
+                        if let Some(ref title) = doc.metadata.title {
+                            println!("  - Title: {}", title);
+                        }
+                        println!("  - Paragraphs: {}", doc.paragraphs.len());
+                        println!("  - Tables: {}", doc.tables.len());
+                        println!("  - Images: {}", doc.images.len());
+                        println!("  - Text length: {} chars", doc.text().len());
+                    }
+
+                    println!("✅ Conversion complete!");
+                }
+                Err(e) => eprintln!("❌ Error parsing DOCX: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error opening DOCX file: {}", e),
+    }
+}
+
 fn analyze_file(input: &Path) {
     println!("🔍 Analyzing: {}", input.display());
 
@@ -868,6 +997,7 @@ fn show_info(input: &Path, format: &str) {
     match ext.to_lowercase().as_str() {
         "hwpx" => show_hwpx_info(input, format, &file_size_str),
         "pdf" => show_pdf_info(input, format, &file_size_str),
+        "docx" => show_docx_info(input, format, &file_size_str),
         _ => show_hwp_info(input, format, &file_size_str),
     }
 }
@@ -956,6 +1086,65 @@ fn show_hwpx_info(input: &Path, format: &str, file_size: &str) {
                 println!("  Sections:     {}", section_count);
                 println!("  Compressed:   Yes (ZIP container)");
                 println!("  Encrypted:    {}", if encrypted { "Yes ⚠️" } else { "No" });
+            }
+        }
+        Err(e) => eprintln!("❌ Error: {}", e),
+    }
+}
+
+fn show_docx_info(input: &Path, format: &str, file_size: &str) {
+    match DocxParser::open(input) {
+        Ok(mut parser) => {
+            match parser.parse() {
+                Ok(doc) => {
+                    if format == "json" {
+                        let info = json!({
+                            "file": {
+                                "name": input.file_name().unwrap_or_default().to_string_lossy(),
+                                "path": input.display().to_string(),
+                                "size": file_size,
+                                "format": "docx",
+                            },
+                            "document": {
+                                "title": doc.metadata.title,
+                                "author": doc.metadata.author,
+                                "subject": doc.metadata.subject,
+                                "pages": doc.metadata.page_count,
+                                "words": doc.metadata.word_count,
+                                "paragraphs": doc.paragraphs.len(),
+                                "tables": doc.tables.len(),
+                                "images": doc.images.len(),
+                            },
+                        });
+                        println!("{}", serde_json::to_string_pretty(&info).unwrap());
+                    } else {
+                        println!("📄 File Information");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        println!("  Name:       {}", input.file_name().unwrap_or_default().to_string_lossy());
+                        println!("  Path:       {}", input.display());
+                        println!("  Size:       {}", file_size);
+                        println!("  Format:     DOCX (Office Open XML)");
+                        println!();
+                        println!("📊 Document Properties");
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        if let Some(ref title) = doc.metadata.title {
+                            println!("  Title:        {}", title);
+                        }
+                        if let Some(ref author) = doc.metadata.author {
+                            println!("  Author:       {}", author);
+                        }
+                        if let Some(pages) = doc.metadata.page_count {
+                            println!("  Pages:        {}", pages);
+                        }
+                        if let Some(words) = doc.metadata.word_count {
+                            println!("  Words:        {}", words);
+                        }
+                        println!("  Paragraphs:  {}", doc.paragraphs.len());
+                        println!("  Tables:       {}", doc.tables.len());
+                        println!("  Images:       {}", doc.images.len());
+                    }
+                }
+                Err(e) => eprintln!("❌ Error parsing DOCX: {}", e),
             }
         }
         Err(e) => eprintln!("❌ Error: {}", e),

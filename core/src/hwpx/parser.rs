@@ -1074,14 +1074,15 @@ mod tests {
 
         let md = table.to_markdown();
         assert!(md.contains("| 헤더1 |"));
-        assert!(md.contains("|---|---|---|"));
+        assert!(md.contains("| --- | --- | --- |"));
         assert!(md.contains("| 데이터1 |"));
     }
 
     #[test]
     fn test_extract_cell_text() {
         let xml = r#"<hp:tc><hp:subList><hp:p><hp:run><hp:t>테스트</hp:t></hp:run></hp:p></hp:subList></hp:tc>"#;
-        let text = extract_cell_text(xml);
+        let char_styles = HashMap::new();
+        let text = extract_cell_text(xml, &char_styles);
         assert_eq!(text, "테스트");
     }
 

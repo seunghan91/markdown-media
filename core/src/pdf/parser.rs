@@ -144,6 +144,7 @@ pub struct PdfDocument {
     pub images: Vec<PdfImage>,
     pub fonts: Vec<PdfFont>,
     pub tables: Vec<PdfTable>,
+    pub layout: Vec<LayoutElement>,
 }
 
 /// Extracted image from PDF
@@ -177,8 +178,8 @@ pub struct PdfFont {
 /// Font style detected from font name analysis
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FontStyle {
-    pub bold: bool,
-    pub italic: bool,
+    pub is_bold: bool,
+    pub is_italic: bool,
 }
 
 /// Text element with position information
@@ -188,6 +189,8 @@ pub struct PositionedText {
     pub x: f64,
     pub y: f64,
     pub page: usize,
+    pub font_size: Option<f64>,
+    pub font_name: Option<String>,
 }
 
 /// Detected table from PDF
@@ -486,12 +489,16 @@ impl PdfParser {
 
             for block in text_blocks {
                 // Detect if this might be a header/footer
-                let element_type = if block.y > page_height * 0.9 {
+                // Use 95%/6% thresholds to avoid clipping heading text near page top
+                let element_type = if block.y > page_height * 0.95 {
                     LayoutElementType::Header
-                } else if block.y < page_height * 0.1 {
+                } else if block.y < page_height * 0.06 {
                     LayoutElementType::Footer
                 } else if block.content.starts_with('•') || block.content.starts_with('-')
-                    || block.content.starts_with("* ") {
+                    || block.content.starts_with("* ")
+                    || block.content.starts_with("\u{2022}")  // bullet character
+                    || block.content.starts_with("\u{2013}")  // en-dash
+                {
                     LayoutElementType::ListItem
                 } else {
                     LayoutElementType::Text
@@ -652,14 +659,45 @@ impl PdfParser {
         });
 
         for text in sorted_texts {
+            // Detect bold/italic from font name
+            let font_style = text.font_name.as_deref()
+                .map(|n| detect_font_style(n))
+                .unwrap_or(FontStyle { is_bold: false, is_italic: false });
+
             match &mut current_block {
                 Some(block) if (block.y - text.y).abs() < Y_TOLERANCE => {
-                    // Same line, append text
-                    if !block.content.is_empty() && !text.text.is_empty() {
-                        block.content.push(' ');
+                    // Same line — but split block if font style changes
+                    let style_changed = block.is_bold != font_style.is_bold
+                        || block.is_italic != font_style.is_italic;
+
+                    if style_changed && !block.content.is_empty() {
+                        // Emit current block and start new one at same Y
+                        blocks.push(block.clone());
+                        *block = TextBlock {
+                            content: text.text.clone(),
+                            x: text.x,
+                            y: text.y,
+                            width: 100.0,
+                            height: text.font_size.unwrap_or(12.0),
+                            font_size: text.font_size,
+                            font_name: text.font_name.clone(),
+                            is_bold: font_style.is_bold,
+                            is_italic: font_style.is_italic,
+                        };
+                    } else {
+                        // Same style, append text
+                        if !block.content.is_empty() && !text.text.is_empty() {
+                            block.content.push(' ');
+                        }
+                        block.content.push_str(&text.text);
+                        block.width = (text.x - block.x).max(block.width);
+                        if block.font_size.is_none() && text.font_size.is_some() {
+                            block.font_size = text.font_size;
+                        }
+                        if block.font_name.is_none() && text.font_name.is_some() {
+                            block.font_name = text.font_name.clone();
+                        }
                     }
-                    block.content.push_str(&text.text);
-                    block.width = (text.x - block.x).max(block.width);
                 }
                 Some(block) => {
                     // New line, save current block and start new one
@@ -668,12 +706,12 @@ impl PdfParser {
                         content: text.text.clone(),
                         x: text.x,
                         y: text.y,
-                        width: 100.0, // Estimated
-                        height: 12.0, // Default line height
-                        font_size: None,
-                        font_name: None,
-                        is_bold: false,
-                        is_italic: false,
+                        width: 100.0,
+                        height: text.font_size.unwrap_or(12.0),
+                        font_size: text.font_size,
+                        font_name: text.font_name.clone(),
+                        is_bold: font_style.is_bold,
+                        is_italic: font_style.is_italic,
                     });
                 }
                 None => {
@@ -682,11 +720,11 @@ impl PdfParser {
                         x: text.x,
                         y: text.y,
                         width: 100.0,
-                        height: 12.0,
-                        font_size: None,
-                        font_name: None,
-                        is_bold: false,
-                        is_italic: false,
+                        height: text.font_size.unwrap_or(12.0),
+                        font_size: text.font_size,
+                        font_name: text.font_name.clone(),
+                        is_bold: font_style.is_bold,
+                        is_italic: font_style.is_italic,
                     });
                 }
             }
@@ -726,6 +764,9 @@ impl PdfParser {
         // Detect tables
         let tables = self.detect_tables();
 
+        // Extract layout information for heading/bold/italic detection
+        let layout = self.extract_layout();
+
         Ok(PdfDocument {
             version,
             page_count,
@@ -734,6 +775,7 @@ impl PdfParser {
             images,
             fonts,
             tables,
+            layout,
         })
     }
 
@@ -864,8 +906,8 @@ impl PdfParser {
                 fonts.push(PdfFont {
                     name,
                     base_font: base_font.clone(),
-                    is_bold: style.bold,
-                    is_italic: style.italic,
+                    is_bold: style.is_bold,
+                    is_italic: style.is_italic,
                 });
             }
         }
@@ -931,7 +973,10 @@ impl PdfParser {
         // 2-byte CIDs as UTF-8) and the table detector sees empty rows.
         let font_cmaps: std::collections::HashMap<String, ToUnicodeCMap> =
             build_page_font_cmaps(doc, page_id);
+        let font_names: std::collections::HashMap<String, String> =
+            build_page_font_names(doc, page_id);
         let mut current_font: Option<String> = None;
+        let mut current_font_size: Option<f64> = None;
 
         // Current transformation matrix (graphics state) tracked across the
         // whole content stream. PDF uses a 3×3 affine stored as (a b c d e f):
@@ -1032,11 +1077,15 @@ impl PdfParser {
                 "ET" => {
                     in_text = false;
                 }
-                // Tf /F1 12 — select font (name, size). We only track the name;
-                // size isn't needed for row clustering.
+                // Tf /F1 12 — select font (name, size).
                 "Tf" => {
                     if let Some(Object::Name(name_bytes)) = op.operands.first() {
                         current_font = Some(String::from_utf8_lossy(name_bytes).to_string());
+                    }
+                    if let Some(size_obj) = op.operands.get(1) {
+                        if let Some(sz) = read_num(size_obj) {
+                            current_font_size = Some(sz);
+                        }
                     }
                 }
                 _ if !in_text => continue,
@@ -1091,14 +1140,14 @@ impl PdfParser {
                 "Tj" => {
                     if let Some(t) = op.operands.first().and_then(|o| decode_show(o, &current_font)) {
                         let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
-                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0, font_size: current_font_size, font_name: current_font.as_ref().and_then(|alias| font_names.get(alias).cloned()).or_else(|| current_font.clone()) });
                     }
                 }
                 // TJ [ array ] — show with kerning
                 "TJ" => {
                     if let Some(t) = op.operands.first().and_then(|o| decode_show(o, &current_font)) {
                         let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
-                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0, font_size: current_font_size, font_name: current_font.as_ref().and_then(|alias| font_names.get(alias).cloned()).or_else(|| current_font.clone()) });
                     }
                 }
                 // ' (string) — next line + show
@@ -1106,7 +1155,7 @@ impl PdfParser {
                     ty -= leading;
                     if let Some(t) = op.operands.first().and_then(|o| decode_show(o, &current_font)) {
                         let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
-                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0, font_size: current_font_size, font_name: current_font.as_ref().and_then(|alias| font_names.get(alias).cloned()).or_else(|| current_font.clone()) });
                     }
                 }
                 // " aw ac (string) — next line + show with spacing overrides
@@ -1114,7 +1163,7 @@ impl PdfParser {
                     ty -= leading;
                     if let Some(t) = op.operands.get(2).and_then(|o| decode_show(o, &current_font)) {
                         let (px, py) = apply_ctm(tx, ty, ctm_a, ctm_b, ctm_c, ctm_d, ctm_e, ctm_f);
-                        texts.push(PositionedText { text: t, x: px, y: py, page: 0 });
+                        texts.push(PositionedText { text: t, x: px, y: py, page: 0, font_size: current_font_size, font_name: current_font.as_ref().and_then(|alias| font_names.get(alias).cloned()).or_else(|| current_font.clone()) });
                     }
                 }
                 _ => {}
@@ -1258,8 +1307,8 @@ fn detect_font_style(font_name: &str) -> FontStyle {
         || name_lower.contains("slanted");
 
     FontStyle {
-        bold: is_bold,
-        italic: is_italic,
+        is_bold,
+        is_italic,
     }
 }
 
@@ -1695,6 +1744,35 @@ fn build_page_font_cmaps(
     out
 }
 
+/// Build a mapping from font alias (F1, F2) to actual BaseFont name (Helvetica-Bold, etc.)
+fn build_page_font_names(
+    doc: &lopdf::Document,
+    page_id: lopdf::ObjectId,
+) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+
+    let fonts = match doc.get_page_fonts(page_id) {
+        Ok(f) => f,
+        Err(_) => return out,
+    };
+
+    for (name_bytes, font_dict) in fonts.iter() {
+        let alias = String::from_utf8_lossy(name_bytes).to_string();
+
+        // Try BaseFont first, then Name
+        let base_font = font_dict.get(b"BaseFont")
+            .ok()
+            .and_then(|o| o.as_name().ok())
+            .map(|n| String::from_utf8_lossy(n).to_string());
+
+        if let Some(bf) = base_font {
+            out.insert(alias, bf);
+        }
+    }
+
+    out
+}
+
 /// Pull the raw byte payload out of a `Tj`/`TJ`/`'`/`"` operand.
 /// For TJ arrays, concatenates every string element (skipping kerning nums).
 fn collect_show_bytes(obj: &lopdf::Object) -> Option<Vec<u8>> {
@@ -2048,7 +2126,229 @@ impl PdfTable {
     }
 }
 
+/// Check if content looks like a list item (bullet or numbered).
+fn is_list_item(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with("• ")
+        || trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("– ")
+        || trimmed.starts_with("— ")
+    {
+        return true;
+    }
+    // Numbered list: e.g. "1." or "1)" or "12. "
+    let bytes = trimmed.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    if bytes[0].is_ascii_digit() {
+        for (i, &b) in bytes.iter().enumerate().skip(1) {
+            if b == b'.' || b == b')' {
+                // Must be followed by space or be end of string
+                return i + 1 >= bytes.len() || bytes[i + 1] == b' ';
+            }
+            if !b.is_ascii_digit() {
+                return false;
+            }
+        }
+    }
+    false
+}
+
+/// Normalize a list item to standard markdown bullet or numbered format.
+fn normalize_list_item(content: &str) -> String {
+    let trimmed = content.trim_start();
+    // Bullet markers → "- "
+    if let Some(rest) = trimmed.strip_prefix("• ")
+        .or_else(|| trimmed.strip_prefix("– "))
+        .or_else(|| trimmed.strip_prefix("— "))
+    {
+        return format!("- {}", rest);
+    }
+    // Already standard bullet
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        return trimmed.to_string();
+    }
+    // Numbered list: keep as-is but normalize "1) " → "1. "
+    if let Some(paren_pos) = trimmed.find(')') {
+        let prefix = &trimmed[..paren_pos];
+        if prefix.chars().all(|c| c.is_ascii_digit()) && !prefix.is_empty() {
+            let rest = &trimmed[paren_pos + 1..].trim_start();
+            return format!("{}. {}", prefix, rest);
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Apply bold/italic markdown formatting to inline text.
+/// Does not wrap if the text is being used as a heading.
+fn apply_inline_formatting(content: &str, is_bold: bool, is_italic: bool) -> String {
+    match (is_bold, is_italic) {
+        (true, true) => format!("***{}***", content),
+        (true, false) => format!("**{}**", content),
+        (false, true) => format!("*{}*", content),
+        (false, false) => content.to_string(),
+    }
+}
+
 impl PdfDocument {
+    /// Convert layout elements to markdown with heading detection, bold/italic formatting,
+    /// and list item normalization.
+    ///
+    /// Heading detection uses font size ratios relative to the median body font size:
+    /// - `>= median * 1.8` AND bold -> H1
+    /// - `>= median * 1.4` AND bold -> H2
+    /// - `>= median * 1.15` AND bold -> H3
+    /// - bold AND `> median` -> H4
+    ///
+    /// Header/Footer regions (top/bottom 10%) are stripped.
+    pub fn to_markdown_with_layout(&self) -> String {
+        if self.layout.is_empty() {
+            // Fallback: no layout data, return raw page text
+            return self.pages.iter()
+                .map(|p| p.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+        }
+
+        // Step 1: Compute median body font size from Text elements
+        let median_font_size = self.compute_median_font_size();
+
+        let mut output = String::new();
+        let mut last_page: usize = 0;
+        let mut last_y: f64 = f64::MAX; // Track Y position for inline segments
+
+        for elem in &self.layout {
+            // Skip header/footer regions
+            if elem.element_type == LayoutElementType::Header
+                || elem.element_type == LayoutElementType::Footer
+            {
+                continue;
+            }
+
+            // Page break marker
+            if elem.element_type == LayoutElementType::PageBreak {
+                if !output.is_empty() && !output.ends_with("\n\n") {
+                    output.push_str("\n\n");
+                }
+                continue;
+            }
+
+            // Page markers for multi-page documents
+            if self.page_count > 1 && elem.page != last_page {
+                if last_page > 0 && !output.ends_with("\n\n") {
+                    output.push_str("\n\n");
+                }
+                last_page = elem.page;
+            }
+
+            // Image elements
+            if elem.element_type == LayoutElementType::Image {
+                if let Some(ref id) = elem.ref_id {
+                    output.push_str(&format!("![{}]({})\n\n", id, id));
+                }
+                continue;
+            }
+
+            let content = elem.content.trim();
+            if content.is_empty() {
+                continue;
+            }
+
+            let font_size = elem.font_size.unwrap_or(median_font_size);
+
+            // Heading classification based on font size ratio to median.
+            // In PDF, font names are often aliases (F1, F2) so we rely primarily
+            // on size. Bold is a bonus signal but not required.
+            let heading_level = if median_font_size > 0.0 {
+                let ratio = font_size / median_font_size;
+                if ratio >= 1.8 {
+                    Some(1) // H1: title-size text (e.g. 24pt vs 11pt body)
+                } else if ratio >= 1.4 {
+                    Some(2) // H2: chapter-size (e.g. 18pt)
+                } else if ratio >= 1.15 {
+                    Some(3) // H3: section-size (e.g. 14pt)
+                } else if ratio > 1.02 && elem.is_bold {
+                    Some(4) // H4: slightly larger + bold
+                } else if ratio >= 0.98 && elem.is_bold && content.len() < 80
+                    && content.len() > 3
+                    && !content.starts_with(',')
+                    && !content.starts_with('.')
+                    && !content.ends_with(',')
+                    && content.chars().next().map_or(false, |c| c.is_uppercase() || !c.is_ascii())
+                {
+                    // Bold text at ~body size: heading if starts with uppercase
+                    // and doesn't look like a mid-sentence fragment
+                    Some(4)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(level) = heading_level {
+                // Ensure paragraph break before heading
+                if !output.is_empty() && !output.ends_with("\n\n") {
+                    output.push_str("\n\n");
+                }
+                let prefix = "#".repeat(level);
+                output.push_str(&format!("{} {}\n\n", prefix, content));
+            } else if elem.element_type == LayoutElementType::ListItem
+                || is_list_item(content)
+            {
+                // Normalize list items
+                let normalized = normalize_list_item(content);
+                output.push_str(&format!("{}\n", normalized));
+            } else {
+                // Regular text with bold/italic formatting
+                let formatted = apply_inline_formatting(content, elem.is_bold, elem.is_italic);
+
+                // If this block is on the same line as the previous one (same Y),
+                // append inline without paragraph break
+                let same_line = (last_y - elem.y).abs() < 12.0 && last_y != f64::MAX;
+                if same_line {
+                    // Add space before inline segment if needed
+                    if !output.ends_with(' ') && !output.ends_with('\n') {
+                        output.push(' ');
+                    }
+                    output.push_str(&formatted);
+                } else {
+                    output.push_str(&formatted);
+                    output.push_str("\n\n");
+                }
+            }
+
+            last_y = elem.y;
+        }
+
+        output.trim_end().to_string()
+    }
+
+    /// Compute the median font size from all Text layout elements.
+    /// This represents the "body" font size used as baseline for heading detection.
+    fn compute_median_font_size(&self) -> f64 {
+        let mut sizes: Vec<f64> = self.layout.iter()
+            .filter(|e| e.element_type == LayoutElementType::Text
+                || e.element_type == LayoutElementType::ListItem)
+            .filter_map(|e| e.font_size)
+            .filter(|&s| s > 0.0)
+            .collect();
+
+        if sizes.is_empty() {
+            return 12.0; // sensible default
+        }
+
+        sizes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = sizes.len() / 2;
+        if sizes.len() % 2 == 0 {
+            (sizes[mid - 1] + sizes[mid]) / 2.0
+        } else {
+            sizes[mid]
+        }
+    }
+
     /// Convert to MDX format
     pub fn to_mdx(&self) -> String {
         let mut mdx = String::new();
@@ -2069,14 +2369,10 @@ impl PdfDocument {
         }
         mdx.push_str("---\n\n");
 
-        // Content with page markers
-        for page in &self.pages {
-            if self.page_count > 1 {
-                mdx.push_str(&format!("<!-- Page {} -->\n\n", page.page_number));
-            }
-            mdx.push_str(&page.text);
-            mdx.push_str("\n\n");
-        }
+        // Content: use layout-aware conversion if layout data is available
+        let content = self.to_markdown_with_layout();
+        mdx.push_str(&content);
+        mdx.push_str("\n\n");
 
         // Image references (if any)
         if !self.images.is_empty() {
@@ -2203,6 +2499,7 @@ mod tests {
             }],
             fonts: vec![],
             tables: vec![],
+            layout: vec![],
         };
 
         let mdx = doc.to_mdx();
@@ -2214,53 +2511,53 @@ mod tests {
     #[test]
     fn test_font_style_detection_bold() {
         let style = detect_font_style("Arial-Bold");
-        assert!(style.bold);
-        assert!(!style.italic);
+        assert!(style.is_bold);
+        assert!(!style.is_italic);
 
         let style = detect_font_style("TimesNewRoman-BoldMT");
-        assert!(style.bold);
-        assert!(!style.italic);
+        assert!(style.is_bold);
+        assert!(!style.is_italic);
 
         let style = detect_font_style("Helvetica-Black");
-        assert!(style.bold);
-        assert!(!style.italic);
+        assert!(style.is_bold);
+        assert!(!style.is_italic);
     }
 
     #[test]
     fn test_font_style_detection_italic() {
         let style = detect_font_style("Arial-Italic");
-        assert!(!style.bold);
-        assert!(style.italic);
+        assert!(!style.is_bold);
+        assert!(style.is_italic);
 
         let style = detect_font_style("TimesNewRoman-ItalicMT");
-        assert!(!style.bold);
-        assert!(style.italic);
+        assert!(!style.is_bold);
+        assert!(style.is_italic);
 
         let style = detect_font_style("Helvetica-Oblique");
-        assert!(!style.bold);
-        assert!(style.italic);
+        assert!(!style.is_bold);
+        assert!(style.is_italic);
     }
 
     #[test]
     fn test_font_style_detection_bold_italic() {
         let style = detect_font_style("Arial-BoldItalic");
-        assert!(style.bold);
-        assert!(style.italic);
+        assert!(style.is_bold);
+        assert!(style.is_italic);
 
         let style = detect_font_style("TimesNewRoman-BoldItalicMT");
-        assert!(style.bold);
-        assert!(style.italic);
+        assert!(style.is_bold);
+        assert!(style.is_italic);
     }
 
     #[test]
     fn test_font_style_detection_regular() {
         let style = detect_font_style("Arial");
-        assert!(!style.bold);
-        assert!(!style.italic);
+        assert!(!style.is_bold);
+        assert!(!style.is_italic);
 
         let style = detect_font_style("TimesNewRomanPSMT");
-        assert!(!style.bold);
-        assert!(!style.italic);
+        assert!(!style.is_bold);
+        assert!(!style.is_italic);
     }
 
     #[test]
@@ -2289,6 +2586,7 @@ mod tests {
                 },
             ],
             tables: vec![],
+            layout: vec![],
         };
 
         let mdx = doc.to_mdx();
@@ -2325,12 +2623,12 @@ mod tests {
     #[test]
     fn test_table_detection_from_positions() {
         let texts = vec![
-            PositionedText { text: "Name".to_string(), x: 100.0, y: 700.0, page: 1 },
-            PositionedText { text: "Age".to_string(), x: 200.0, y: 700.0, page: 1 },
-            PositionedText { text: "Alice".to_string(), x: 100.0, y: 680.0, page: 1 },
-            PositionedText { text: "30".to_string(), x: 200.0, y: 680.0, page: 1 },
-            PositionedText { text: "Bob".to_string(), x: 100.0, y: 660.0, page: 1 },
-            PositionedText { text: "25".to_string(), x: 200.0, y: 660.0, page: 1 },
+            PositionedText { text: "Name".to_string(), x: 100.0, y: 700.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "Age".to_string(), x: 200.0, y: 700.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "Alice".to_string(), x: 100.0, y: 680.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "30".to_string(), x: 200.0, y: 680.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "Bob".to_string(), x: 100.0, y: 660.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "25".to_string(), x: 200.0, y: 660.0, page: 1, font_size: None, font_name: None },
         ];
 
         let tables = detect_tables_from_positions(&texts, 1);
@@ -2346,8 +2644,8 @@ mod tests {
     #[test]
     fn test_no_table_with_insufficient_data() {
         let texts = vec![
-            PositionedText { text: "Hello".to_string(), x: 100.0, y: 700.0, page: 1 },
-            PositionedText { text: "World".to_string(), x: 100.0, y: 680.0, page: 1 },
+            PositionedText { text: "Hello".to_string(), x: 100.0, y: 700.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "World".to_string(), x: 100.0, y: 680.0, page: 1, font_size: None, font_name: None },
         ];
 
         let tables = detect_tables_from_positions(&texts, 1);
@@ -2362,16 +2660,16 @@ mod tests {
         for i in 0..20 {
             let y = 700.0 - (i as f64) * 15.0;
             texts.push(PositionedText {
-                text: "LeftCol".to_string(), // 7 chars * 5pt = 35pt wide approx
+                text: "LeftCol".to_string(),
                 x: 50.0,
                 y,
-                page: 1,
+                page: 1, font_size: None, font_name: None,
             });
             texts.push(PositionedText {
                 text: "RightCol".to_string(),
                 x: 320.0,
                 y,
-                page: 1,
+                page: 1, font_size: None, font_name: None,
             });
         }
 
@@ -2394,7 +2692,7 @@ mod tests {
                 text: "Only column text".to_string(),
                 x: 72.0,
                 y: 700.0 - (i as f64) * 14.0,
-                page: 1,
+                page: 1, font_size: None, font_name: None,
             });
         }
         assert!(detect_column_split(&texts).is_none());
@@ -2410,13 +2708,13 @@ mod tests {
                         text: "L".to_string(),
                         x: 50.0,
                         y: 700.0 - (i as f64) * 15.0,
-                        page: 1,
+                        page: 1, font_size: None, font_name: None,
                     },
                     PositionedText {
                         text: "R".to_string(),
                         x: 320.0,
                         y: 700.0 - (i as f64) * 15.0,
-                        page: 1,
+                        page: 1, font_size: None, font_name: None,
                     },
                 ]
             })
@@ -2457,6 +2755,7 @@ mod tests {
                 ],
                 column_count: 2,
             }],
+            layout: vec![],
         };
 
         let mdx = doc.to_mdx();
@@ -2571,9 +2870,9 @@ mod tests {
         };
 
         let texts = vec![
-            PositionedText { text: "Hello".to_string(), x: 72.0, y: 720.0, page: 1 },
-            PositionedText { text: "World".to_string(), x: 150.0, y: 720.0, page: 1 },
-            PositionedText { text: "New line".to_string(), x: 72.0, y: 700.0, page: 1 },
+            PositionedText { text: "Hello".to_string(), x: 72.0, y: 720.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "World".to_string(), x: 150.0, y: 720.0, page: 1, font_size: None, font_name: None },
+            PositionedText { text: "New line".to_string(), x: 72.0, y: 700.0, page: 1, font_size: None, font_name: None },
         ];
 
         let blocks = parser.group_text_into_blocks(&texts, 792.0);
