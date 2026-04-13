@@ -192,6 +192,99 @@ sections: 2
 
 ---
 
+## MDM 미디어 참조 문법
+
+MDM은 마크다운에 미디어를 삽입하는 6가지 전용 문법을 제공합니다. 각 기호가 미디어 타입을 선언합니다.
+
+`[[]]` 더블 브라켓이 "이것은 MDM 미디어"라는 표식이고, 앞의 기호가 타입을 선언합니다.
+
+```
+@[[photo.jpg]]              이미지
+~[[table_01.svg]]           표/차트
+&[[youtube:dQw4w9WgXcQ]]    임베드 (외부 서비스)
+%[[intro.mp4]]              동영상
+$[[E = mc^2]]               수식 (LaTeX)
+^[[podcast.mp3]]            오디오
+```
+
+### 왜 이 기호인가?
+
+| 기호 | 타입 | 빈도 | 키보드 | 연상 |
+|:----:|------|:----:|:------:|------|
+| `@` | 이미지 | 76% | Shift+2 | @=위치(at) |
+| `~` | 표/차트 | 39% | Shift+` | ~=파형(wave) |
+| `&` | 임베드 | 24% | Shift+7 | &=연결(link) |
+| `%` | 동영상 | 10% | Shift+5 | %=진행률 |
+| `$` | 수식 | 5% | Shift+4 | $=LaTeX 관례 |
+| `^` | 오디오 | 2% | Shift+6 | ^=음파 |
+
+자주 쓰는 타입일수록 입력하기 쉬운 키에 배정했습니다 (RISC-V 인코딩 원칙).
+
+### 속성 추가
+
+모든 타입에 `| 속성` 으로 옵션을 줄 수 있습니다:
+
+```markdown
+@[[photo.jpg | w=800 center caption="서울 야경"]]
+%[[demo.mp4 | autoplay muted loop]]
+&[[youtube:id | w=100%]]
+```
+
+### 사이드카 프리셋
+
+`.mdm` 매니페스트에 미리 정의한 리소스를 이름으로 참조:
+
+```markdown
+@[[logo:header]]        .mdm에 정의된 logo 리소스의 header 프리셋
+#[[budget-table]]       .mdm에 정의된 budget-table
+```
+
+### 변환 출력 번들
+
+MDM 변환기가 HWP/PDF/DOCX를 변환하면:
+
+```
+output/
+├── index.md              본문 (MDM 참조 포함)
+│   @[[image_001]]        ← 자동 번호
+│   ~[[table_001]]
+├── manifest.mdm          리소스 인덱스 (YAML)
+│   image_001: assets/images/image_001.png
+│   table_001: assets/tables/table_001.svg
+└── assets/
+    ├── images/
+    │   ├── image_001.png
+    │   └── image_002.jpg
+    └── tables/
+        └── table_001.svg
+```
+
+자동 번호 규칙: `{type}_{출현순서:3자리}` (페이지순 > 위→아래 > 왼→오른)
+
+### 기존 마크다운과 충돌 없음
+
+`[[]]` 더블 브라켓이 MDM 표식입니다. `기호 + [[` 패턴만 MDM으로 인식하므로, 기호가 단독으로 쓰일 때(`~물결~`, `$100`)는 절대 오인되지 않습니다.
+
+```
+~~취소선~~           ← 마크다운 취소선 (~~+텍스트+~~)
+~[[table.svg]]      ← MDM 표/차트   (~+[[, 싱글 틸드)
+
+$x^2$               ← LaTeX inline  ($+수식+$)
+$[[E=mc^2]]         ← MDM 수식      ($+[[, 닫는 $ 없음)
+
+![alt](src)         ← 표준 이미지   (![로 시작)
+@[[image.jpg]]      ← MDM 이미지    (@[[로 시작)
+
+[^1]                ← 각주          ([^로 시작)
+^[[audio.mp3]]      ← MDM 오디오    (^[[로 시작)
+```
+
+6개 기호 모두 CommonMark/GFM/LaTeX와 충돌이 없음을 검증했습니다.
+
+전체 문법 스펙: [docs/MDM_SYNTAX_SPEC.md](docs/MDM_SYNTAX_SPEC.md)
+
+---
+
 ## 프로젝트 구조
 
 ```
