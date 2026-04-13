@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Read, BufReader, Write};
+use std::io::{self, Read, Seek, BufReader, Write, Cursor};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use quick_xml::Reader;
@@ -463,9 +463,13 @@ impl DocxDocument {
     }
 }
 
-/// DOCX Parser
-pub struct DocxParser {
-    archive: zip::ZipArchive<BufReader<File>>,
+/// DOCX Parser, generic over the underlying reader type.
+///
+/// The default type parameter `BufReader<File>` preserves backward
+/// compatibility: existing code that writes `DocxParser` without a
+/// type argument continues to work unchanged.
+pub struct DocxParser<R: Read + Seek = BufReader<File>> {
+    archive: zip::ZipArchive<R>,
     path: PathBuf,
     relationships: HashMap<String, String>,
     /// styleId -> StyleDef (name + optional outline_level)
@@ -478,8 +482,8 @@ pub struct DocxParser {
     endnotes: HashMap<String, String>,
 }
 
-impl DocxParser {
-    /// Open a DOCX file
+impl DocxParser<BufReader<File>> {
+    /// Open a DOCX file from disk.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_buf = path.as_ref().to_path_buf();
         let file = File::open(&path_buf)?;
@@ -506,7 +510,44 @@ impl DocxParser {
 
         Ok(parser)
     }
+}
 
+impl DocxParser<Cursor<Vec<u8>>> {
+    /// Create a DOCX parser from in-memory data.
+    ///
+    /// This constructor is used for WASM and other environments
+    /// where file system access is unavailable.
+    pub fn from_bytes(data: Vec<u8>) -> io::Result<Self> {
+        let cursor = Cursor::new(data);
+        let archive = zip::ZipArchive::new(cursor)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid DOCX: {}", e),
+                )
+            })?;
+
+        let mut parser = DocxParser {
+            archive,
+            path: PathBuf::from("<memory>"),
+            relationships: HashMap::new(),
+            styles: HashMap::new(),
+            numbering: HashMap::new(),
+            footnotes: HashMap::new(),
+            endnotes: HashMap::new(),
+        };
+
+        parser.load_relationships()?;
+        parser.load_styles()?;
+        parser.load_numbering()?;
+        parser.load_footnotes()?;
+        parser.load_endnotes()?;
+
+        Ok(parser)
+    }
+}
+
+impl<R: Read + Seek> DocxParser<R> {
     /// Load document relationships
     fn load_relationships(&mut self) -> io::Result<()> {
         let content = match self.read_archive_file("word/_rels/document.xml.rels") {
@@ -1953,7 +1994,7 @@ mod tests {
   </w:footnote>
 </w:footnotes>"#;
 
-        let notes = DocxParser::parse_notes_xml(xml);
+        let notes = DocxParser::<std::io::BufReader<std::fs::File>>::parse_notes_xml(xml);
         assert_eq!(notes.get("1").unwrap(), "First footnote text");
         assert_eq!(notes.get("2").unwrap(), "**Bold note**");
         assert!(notes.get("0").is_none()); // separator skipped

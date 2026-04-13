@@ -5,7 +5,7 @@ use crate::utils::bounded_io::{
 };
 use std::collections::HashMap;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read, Seek, Cursor};
 use std::path::Path;
 use zip::ZipArchive;
 
@@ -27,10 +27,13 @@ pub struct ImageInfo {
     pub data: Vec<u8>,        // actual binary data
 }
 
-/// HWPX document parser
-pub struct HwpxParser {
-    archive: ZipArchive<File>,
+/// HWPX document parser, generic over the underlying reader type.
+///
+/// The default type parameter `File` preserves backward compatibility.
+pub struct HwpxParser<R: Read + Seek = File> {
+    archive: ZipArchive<R>,
     char_styles: HashMap<u32, CharStyle>,
+    heading_styles: HashMap<u32, u8>,
 }
 
 /// Parsed HWPX document
@@ -101,8 +104,8 @@ impl Table {
     }
 }
 
-impl HwpxParser {
-    /// Open an HWPX file
+impl HwpxParser<File> {
+    /// Open an HWPX file from disk.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
         let archive = ZipArchive::new(file)
@@ -110,9 +113,34 @@ impl HwpxParser {
         Ok(Self {
             archive,
             char_styles: HashMap::new(),
+            heading_styles: HashMap::new(),
         })
     }
+}
 
+impl HwpxParser<Cursor<Vec<u8>>> {
+    /// Create an HWPX parser from in-memory data.
+    ///
+    /// This constructor is used for WASM and other environments
+    /// where file system access is unavailable.
+    pub fn from_bytes(data: Vec<u8>) -> io::Result<Self> {
+        let cursor = Cursor::new(data);
+        let archive = ZipArchive::new(cursor)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid HWPX: {}", e),
+                )
+            })?;
+        Ok(Self {
+            archive,
+            char_styles: HashMap::new(),
+            heading_styles: HashMap::new(),
+        })
+    }
+}
+
+impl<R: Read + Seek> HwpxParser<R> {
     /// Parse the HWPX document
     pub fn parse(&mut self) -> io::Result<HwpxDocument> {
         let version = self.read_version()?;
@@ -137,11 +165,12 @@ impl HwpxParser {
         })
     }
 
-    /// Parse header.xml to extract character style definitions
+    /// Parse header.xml to extract character style definitions and heading styles
     fn parse_header_styles(&mut self) -> io::Result<()> {
         if let Ok(mut file) = self.archive.by_name("Contents/header.xml") {
             let content = read_limited_to_string(&mut file, MAX_HWPX_XML)?;
             self.char_styles = parse_char_properties(&content);
+            self.heading_styles = parse_heading_styles(&content);
         }
         Ok(())
     }
@@ -178,7 +207,7 @@ impl HwpxParser {
                 Ok(mut file) => {
                     let content = read_limited_to_string(&mut file, MAX_HWPX_XML)?;
 
-                    let (text, tables) = parse_section_xml(&content, &self.char_styles);
+                    let (text, tables) = parse_section_xml(&content, &self.char_styles, &self.heading_styles);
                     sections.push(text);
                     all_tables.extend(tables);
                     section_idx += 1;
@@ -319,6 +348,78 @@ fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
     styles
 }
 
+/// Parse `<hh:style>` elements from header.xml to identify heading (outline) styles.
+///
+/// Looks for styles whose `name` starts with "개요" or `engName` starts with "Outline".
+/// The trailing number gives the heading level (1-7). Returns a map of `styleId -> level`.
+fn parse_heading_styles(header_xml: &str) -> HashMap<u32, u8> {
+    let mut map = HashMap::new();
+    let mut pos = 0;
+
+    while let Some(start) = header_xml[pos..].find("<hh:style ") {
+        let style_start = pos + start;
+
+        // Find end of this style element (self-closing or opening tag end)
+        let tag_end = header_xml[style_start..]
+            .find("/>")
+            .map(|i| style_start + i + 2)
+            .or_else(|| header_xml[style_start..].find('>').map(|i| style_start + i + 1));
+
+        let Some(tag_end) = tag_end else { break; };
+        let style_tag = &header_xml[style_start..tag_end];
+
+        if let Some(id_str) = extract_attr(style_tag, "id") {
+            if let Ok(id) = id_str.parse::<u32>() {
+                let level = extract_attr(style_tag, "name")
+                    .and_then(|n| extract_outline_level(&n))
+                    .or_else(|| {
+                        extract_attr(style_tag, "engName")
+                            .and_then(|n| extract_outline_level(&n))
+                    });
+                if let Some(lvl) = level {
+                    map.insert(id, lvl);
+                }
+            }
+        }
+
+        pos = tag_end;
+    }
+
+    map
+}
+
+/// Extract heading level from a style name like "개요 1", "Outline 3", etc.
+fn extract_outline_level(name: &str) -> Option<u8> {
+    let trimmed = name.trim();
+    if let Some(rest) = trimmed.strip_prefix("개요") {
+        return rest.trim().parse::<u8>().ok().filter(|&l| (1..=7).contains(&l));
+    }
+    if let Some(rest) = trimmed.strip_prefix("Outline") {
+        return rest.trim().parse::<u8>().ok().filter(|&l| (1..=7).contains(&l));
+    }
+    None
+}
+
+/// Remove `<hp:secPr>...</hp:secPr>` blocks from section XML.
+fn strip_sec_pr(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut pos = 0;
+    while let Some(start) = xml[pos..].find("<hp:secPr") {
+        let abs_start = pos + start;
+        out.push_str(&xml[pos..abs_start]);
+        if let Some(end) = xml[abs_start..].find("</hp:secPr>") {
+            pos = abs_start + end + "</hp:secPr>".len();
+        } else if let Some(end) = xml[abs_start..].find("/>") {
+            pos = abs_start + end + 2;
+        } else {
+            pos = abs_start;
+            break;
+        }
+    }
+    out.push_str(&xml[pos..]);
+    out
+}
+
 /// Depth-aware finder for the MATCHING close tag when the same tag can nest.
 ///
 /// Starts scanning at `from`, assumes we've already opened 1 level of `open`.
@@ -355,7 +456,15 @@ fn find_matching_close(xml: &str, from: usize, open: &str, close: &str) -> Optio
 }
 
 /// Parse section XML and extract text with tables
-fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (String, Vec<Table>) {
+fn parse_section_xml(
+    xml: &str,
+    char_styles: &HashMap<u32, CharStyle>,
+    heading_styles: &HashMap<u32, u8>,
+) -> (String, Vec<Table>) {
+    // Strip <hp:secPr>...</hp:secPr> section-property blocks before processing.
+    let xml = strip_sec_pr(xml);
+    let xml = xml.as_str();
+
     let mut result = String::new();
     let mut tables = Vec::new();
     let mut pos = 0;
@@ -367,7 +476,7 @@ fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (Strin
 
             // Extract text before table
             let before_table = &xml[pos..tbl_pos];
-            result.push_str(&extract_text_with_formatting(before_table, char_styles));
+            result.push_str(&extract_text_with_formatting(before_table, char_styles, heading_styles));
 
             // Find matching table close — must be depth-aware because HWPX
             // tables can nest. See find_matching_close() for rationale.
@@ -388,7 +497,7 @@ fn parse_section_xml(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> (Strin
             }
         } else {
             // No more tables, extract remaining text
-            result.push_str(&extract_text_with_formatting(&xml[pos..], char_styles));
+            result.push_str(&extract_text_with_formatting(&xml[pos..], char_styles, heading_styles));
             break;
         }
     }
@@ -663,20 +772,8 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
         let text = extract_runs_text(run_content);
         if !text.is_empty() {
             match style {
-                Some(s) if s.bold && s.italic => {
-                    out.push_str("***");
-                    out.push_str(&text);
-                    out.push_str("***");
-                }
-                Some(s) if s.bold => {
-                    out.push_str("**");
-                    out.push_str(&text);
-                    out.push_str("**");
-                }
-                Some(s) if s.italic => {
-                    out.push_str("*");
-                    out.push_str(&text);
-                    out.push_str("*");
+                Some(s) if s.bold || s.italic || s.underline || s.strikeout => {
+                    out.push_str(&apply_markdown_formatting(&text, s));
                 }
                 _ => out.push_str(&text),
             }
@@ -743,7 +840,10 @@ fn extract_runs_text(xml: &str) -> String {
                     None => break,
                 };
                 let raw = &xml[after_open..close];
-                out.push_str(&decode_xml_entities(raw));
+                // <hp:lineBreak/> can appear inside <hp:t> content
+                let raw = raw.replace("<hp:lineBreak/>", "\n");
+                let raw = raw.replace("<hp:lineBreak />", "\n");
+                out.push_str(&decode_xml_entities(&raw));
                 pos = close + 7;
             }
             "dt" => {
@@ -815,8 +915,15 @@ fn extract_attr(xml: &str, attr: &str) -> Option<String> {
     None
 }
 
-/// Extract text with formatting from section XML
-fn extract_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> String {
+/// Extract text with formatting from section XML.
+///
+/// When `heading_styles` contains a mapping for the paragraph's `styleIDRef`,
+/// the paragraph text is prefixed with the appropriate number of `#` markers.
+fn extract_text_with_formatting(
+    xml: &str,
+    char_styles: &HashMap<u32, CharStyle>,
+    heading_styles: &HashMap<u32, u8>,
+) -> String {
     let mut result = String::new();
     let mut pos = 0;
 
@@ -828,10 +935,30 @@ fn extract_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharStyle>
         if let Some(p_end) = xml[p_pos..].find("</hp:p>") {
             let para_xml = &xml[p_pos..p_pos + p_end + 7];
 
+            // Check for heading via styleIDRef on the <hp:p> tag
+            let heading_level = extract_attr(para_xml, "styleIDRef")
+                .and_then(|id_str| id_str.parse::<u32>().ok())
+                .and_then(|id| heading_styles.get(&id).copied())
+                .unwrap_or(0);
+
             // Extract runs from this paragraph
             let para_text = extract_runs_with_formatting(para_xml, char_styles);
             if !para_text.is_empty() {
-                result.push_str(&para_text);
+                if heading_level > 0 && heading_level <= 7 {
+                    // Ensure blank line before heading for proper Markdown rendering
+                    if !result.is_empty() && !result.ends_with('\n') {
+                        result.push('\n');
+                    }
+                    for _ in 0..heading_level {
+                        result.push('#');
+                    }
+                    result.push(' ');
+                    // Strip bold markers from heading text (headings are inherently prominent)
+                    let clean_heading = para_text.trim().replace("**", "");
+                    result.push_str(&clean_heading);
+                } else {
+                    result.push_str(&para_text);
+                }
                 result.push('\n');
             }
 
@@ -862,18 +989,47 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
         if let Some(run_end) = para_xml[run_pos..].find("</hp:run>") {
             let run_content = &para_xml[run_pos..run_pos + run_end];
 
-            // Extract text from <hp:t> tags within this run
+            // Extract text from <hp:t> tags and handle <hp:lineBreak/> within this run
             let mut text_content = String::new();
             let mut t_pos = 0;
 
-            while let Some(t_start) = run_content[t_pos..].find("<hp:t>") {
-                let t_start_pos = t_pos + t_start + 6;
-                if let Some(t_end) = run_content[t_start_pos..].find("</hp:t>") {
-                    let text = &run_content[t_start_pos..t_start_pos + t_end];
-                    text_content.push_str(text);
-                    t_pos = t_start_pos + t_end + 7;
-                } else {
-                    break;
+            loop {
+                let next_t = run_content[t_pos..].find("<hp:t>").map(|i| (t_pos + i, "t"));
+                let next_lb = run_content[t_pos..].find("<hp:lineBreak").map(|i| (t_pos + i, "lb"));
+
+                let next = match (next_t, next_lb) {
+                    (Some(a), Some(b)) => {
+                        if a.0 <= b.0 { Some(a) } else { Some(b) }
+                    }
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
+
+                match next {
+                    Some((idx, "t")) => {
+                        let t_start_pos = idx + 6; // skip "<hp:t>"
+                        if let Some(t_end) = run_content[t_start_pos..].find("</hp:t>") {
+                            let text = &run_content[t_start_pos..t_start_pos + t_end];
+                            // <hp:lineBreak/> can appear inside <hp:t> content
+                            let text = text.replace("<hp:lineBreak/>", "\n");
+                            let text = text.replace("<hp:lineBreak />", "\n");
+                            text_content.push_str(&text);
+                            t_pos = t_start_pos + t_end + 7;
+                        } else {
+                            break;
+                        }
+                    }
+                    Some((idx, _)) => {
+                        // <hp:lineBreak/> or <hp:lineBreak /> between tags
+                        text_content.push('\n');
+                        if let Some(end) = run_content[idx..].find('>') {
+                            t_pos = idx + end + 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    None => break,
                 }
             }
 
@@ -928,7 +1084,15 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
 
 /// Apply Markdown formatting based on CharStyle
 fn apply_markdown_formatting(text: &str, style: &CharStyle) -> String {
-    let mut result = text.to_string();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return text.to_string();
+    }
+
+    let prefix_space = if text.starts_with(' ') { " " } else { "" };
+    let suffix_space = if text.ends_with(' ') { " " } else { "" };
+
+    let mut result = trimmed.to_string();
 
     // Apply formatting in order: strikeout, bold, italic, underline
     if style.strikeout {
@@ -942,11 +1106,10 @@ fn apply_markdown_formatting(text: &str, style: &CharStyle) -> String {
         result = format!("*{}*", result);
     }
     if style.underline {
-        // Markdown doesn't have native underline, use HTML
         result = format!("<u>{}</u>", result);
     }
 
-    result
+    format!("{}{}{}", prefix_space, result, suffix_space)
 }
 
 /// Simple text extraction (for non-table content) - fallback without formatting
@@ -1210,5 +1373,61 @@ mod tests {
         assert!(result.contains("앞"));
         assert!(result.contains("뒤"));
         assert!(!result.contains("<hp:tab"));
+    }
+
+    #[test]
+    fn test_bold_spacing_fix() {
+        let style = CharStyle { bold: true, italic: false, underline: false, strikeout: false };
+        assert_eq!(apply_markdown_formatting(" text", &style), " **text**");
+        assert_eq!(apply_markdown_formatting("text ", &style), "**text** ");
+        assert_eq!(apply_markdown_formatting(" text ", &style), " **text** ");
+        assert_eq!(apply_markdown_formatting("text", &style), "**text**");
+        assert_eq!(apply_markdown_formatting("   ", &style), "   ");
+    }
+
+    #[test]
+    fn test_parse_heading_styles() {
+        let header_xml = r#"
+            <hh:style id="0" type="PARA" name="바탕글" engName="Body Text"/>
+            <hh:style id="2" type="PARA" name="개요 1" engName="Outline 1"/>
+            <hh:style id="3" type="PARA" name="개요 2" engName="Outline 2"/>
+            <hh:style id="8" type="PARA" name="개요 7" engName="Outline 7"/>
+            <hh:style id="10" type="CHAR" name="본문" engName="Normal"/>
+        "#;
+        let map = parse_heading_styles(header_xml);
+        assert_eq!(map.get(&2), Some(&1));
+        assert_eq!(map.get(&3), Some(&2));
+        assert_eq!(map.get(&8), Some(&7));
+        assert!(map.get(&0).is_none());
+        assert!(map.get(&10).is_none());
+    }
+
+    #[test]
+    fn test_heading_in_section_xml() {
+        let heading_styles: HashMap<u32, u8> = [(2, 1)].into_iter().collect();
+        let char_styles = HashMap::new();
+        let xml = r#"<hp:sec><hp:p styleIDRef="2"><hp:run charPrIDRef="0"><hp:t>제목입니다</hp:t></hp:run></hp:p><hp:p styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>본문입니다</hp:t></hp:run></hp:p></hp:sec>"#;
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        assert!(result.contains("# 제목입니다"), "heading marker missing: {}", result);
+        assert!(result.contains("본문입니다"));
+    }
+
+    #[test]
+    fn test_linebreak_in_runs() {
+        let char_styles = HashMap::new();
+        let heading_styles = HashMap::new();
+        // extract_runs_with_formatting requires <hp:run with attrs (space after "run")
+        let xml = r#"<hp:p styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>줄1</hp:t><hp:lineBreak/><hp:t>줄2</hp:t></hp:run></hp:p>"#;
+        let result = extract_text_with_formatting(xml, &char_styles, &heading_styles);
+        assert!(result.contains("줄1\n줄2"), "linebreak not handled: {:?}", result);
+    }
+
+    #[test]
+    fn test_strip_sec_pr() {
+        let xml = r#"<hp:sec><hp:p><hp:run><hp:t>본문</hp:t></hp:run></hp:p><hp:secPr><hp:p><hp:run><hp:t>숨김</hp:t></hp:run></hp:p></hp:secPr></hp:sec>"#;
+        let stripped = strip_sec_pr(xml);
+        assert!(stripped.contains("본문"));
+        assert!(!stripped.contains("숨김"));
+        assert!(!stripped.contains("secPr"));
     }
 }

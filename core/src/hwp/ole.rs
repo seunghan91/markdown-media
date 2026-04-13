@@ -94,6 +94,8 @@ impl HwpFlags {
 /// Korean government documents that strict parsers reject.
 enum OleBackend {
     Standard(CompoundFile<File>),
+    /// In-memory OLE compound file (for WASM / from_bytes).
+    Memory(CompoundFile<std::io::Cursor<Vec<u8>>>),
     Lenient(Box<LenientCfb>),
 }
 
@@ -146,6 +148,42 @@ impl OleReader {
         Ok(reader)
     }
 
+    /// Create an OleReader from in-memory data.
+    ///
+    /// Tries strict CFB parsing first via `CompoundFile::open(Cursor)`,
+    /// then falls back to `LenientCfb` if the strict parser rejects the
+    /// data. Used for WASM and other sandboxed environments.
+    pub fn from_bytes(data: Vec<u8>) -> io::Result<Self> {
+        let cursor = std::io::Cursor::new(data.clone());
+        let strict_result = CompoundFile::open(cursor);
+
+        let backend = match strict_result {
+            Ok(cf) => OleBackend::Memory(cf),
+            Err(_strict_err) => {
+                let lenient = LenientCfb::parse(data).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("both strict and lenient CFB parse failed: {}", e),
+                    )
+                })?;
+                OleBackend::Lenient(Box::new(lenient))
+            }
+        };
+
+        let mut reader = OleReader {
+            backend,
+            flags: HwpFlags::default(),
+        };
+
+        if let Ok(header) = reader.read_stream("FileHeader") {
+            if header.len() >= 40 {
+                reader.flags = HwpFlags::from_bytes(&header[36..40]);
+            }
+        }
+
+        Ok(reader)
+    }
+
     /// Get file flags
     pub fn flags(&self) -> &HwpFlags {
         &self.flags
@@ -170,6 +208,16 @@ impl OleReader {
                     }
                 })
                 .collect(),
+            OleBackend::Memory(cf) => cf
+                .walk()
+                .filter_map(|entry| {
+                    if entry.is_stream() {
+                        Some(entry.path().to_string_lossy().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
             OleBackend::Lenient(lcfb) => lcfb.stream_names(),
         }
     }
@@ -180,6 +228,12 @@ impl OleReader {
     pub fn read_stream(&mut self, stream_name: &str) -> io::Result<Vec<u8>> {
         match &mut self.backend {
             OleBackend::Standard(cf) => {
+                let mut stream = cf
+                    .open_stream(stream_name)
+                    .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+                read_limited(&mut stream, MAX_HWP_SECTION)
+            }
+            OleBackend::Memory(cf) => {
                 let mut stream = cf
                     .open_stream(stream_name)
                     .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
@@ -246,6 +300,16 @@ impl OleReader {
                             .starts_with("/ViewText/Section")
                 })
                 .count(),
+            OleBackend::Memory(cf) => cf
+                .walk()
+                .filter(|entry| {
+                    entry.is_stream()
+                        && entry
+                            .path()
+                            .to_string_lossy()
+                            .starts_with("/ViewText/Section")
+                })
+                .count(),
             OleBackend::Lenient(lcfb) => {
                 // Lenient parser stores stream names without the parent
                 // storage prefix. In distribution-locked files only one of
@@ -284,6 +348,17 @@ impl OleReader {
                     }
                 })
                 .collect(),
+            OleBackend::Memory(cf) => cf
+                .walk()
+                .filter_map(|entry| {
+                    let path = entry.path().to_string_lossy().to_string();
+                    if entry.is_stream() && path.starts_with("/BinData/") {
+                        Some(path.strip_prefix("/BinData/").unwrap_or(&path).to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
             OleBackend::Lenient(lcfb) => {
                 // Lenient parser loses the parent-storage prefix. HWP BinData
                 // streams are conventionally named BIN0001.{ext} etc., so we
@@ -308,6 +383,16 @@ impl OleReader {
     pub fn section_count(&self) -> usize {
         match &self.backend {
             OleBackend::Standard(cf) => cf
+                .walk()
+                .filter(|entry| {
+                    entry.is_stream()
+                        && entry
+                            .path()
+                            .to_string_lossy()
+                            .starts_with("/BodyText/Section")
+                })
+                .count(),
+            OleBackend::Memory(cf) => cf
                 .walk()
                 .filter(|entry| {
                     entry.is_stream()

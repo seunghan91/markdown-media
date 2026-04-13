@@ -8,20 +8,28 @@
 
 pub mod hwp;
 pub mod hwpx;
+#[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod docx;
 pub mod ir;
+#[cfg(feature = "image-processing")]
 pub mod renderer;
+#[cfg(feature = "image-processing")]
 pub mod optimizer;
 pub mod cache;
 pub mod legal;
 pub mod utils;
 
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
 pub use hwp::HwpParser;
 pub use hwpx::HwpxParser;
 pub use docx::DocxParser;
 pub use docx::DocxDocument;
+#[cfg(feature = "image-processing")]
 pub use renderer::Renderer;
+#[cfg(feature = "image-processing")]
 pub use optimizer::Optimizer;
 pub use cache::Cache;
 

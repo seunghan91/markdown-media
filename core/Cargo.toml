@@ -17,10 +17,11 @@ rust-version = "1.70"
 default = ["hwp", "hwpx", "pdf", "docx", "image-processing"]
 hwp = []
 hwpx = []
-pdf = []
+pdf = ["dep:pdf-extract", "dep:lopdf"]
 docx = []
-image-processing = []
-wasm = ["wasm-bindgen", "console_error_panic_hook", "js-sys"]
+image-processing = ["dep:image", "dep:resvg"]
+wasm = ["hwp", "hwpx", "docx", "wasm-bindgen", "console_error_panic_hook", "js-sys"]
+wasm-full = ["wasm", "pdf", "image-processing"]
 full = ["hwp", "hwpx", "pdf", "docx", "image-processing"]
 
 [dependencies]
@@ -32,11 +33,11 @@ clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 encoding_rs = "0.8"
-image = "0.25"
-resvg = "0.44"
+image = { version = "0.25", optional = true }
+resvg = { version = "0.44", optional = true }
 base64 = "0.22"
-pdf-extract = "0.7"
-lopdf = "0.34"
+pdf-extract = { version = "0.7", optional = true }
+lopdf = { version = "0.34", optional = true }
 quick-xml = "0.31"
 thiserror = "2.0"
 regex = "1.10"

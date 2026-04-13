@@ -40,6 +40,19 @@ impl HwpParser {
         })
     }
 
+    /// Create an HWP parser from in-memory data.
+    ///
+    /// This constructor is used for WASM and other environments
+    /// where file system access is unavailable.
+    pub fn from_bytes(data: Vec<u8>) -> io::Result<Self> {
+        let ole_reader = OleReader::from_bytes(data)?;
+        Ok(HwpParser {
+            ole_reader,
+            char_shapes: HashMap::new(),
+            para_shapes: HashMap::new(),
+        })
+    }
+
     /// Parse DocInfo stream to extract character shapes and paragraph shapes
     fn parse_doc_info(&mut self) -> io::Result<()> {
         let data = self.ole_reader.read_doc_info()?;

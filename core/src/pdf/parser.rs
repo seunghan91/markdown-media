@@ -236,6 +236,58 @@ impl PdfParser {
         Ok(PdfParser { path, data })
     }
 
+    /// Create a PdfParser from in-memory data (no file path required).
+    ///
+    /// This is the primary constructor for WASM environments where
+    /// file system access is unavailable.
+    pub fn from_bytes(data: Vec<u8>) -> io::Result<Self> {
+        if data.len() < 5 || &data[0..5] != b"%PDF-" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Not a valid PDF file",
+            ));
+        }
+        Ok(PdfParser {
+            path: std::path::PathBuf::from("<memory>"),
+            data,
+        })
+    }
+
+    /// Parse the PDF document from in-memory data only (no file-path access).
+    ///
+    /// Unlike [`parse`], this method uses `pdf_extract::extract_text_from_mem`
+    /// so it works in WASM and other sandboxed environments.
+    pub fn parse_from_memory(&self) -> io::Result<PdfDocument> {
+        let version = self.extract_version();
+
+        let full_text = pdf_extract::extract_text_from_mem(&self.data)
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("PDF extraction failed: {}", e),
+                )
+            })?;
+
+        let page_count = self.get_page_count().unwrap_or(1);
+        let pages = self.split_into_pages(&full_text, page_count);
+        let metadata = self.extract_metadata();
+        let images = self.extract_images();
+        let fonts = self.extract_fonts();
+        let tables = self.detect_tables();
+        let layout = self.extract_layout();
+
+        Ok(PdfDocument {
+            version,
+            page_count,
+            pages,
+            metadata,
+            images,
+            fonts,
+            tables,
+            layout,
+        })
+    }
+
     /// Check if the PDF is encrypted
     pub fn is_encrypted(&self) -> bool {
         if let Ok(doc) = lopdf::Document::load_mem(&self.data) {
