@@ -1,4 +1,11 @@
 # Large government documents - download via script
 mois/*.hwpx
+mois/*.hwp
 mois/*.pdf
+mois/*.pdf.SKIP
 mois/output/
+hwp_samples/
+docx_samples/
+pdf_samples/
+output/
+results.csv

@@ -164,6 +164,31 @@ fn main() {
     }
 }
 
+/// Peek inside a ZIP file to determine if it's DOCX or HWPX.
+fn detect_zip_format(path: &Path) -> String {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return "unknown".to_string(),
+    };
+    let reader = std::io::BufReader::new(file);
+    let mut archive = match zip::ZipArchive::new(reader) {
+        Ok(a) => a,
+        Err(_) => return "unknown".to_string(),
+    };
+    for i in 0..archive.len().min(30) {
+        if let Ok(f) = archive.by_index(i) {
+            let name = f.name().to_string();
+            if name.starts_with("word/") || name == "[Content_Types].xml" {
+                return "docx".to_string();
+            }
+            if name.starts_with("Contents/") || name.starts_with("META-INF/") {
+                return "hwpx".to_string();
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
 fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool) {
     println!("📄 Converting: {}", input.display());
 
@@ -189,20 +214,41 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
     let is_cfb = magic.len() >= 8
         && magic == [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 
-    // DOCX is also ZIP-based — check extension before HWPX fallback
+    // PDF magic takes priority — some files have wrong extensions (e.g. .hwpx but actually PDF)
+    if is_pdf {
+        convert_pdf(input, output, format, verbose);
+        return;
+    }
+
+    // ZIP-based formats: peek inside to distinguish DOCX vs HWPX
+    if is_zip {
+        // Check internal structure to determine actual format
+        let actual = detect_zip_format(input);
+        match actual.as_str() {
+            "docx" => { convert_docx(input, output, format, verbose); return; }
+            "hwpx" => { convert_hwpx(input, output, format, extract_images, verbose); return; }
+            _ => {
+                // Fallback to extension
+                if ext.eq_ignore_ascii_case("docx") {
+                    convert_docx(input, output, format, verbose);
+                } else {
+                    convert_hwpx(input, output, format, extract_images, verbose);
+                }
+                return;
+            }
+        }
+    }
+
+    // Extension-based fallback for non-magic-detected files
     if ext.eq_ignore_ascii_case("docx") {
         convert_docx(input, output, format, verbose);
         return;
     }
-
-    // ZIP magic → HWPX (regardless of extension)
-    if is_zip || ext.eq_ignore_ascii_case("hwpx") {
+    if ext.eq_ignore_ascii_case("hwpx") {
         convert_hwpx(input, output, format, extract_images, verbose);
         return;
     }
-
-    // PDF magic → PDF
-    if is_pdf || ext.eq_ignore_ascii_case("pdf") {
+    if ext.eq_ignore_ascii_case("pdf") {
         convert_pdf(input, output, format, verbose);
         return;
     }
