@@ -1,0 +1,4 @@
+# Large government documents - download via script
+mois/*.hwpx
+mois/*.pdf
+mois/output/
