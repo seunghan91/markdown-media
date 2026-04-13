@@ -5,7 +5,8 @@
   import FileList from '$lib/components/FileList.svelte';
   import QuickActions from '$lib/components/QuickActions.svelte';
   import { refreshHistory, historyEntries } from '$lib/stores/history';
-  import { convertFile } from '$lib/utils/ipc';
+  import { openInViewer } from '$lib/stores/viewer';
+  import { convertFile, openFile } from '$lib/utils/ipc';
   import type { ConvertResult, HistoryEntry } from '$lib/types';
 
   let loading = false;
@@ -24,8 +25,9 @@
     try {
       result = await convertFile(path, 'markdown');
       await refreshHistory();
+      // 변환 성공 → 뷰어에서 결과 보기
+      await openInViewer(result, path);
     } catch (caught) {
-      // Tauri IPC 에러는 string으로 올 수 있음
       if (typeof caught === 'string') {
         error = caught;
       } else if (caught instanceof Error) {
@@ -58,14 +60,21 @@
     historyEntries.update((list) => list.filter((e) => e.id !== entry.id));
   }
 
-  /** 히스토리 클릭 → 성공이면 뷰어로, 실패면 다시 변환 시도 */
+  /** 히스토리 클릭 → 성공이면 뷰어에서 열기, 실패면 재변환 */
   async function handleHistorySelect(entry: HistoryEntry) {
     selectedId = entry.id;
     if (entry.status === 'success') {
-      // 뷰어에서 해당 파일 열기
-      goto(`/viewer`);
+      loading = true;
+      try {
+        const data = await convertFile(entry.filePath, 'markdown');
+        await openInViewer(data, entry.filePath);
+      } catch {
+        // fallback: 뷰어로만 이동
+        goto('/viewer');
+      } finally {
+        loading = false;
+      }
     } else {
-      // 실패한 파일 재변환 시도
       convertPath(entry.filePath);
     }
   }
@@ -130,13 +139,12 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-5);
-    max-width: 1200px;
-    margin: 0 auto;
+    max-width: 100%;
   }
 
   .bottom-grid {
     display: grid;
-    grid-template-columns: 1.2fr 0.8fr;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     gap: var(--space-4);
   }
 
@@ -222,9 +230,5 @@
     color: var(--color-label-tertiary);
   }
 
-  @media (max-width: 960px) {
-    .bottom-grid {
-      grid-template-columns: 1fr;
-    }
-  }
+  /* auto-fit handles all breakpoints */
 </style>

@@ -1,7 +1,7 @@
 <script lang="ts">
   import DropZone from '$lib/components/DropZone.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
-  import { setViewerMode, viewerData, viewerMode } from '$lib/stores/viewer';
+  import { setViewerMode, viewerData, viewerMode, viewerPath } from '$lib/stores/viewer';
   import { openFile, markdownToHtml } from '$lib/utils/ipc';
   import type { ViewerData } from '$lib/types';
 
@@ -12,6 +12,12 @@
 
   $: if ($viewerData) {
     sourceMarkdown = $viewerData.markdown;
+    // 스토어에서 넘어온 데이터의 파일명 표시
+    if ($viewerData.metadata.title) {
+      activeFileName = $viewerData.metadata.title;
+    } else if ($viewerPath) {
+      activeFileName = $viewerPath.split('/').pop() ?? '변환 결과';
+    }
   }
 
   async function openByPath(path: string, name: string) {
@@ -130,8 +136,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    max-width: 1400px;
-    margin: 0 auto;
+    max-width: 100%;
   }
 
   .viewer-header {
@@ -366,7 +371,7 @@
     outline: none;
   }
 
-  @media (max-width: 960px) {
+  @media (max-width: 780px) {
     .viewer-body.split {
       grid-template-columns: 1fr;
     }

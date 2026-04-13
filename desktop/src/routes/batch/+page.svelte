@@ -1,8 +1,9 @@
 <script lang="ts">
   import DropZone from '$lib/components/DropZone.svelte';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
-  import { batchConvert } from '$lib/utils/ipc';
-  import type { BatchResult, ExportFormat } from '$lib/types';
+  import { openInViewer } from '$lib/stores/viewer';
+  import { batchConvert, convertFile } from '$lib/utils/ipc';
+  import type { BatchItemResult, BatchResult, ExportFormat } from '$lib/types';
 
   let files: File[] = [];
   let progress = 0;
@@ -23,6 +24,18 @@
       progress = 100;
     } finally {
       loading = false;
+    }
+  }
+
+  /** 성공한 결과 행 클릭 → 뷰어에서 열기 */
+  async function openResultInViewer(item: BatchItemResult) {
+    if (item.status !== 'success') return;
+    const target = item.outputPath ?? item.inputPath;
+    try {
+      const data = await convertFile(target, 'markdown');
+      await openInViewer(data, target);
+    } catch {
+      // 변환 실패 시 무시
     }
   }
 </script>
@@ -89,10 +102,18 @@
     {#if result?.results?.length}
       <div class="table-body">
         {#each result.results as item}
-          <div class="table-row">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+          <div
+            class="table-row"
+            class:clickable={item.status === 'success'}
+            on:click={() => openResultInViewer(item)}
+            on:keydown={(e) => e.key === 'Enter' && openResultInViewer(item)}
+            role={item.status === 'success' ? 'button' : undefined}
+            tabindex={item.status === 'success' ? 0 : undefined}
+          >
             <span class="row-file">{item.inputPath.split('/').pop()}</span>
             <span class="row-status" class:success={item.status === 'success'} class:failed={item.status !== 'success'}>
-              {item.status === 'success' ? '완료' : '실패'}
+              {item.status === 'success' ? '뷰어에서 보기' : '실패'}
             </span>
           </div>
         {/each}
@@ -108,8 +129,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    max-width: 1200px;
-    margin: 0 auto;
+    max-width: 100%;
   }
 
   .card {
@@ -129,7 +149,7 @@
 
   .control-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     gap: var(--space-4);
   }
 
@@ -286,15 +306,21 @@
     background: color-mix(in srgb, var(--color-error) 10%, transparent);
   }
 
+  .table-row.clickable {
+    cursor: pointer;
+    border-radius: var(--radius-xs);
+    transition: background var(--duration-fast) var(--ease-default);
+  }
+
+  .table-row.clickable:hover {
+    background: var(--color-fill-quaternary);
+  }
+
   .empty-text {
     margin: 0;
     font-size: var(--text-footnote-size);
     color: var(--color-label-tertiary);
   }
 
-  @media (max-width: 960px) {
-    .control-grid {
-      grid-template-columns: 1fr;
-    }
-  }
+  /* auto-fit handles all breakpoints */
 </style>
