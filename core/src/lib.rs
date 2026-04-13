@@ -15,6 +15,11 @@ pub mod hwpx;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod docx;
+pub mod xlsx;
+pub mod pptx;
+pub mod html;
+pub mod csv_parser;
+pub mod txt_parser;
 pub mod ir;
 #[cfg(feature = "image-processing")]
 pub mod renderer;

@@ -7,6 +7,11 @@ mod hwp;
 mod hwpx;
 mod ir;
 mod pdf;
+mod xlsx;
+mod pptx;
+mod html;
+mod csv_parser;
+mod txt_parser;
 mod utils;
 
 use clap::{Parser, Subcommand};
@@ -14,6 +19,11 @@ use docx::DocxParser;
 use hwp::HwpParser;
 use hwpx::HwpxParser;
 use pdf::PdfParser;
+use xlsx::XlsxParser;
+use pptx::PptxParser;
+use html::HtmlParser;
+use csv_parser::CsvParser;
+use txt_parser::TxtParser;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde_json::json;
@@ -191,8 +201,14 @@ fn detect_zip_format(path: &Path) -> String {
     for i in 0..archive.len().min(30) {
         if let Ok(f) = archive.by_index(i) {
             let name = f.name().to_string();
-            if name.starts_with("word/") || name == "[Content_Types].xml" {
+            if name.starts_with("word/") {
                 return "docx".to_string();
+            }
+            if name.starts_with("ppt/") {
+                return "pptx".to_string();
+            }
+            if name.starts_with("xl/") {
+                return "xlsx".to_string();
             }
             if name.starts_with("Contents/") || name.starts_with("META-INF/") {
                 return "hwpx".to_string();
@@ -240,10 +256,16 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         match actual.as_str() {
             "docx" => { convert_docx(input, output, format, verbose); return; }
             "hwpx" => { convert_hwpx(input, output, format, extract_images, verbose); return; }
+            "pptx" => { convert_pptx(input, output, format, verbose); return; }
+            "xlsx" => { convert_xlsx(input, output, format, verbose); return; }
             _ => {
-                // Fallback to extension
+                // Fallback to extension for ZIP-based formats
                 if ext.eq_ignore_ascii_case("docx") {
                     convert_docx(input, output, format, verbose);
+                } else if ext.eq_ignore_ascii_case("pptx") {
+                    convert_pptx(input, output, format, verbose);
+                } else if ext.eq_ignore_ascii_case("xlsx") || ext.eq_ignore_ascii_case("xls") {
+                    convert_xlsx(input, output, format, verbose);
                 } else {
                     convert_hwpx(input, output, format, extract_images, verbose);
                 }
@@ -263,6 +285,26 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
     }
     if ext.eq_ignore_ascii_case("pdf") {
         convert_pdf(input, output, format, verbose);
+        return;
+    }
+    if ext.eq_ignore_ascii_case("xlsx") || ext.eq_ignore_ascii_case("xls") {
+        convert_xlsx(input, output, format, verbose);
+        return;
+    }
+    if ext.eq_ignore_ascii_case("pptx") {
+        convert_pptx(input, output, format, verbose);
+        return;
+    }
+    if ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm") || ext.eq_ignore_ascii_case("mhtml") {
+        convert_html(input, output, format, verbose);
+        return;
+    }
+    if ext.eq_ignore_ascii_case("csv") || ext.eq_ignore_ascii_case("tsv") {
+        convert_csv(input, output, format, verbose);
+        return;
+    }
+    if ext.eq_ignore_ascii_case("txt") || ext.eq_ignore_ascii_case("text") || ext.eq_ignore_ascii_case("log") {
+        convert_txt(input, output, format, verbose);
         return;
     }
 
@@ -487,10 +529,7 @@ fn parse_hwpml(xml: &str) -> Result<(String, String, String, usize), String> {
                 b"HWPML" => {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"Version" {
-                            version = attr
-                                .unescape_value()
-                                .map(|v| v.into_owned())
-                                .unwrap_or_else(|_| "unknown".to_string());
+                            version = String::from_utf8_lossy(&attr.value).to_string();
                         }
                     }
                 }
@@ -891,6 +930,329 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
             }
         }
         Err(e) => eprintln!("❌ Error opening DOCX file: {}", e),
+    }
+}
+
+fn convert_xlsx(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match XlsxParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "spreadsheet.xlsx".to_string());
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "xlsx",
+                                "metadata": {
+                                    "sheets": doc.metadata.sheet_count,
+                                },
+                                "content": doc.to_markdown(),
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  ✓ Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  ✓ Created: {}", mdx_path.display());
+
+                            let mdm_path = output.join(format!("{}.mdm", stem));
+                            let mdm_manifest = json!({
+                                "version": "1.0",
+                                "format": "xlsx",
+                                "source": source_name,
+                                "metadata": { "sheets": doc.metadata.sheet_count },
+                                "resources": {},
+                            });
+                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                                .expect("Failed to write MDM manifest");
+                            println!("  ✓ Created: {}", mdm_path.display());
+                        }
+                    }
+
+                    if verbose {
+                        println!("\n📊 Summary:");
+                        println!("  - Format: XLSX");
+                        println!("  - Sheets: {}", doc.metadata.sheet_count);
+                        for sheet in &doc.sheets {
+                            println!("    - {} ({} rows)", sheet.name, sheet.rows.len());
+                        }
+                    }
+
+                    println!("✅ Conversion complete!");
+                }
+                Err(e) => eprintln!("❌ Error parsing XLSX: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error opening XLSX file: {}", e),
+    }
+}
+
+fn convert_pptx(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match PptxParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "presentation.pptx".to_string());
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "pptx",
+                                "metadata": {
+                                    "slides": doc.metadata.slide_count,
+                                },
+                                "slides": doc.slides.iter().map(|s| json!({
+                                    "number": s.number,
+                                    "title": s.title,
+                                    "content": s.content,
+                                    "notes": s.notes,
+                                })).collect::<Vec<_>>(),
+                                "content": doc.to_markdown(),
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  ✓ Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  ✓ Created: {}", mdx_path.display());
+
+                            let mdm_path = output.join(format!("{}.mdm", stem));
+                            let mdm_manifest = json!({
+                                "version": "1.0",
+                                "format": "pptx",
+                                "source": source_name,
+                                "metadata": { "slides": doc.metadata.slide_count },
+                                "resources": {},
+                            });
+                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                                .expect("Failed to write MDM manifest");
+                            println!("  ✓ Created: {}", mdm_path.display());
+                        }
+                    }
+
+                    if verbose {
+                        println!("\n📊 Summary:");
+                        println!("  - Format: PPTX");
+                        println!("  - Slides: {}", doc.metadata.slide_count);
+                        for slide in &doc.slides {
+                            let title = slide.title.as_deref().unwrap_or("(untitled)");
+                            println!("    - Slide {}: {}", slide.number, title);
+                        }
+                    }
+
+                    println!("✅ Conversion complete!");
+                }
+                Err(e) => eprintln!("❌ Error parsing PPTX: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error opening PPTX file: {}", e),
+    }
+}
+
+fn convert_html(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match HtmlParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "page.html".to_string());
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "html",
+                                "metadata": {
+                                    "title": doc.title,
+                                },
+                                "content": doc.markdown,
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  ✓ Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  ✓ Created: {}", mdx_path.display());
+
+                            let mdm_path = output.join(format!("{}.mdm", stem));
+                            let mdm_manifest = json!({
+                                "version": "1.0",
+                                "format": "html",
+                                "source": source_name,
+                                "metadata": { "title": doc.title },
+                                "resources": {},
+                            });
+                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                                .expect("Failed to write MDM manifest");
+                            println!("  ✓ Created: {}", mdm_path.display());
+                        }
+                    }
+
+                    if verbose {
+                        println!("\n📊 Summary:");
+                        println!("  - Format: HTML");
+                        if let Some(ref title) = doc.title {
+                            println!("  - Title: {}", title);
+                        }
+                        println!("  - Markdown length: {} chars", doc.markdown.len());
+                    }
+
+                    println!("✅ Conversion complete!");
+                }
+                Err(e) => eprintln!("❌ Error parsing HTML: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error opening HTML file: {}", e),
+    }
+}
+
+fn convert_csv(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match CsvParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "data.csv".to_string());
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "csv",
+                                "metadata": {
+                                    "rows": doc.rows.len(),
+                                    "columns": doc.rows.first().map(|r| r.len()).unwrap_or(0),
+                                },
+                                "content": doc.to_markdown(),
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  ✓ Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  ✓ Created: {}", mdx_path.display());
+
+                            let mdm_path = output.join(format!("{}.mdm", stem));
+                            let mdm_manifest = json!({
+                                "version": "1.0",
+                                "format": "csv",
+                                "source": source_name,
+                                "metadata": {
+                                    "rows": doc.rows.len(),
+                                    "columns": doc.rows.first().map(|r| r.len()).unwrap_or(0),
+                                },
+                                "resources": {},
+                            });
+                            fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                                .expect("Failed to write MDM manifest");
+                            println!("  ✓ Created: {}", mdm_path.display());
+                        }
+                    }
+
+                    if verbose {
+                        println!("\n📊 Summary:");
+                        println!("  - Format: CSV");
+                        println!("  - Rows: {}", doc.rows.len());
+                        println!("  - Columns: {}", doc.rows.first().map(|r| r.len()).unwrap_or(0));
+                    }
+
+                    println!("✅ Conversion complete!");
+                }
+                Err(e) => eprintln!("❌ Error parsing CSV: {}", e),
+            }
+        }
+        Err(e) => eprintln!("❌ Error opening CSV file: {}", e),
+    }
+}
+
+fn convert_txt(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match TxtParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+            let source_name = input.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file.txt".to_string());
+            let markdown = parser.to_markdown();
+
+            match format {
+                "json" => {
+                    let json_path = output.join(format!("{}.json", stem));
+                    let json_data = json!({
+                        "version": "1.0",
+                        "format": "txt",
+                        "metadata": {
+                            "lines": markdown.lines().count(),
+                        },
+                        "content": markdown,
+                    });
+                    fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                        .expect("Failed to write JSON");
+                    println!("  ✓ Created: {}", json_path.display());
+                }
+                _ => {
+                    let mdx_path = output.join(format!("{}.mdx", stem));
+                    fs::write(&mdx_path, parser.to_mdx(&source_name)).expect("Failed to write MDX");
+                    println!("  ✓ Created: {}", mdx_path.display());
+
+                    let mdm_path = output.join(format!("{}.mdm", stem));
+                    let mdm_manifest = json!({
+                        "version": "1.0",
+                        "format": "txt",
+                        "source": source_name,
+                        "metadata": { "lines": markdown.lines().count() },
+                        "resources": {},
+                    });
+                    fs::write(&mdm_path, serde_json::to_string_pretty(&mdm_manifest).unwrap())
+                        .expect("Failed to write MDM manifest");
+                    println!("  ✓ Created: {}", mdm_path.display());
+                }
+            }
+
+            if verbose {
+                println!("\n📊 Summary:");
+                println!("  - Format: TXT");
+                println!("  - Lines: {}", markdown.lines().count());
+                println!("  - Characters: {}", markdown.len());
+            }
+
+            println!("✅ Conversion complete!");
+        }
+        Err(e) => eprintln!("❌ Error opening text file: {}", e),
     }
 }
 
