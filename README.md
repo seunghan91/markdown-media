@@ -68,6 +68,35 @@ cd core && cargo build --release
 
 Open `viewer/index.html` in a browser and drag-and-drop your files.
 
+### Method 4: MCP (AI Agents) / MCP 연동
+
+AI agent가 MDM을 도구(tool)로 직접 호출할 수 있습니다. 두 가지 경로:
+
+**A. Local stream mode** — stdin/stdout 1-shot:
+
+```bash
+cat contract.hwp | hwp2mdm stream --ext hwp > out.md
+cat data.xlsx   | hwp2mdm stream --ext xlsx --mode body
+```
+
+**B. Korea Law Hub MCP Gateway** — JSON-RPC 2.0, 원격 호출:
+
+```
+POST https://www.law-check.com/api/mcp
+Authorization: Bearer <YOUR_MCP_KEY>
+```
+
+제공되는 3개 tool:
+- `mdm_convert_document` — 풀 마크다운 변환 (HWP/HWPX/PDF/DOCX/PPTX/XLSX/HTML/CSV/TXT)
+- `mdm_extract_text` — 평문 텍스트 빠른 추출
+- `mdm_detect_format` — 포맷 감지만
+
+Claude Desktop / Cursor / Claude Code 등 모든 MCP 클라이언트에서 바로 사용 가능.
+
+**자세한 사용법, 입력 스키마, 예제 curl, 보안 정책**: [docs/MCP_USAGE.md](docs/MCP_USAGE.md)
+
+For AI agents: MDM exposes `stream` mode for local pipe-based use, and 3 JSON-RPC tools via Korea Law Hub MCP Gateway for remote use. See [docs/MCP_USAGE.md](docs/MCP_USAGE.md) for complete integration guide including Claude Desktop / Cursor setup.
+
 ---
 
 ## Why Markdown?
