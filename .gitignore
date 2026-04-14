@@ -37,3 +37,6 @@ npm-debug.log*
 *.png
 .superpowers/
 .playwright-mcp/
+
+# External reference clones (read-only, not distributed)
+/reference/
