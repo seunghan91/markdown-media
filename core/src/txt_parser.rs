@@ -52,11 +52,21 @@ impl TxtParser {
 /// Decode raw bytes to a UTF-8 string.
 ///
 /// Strategy:
-/// 1. Strip UTF-8 BOM if present.
+/// 1. Detect BOM (UTF-8, UTF-16 LE, UTF-16 BE) and decode accordingly.
 /// 2. Try UTF-8.
 /// 3. Fallback to EUC-KR (common in Korean `.txt` files).
 fn decode_text(data: &[u8]) -> String {
-    // Strip UTF-8 BOM.
+    // UTF-16 LE BOM: 0xFF 0xFE.
+    if data.len() >= 2 && data[0] == 0xFF && data[1] == 0xFE {
+        let (decoded, _, _) = encoding_rs::UTF_16LE.decode(&data[2..]);
+        return decoded.to_string();
+    }
+    // UTF-16 BE BOM: 0xFE 0xFF.
+    if data.len() >= 2 && data[0] == 0xFE && data[1] == 0xFF {
+        let (decoded, _, _) = encoding_rs::UTF_16BE.decode(&data[2..]);
+        return decoded.to_string();
+    }
+    // UTF-8 BOM: 0xEF 0xBB 0xBF.
     let data = if data.len() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
         &data[3..]
     } else {
@@ -68,7 +78,7 @@ fn decode_text(data: &[u8]) -> String {
         return s.to_string();
     }
 
-    // Fallback: EUC-KR.
+    // Fallback: EUC-KR (common in Korean .txt files).
     let (decoded, _, _) = encoding_rs::EUC_KR.decode(data);
     decoded.to_string()
 }
@@ -143,5 +153,27 @@ mod tests {
         for line in out.lines() {
             assert_eq!(line, line.trim_end());
         }
+    }
+
+    #[test]
+    fn test_decode_utf16_le_bom() {
+        // "hi" in UTF-16 LE with BOM
+        let data: Vec<u8> = vec![0xFF, 0xFE, 0x68, 0x00, 0x69, 0x00];
+        assert_eq!(decode_text(&data), "hi");
+    }
+
+    #[test]
+    fn test_decode_utf16_be_bom() {
+        // "hi" in UTF-16 BE with BOM
+        let data: Vec<u8> = vec![0xFE, 0xFF, 0x00, 0x68, 0x00, 0x69];
+        assert_eq!(decode_text(&data), "hi");
+    }
+
+    #[test]
+    fn test_decode_utf16_korean() {
+        // "안녕" in UTF-16 LE with BOM
+        // 안 = U+C548 = 0x48 0xC5 (LE), 녕 = U+B155 = 0x55 0xB1 (LE)
+        let data: Vec<u8> = vec![0xFF, 0xFE, 0x48, 0xC5, 0x55, 0xB1];
+        assert_eq!(decode_text(&data), "안녕");
     }
 }

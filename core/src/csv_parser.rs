@@ -143,8 +143,14 @@ fn detect_delimiter(data: &[u8]) -> u8 {
     if tabs > commas { b'\t' } else { b',' }
 }
 
+/// Escape characters that would corrupt a GFM pipe table row.
+/// Newlines inside a quoted CSV cell must be flattened so the cell stays on
+/// one line (GFM tables are line-oriented). Pipes are escaped with backslash.
 fn escape_pipe(s: &str) -> String {
     s.replace('|', "\\|")
+        .replace("\r\n", " ")
+        .replace('\n', " ")
+        .replace('\r', " ")
 }
 
 #[cfg(test)]
@@ -185,5 +191,24 @@ mod tests {
     #[test]
     fn test_escape_pipe() {
         assert_eq!(escape_pipe("a|b"), "a\\|b");
+    }
+
+    #[test]
+    fn test_escape_pipe_flattens_newlines() {
+        // GFM pipe tables are line-oriented; embedded newlines must be flattened.
+        assert_eq!(escape_pipe("Multi\nline"),   "Multi line");
+        assert_eq!(escape_pipe("Multi\r\nline"), "Multi line");
+        assert_eq!(escape_pipe("has|pipe\nand|nl"), "has\\|pipe and\\|nl");
+    }
+
+    #[test]
+    fn test_quoted_multiline_field_flattened_in_output() {
+        let data = b"A,B\n1,\"line1\nline2\"";
+        let parser = CsvParser::from_bytes(data.to_vec()).unwrap();
+        let doc = parser.parse().unwrap();
+        let md = doc.to_markdown();
+        assert!(!md.lines().any(|l| l == "line2"),
+            "multi-line cell leaked onto its own row: {}", md);
+        assert!(md.contains("line1 line2"), "got: {}", md);
     }
 }
