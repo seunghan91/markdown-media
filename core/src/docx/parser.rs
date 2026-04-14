@@ -6,6 +6,8 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use serde::{Serialize, Deserialize};
 
+use super::math::{OmmlBuilder, MathKind};
+
 // Word XML namespaces (kept for reference; suppress unused warnings)
 #[allow(dead_code)]
 const WORD_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -1047,9 +1049,40 @@ impl<R: Read + Seek> DocxParser<R> {
         // vMerge tracking
         let mut current_cell_v_merge_continue = false;
 
+        // OMML (math) streaming: active only between oMath/oMathPara boundaries.
+        let mut math_builder: Option<OmmlBuilder> = None;
+
         loop {
             match reader.read_event() {
                 Ok(Event::Start(ref e)) => {
+                    // --- OMML math routing ---
+                    let local = e.local_name().as_ref().to_vec();
+                    if let Some(ref mut mb) = math_builder {
+                        // Inside a math region: forward everything to the builder,
+                        // except an outermost oMath/oMathPara (already started).
+                        if local != b"oMath" && local != b"oMathPara" {
+                            let attrs: Vec<(Vec<u8>, String)> = e.attributes()
+                                .flatten()
+                                .map(|a| (
+                                    a.key.local_name().as_ref().to_vec(),
+                                    String::from_utf8_lossy(&a.value).to_string(),
+                                ))
+                                .collect();
+                            mb.start(&local, &attrs);
+                        } else {
+                            // Nested oMath inside oMathPara — pass-through as a plain wrapper.
+                            mb.start(&local, &[]);
+                        }
+                        continue;
+                    }
+                    if in_paragraph && local == b"oMathPara" {
+                        math_builder = Some(OmmlBuilder::new(MathKind::Block));
+                        continue;
+                    }
+                    if in_paragraph && local == b"oMath" {
+                        math_builder = Some(OmmlBuilder::new(MathKind::Inline));
+                        continue;
+                    }
                     match e.local_name().as_ref() {
                         b"p" => {
                             in_paragraph = true;
@@ -1265,6 +1298,19 @@ impl<R: Read + Seek> DocxParser<R> {
                     }
                 }
                 Ok(Event::Empty(ref e)) => {
+                    // --- OMML math routing for self-closing tags ---
+                    if let Some(ref mut mb) = math_builder {
+                        let local = e.local_name().as_ref().to_vec();
+                        let attrs: Vec<(Vec<u8>, String)> = e.attributes()
+                            .flatten()
+                            .map(|a| (
+                                a.key.local_name().as_ref().to_vec(),
+                                String::from_utf8_lossy(&a.value).to_string(),
+                            ))
+                            .collect();
+                        mb.empty(&local, &attrs);
+                        continue;
+                    }
                     match e.local_name().as_ref() {
                         b"b" if in_run => {
                             let mut is_off = false;
@@ -1405,12 +1451,45 @@ impl<R: Read + Seek> DocxParser<R> {
                     }
                 }
                 Ok(Event::Text(ref e)) => {
-                    if in_text {
+                    if let Some(ref mut mb) = math_builder {
+                        let text = e.unescape().unwrap_or_default().to_string();
+                        mb.text(&text);
+                    } else if in_text {
                         let text = e.unescape().unwrap_or_default().to_string();
                         current_run.text.push_str(&text);
                     }
                 }
                 Ok(Event::End(ref e)) => {
+                    // --- OMML math routing ---
+                    let local = e.local_name().as_ref().to_vec();
+                    if let Some(ref mut mb) = math_builder {
+                        if local == b"oMath" && mb.kind() == MathKind::Inline {
+                            // Outermost oMath end: finalize inline math and emit TextRun.
+                            let latex = math_builder.take().unwrap().finish();
+                            let run = TextRun { text: latex, ..TextRun::default() };
+                            if in_hyperlink {
+                                hyperlink_runs.push(run);
+                            } else {
+                                current_para.runs.push(run.clone());
+                                current_para.inlines.push(InlineElement::Run(run.clone()));
+                                if in_table_cell {
+                                    cell_inlines.push(InlineElement::Run(run));
+                                }
+                            }
+                            continue;
+                        }
+                        if local == b"oMathPara" && mb.kind() == MathKind::Block {
+                            // Outermost oMathPara end: finalize as its own paragraph-equivalent run.
+                            let latex = math_builder.take().unwrap().finish();
+                            let run = TextRun { text: latex, ..TextRun::default() };
+                            current_para.runs.push(run.clone());
+                            current_para.inlines.push(InlineElement::Run(run));
+                            continue;
+                        }
+                        // Non-outermost: forward.
+                        mb.end(&local);
+                        continue;
+                    }
                     match e.local_name().as_ref() {
                         b"t" => {
                             in_text = false;

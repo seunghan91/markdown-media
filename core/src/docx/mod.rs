@@ -1,4 +1,5 @@
 pub mod parser;
+pub mod math;
 
 pub use parser::{
     DocxParser,
