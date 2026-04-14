@@ -2457,6 +2457,7 @@ impl PdfDocument {
 
         // Content: use layout-aware conversion if layout data is available
         let content = self.to_markdown_with_layout();
+        let content = merge_partial_numbering(&content);
         mdx.push_str(&content);
         mdx.push_str("\n\n");
 
@@ -2515,6 +2516,53 @@ impl PdfDocument {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+}
+
+/// Merge MasterFormat-style partial numbering lines with the following text.
+///
+/// Some construction / specification documents use numbering like:
+///   .1 The intent of this Request for Proposal...
+///   .2 Available information...
+/// PDF text extractors often split these across two lines. This post-processor
+/// detects a line containing only `.\d+` and fuses it with the next non-blank
+/// line. If there is no follower, the line is preserved as-is.
+fn merge_partial_numbering(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let stripped = line.trim();
+        if is_partial_numbering(stripped) {
+            // Find next non-blank line.
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j < lines.len() {
+                out.push(format!("{} {}", stripped, lines[j].trim()));
+                i = j + 1;
+                continue;
+            } else {
+                // No follower — preserve as-is.
+                out.push(line.to_string());
+                i += 1;
+                continue;
+            }
+        }
+        out.push(line.to_string());
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// Returns true if `s` is exactly `.N` where N is one or more digits.
+fn is_partial_numbering(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 2 || bytes[0] != b'.' {
+        return false;
+    }
+    bytes[1..].iter().all(|b| b.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -2966,5 +3014,40 @@ mod tests {
         // Should group "Hello World" on same line
         assert!(blocks.len() >= 2);
         assert!(blocks[0].content.contains("Hello"));
+    }
+
+    #[test]
+    fn test_merge_partial_numbering_basic() {
+        let input = ".1\nThe intent of this Request for Proposal...\n.2\nAvailable information relative to...";
+        let out = merge_partial_numbering(input);
+        assert!(out.contains(".1 The intent"), "got: {:?}", out);
+        assert!(out.contains(".2 Available"));
+    }
+
+    #[test]
+    fn test_merge_partial_numbering_skip_blanks() {
+        let input = ".3\n\n\nactual content here";
+        let out = merge_partial_numbering(input);
+        assert!(out.contains(".3 actual content here"), "got: {:?}", out);
+    }
+
+    #[test]
+    fn test_merge_partial_numbering_no_false_positive() {
+        // A decimal number like ".5" alone SHOULD merge, but normal prose
+        // and valid sentence-initial markers shouldn't be disturbed.
+        let input = "Regular line.\nNext line.\n.1\nItem text";
+        let out = merge_partial_numbering(input);
+        assert!(out.contains("Regular line."));
+        assert!(out.contains(".1 Item text"));
+        // The merge should not duplicate text.
+        assert_eq!(out.matches("Item text").count(), 1);
+    }
+
+    #[test]
+    fn test_merge_partial_numbering_trailing() {
+        // Partial numbering at EOF with no follower: keep as-is.
+        let input = "Paragraph\n.9";
+        let out = merge_partial_numbering(input);
+        assert!(out.ends_with(".9"));
     }
 }
