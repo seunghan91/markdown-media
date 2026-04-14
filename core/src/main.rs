@@ -16,6 +16,8 @@ mod txt_parser;
 mod utils;
 
 use clap::{Parser, Subcommand};
+use std::io::Read as _;
+use std::io::Write as _;
 use docx::DocxParser;
 use hwp::HwpParser;
 use hwpx::HwpxParser;
@@ -123,10 +125,31 @@ enum Commands {
     Info {
         /// Input file (HWP, HWPX, PDF)
         input: PathBuf,
-        
+
         /// Output format (text, json)
         #[arg(short, long, default_value = "text")]
         format: String,
+    },
+
+    /// Read a document from stdin and emit Markdown to stdout.
+    ///
+    /// Designed for MCP/subprocess integration: pipe bytes in, get clean
+    /// Markdown out. Internally uses a temp file so every parser works
+    /// (HWP needs OLE random access, PDF needs seeking); status messages
+    /// are suppressed so stdout contains ONLY the Markdown body.
+    ///
+    /// Example:
+    ///   cat contract.hwp | hwp2mdm stream --ext hwp > out.md
+    Stream {
+        /// File extension hint (hwp, hwpx, pdf, docx, pptx, xlsx, html, csv, tsv, txt).
+        /// Required because stdin has no filename for auto-detection.
+        #[arg(long)]
+        ext: String,
+
+        /// Output variant: `mdx` (full Markdown + YAML frontmatter) or
+        /// `body` (Markdown content only, no frontmatter).
+        #[arg(long, default_value = "mdx")]
+        mode: String,
     },
 }
 
@@ -158,6 +181,12 @@ fn main() {
         }
         Some(Commands::Info { input, format }) => {
             show_info(&input, &format);
+        }
+        Some(Commands::Stream { ext, mode }) => {
+            if let Err(e) = stream_convert(&ext, &mode) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
         }
         None => {
             // Quick conversion mode
@@ -238,6 +267,122 @@ fn save_asset_file(output_dir: &Path, asset: &manifest::Asset, data: &[u8]) -> i
     }
     fs::write(&full_path, data)?;
     Ok(())
+}
+
+/// RAII guard that redirects stdout to /dev/null for its lifetime.
+///
+/// Used by `stream_convert` so that the heavily-println-heavy `convert_*`
+/// functions can run without polluting the Markdown payload we're writing
+/// to the real stdout at the end. Restore happens in Drop.
+///
+/// Unix-only; on other platforms the struct is a no-op. Windows users
+/// should prefer the default `convert` subcommand (file I/O).
+#[cfg(unix)]
+struct StdoutSilencer {
+    saved_fd: libc::c_int,
+}
+
+#[cfg(unix)]
+impl StdoutSilencer {
+    fn new() -> io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let saved_fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        if saved_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let devnull = fs::File::create("/dev/null")?;
+        let rc = unsafe { libc::dup2(devnull.as_raw_fd(), libc::STDOUT_FILENO) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            unsafe { libc::close(saved_fd) };
+            return Err(err);
+        }
+        Ok(Self { saved_fd })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StdoutSilencer {
+    fn drop(&mut self) {
+        // Ensure any buffered writes to the silenced stdout are flushed
+        // before we restore — otherwise cached bytes land on the real
+        // stdout after restore.
+        let _ = io::stdout().flush();
+        unsafe {
+            libc::dup2(self.saved_fd, libc::STDOUT_FILENO);
+            libc::close(self.saved_fd);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct StdoutSilencer;
+
+#[cfg(not(unix))]
+impl StdoutSilencer {
+    fn new() -> io::Result<Self> { Ok(Self) }
+}
+
+/// Read a document from stdin, convert to Markdown, write to stdout.
+///
+/// Reuses the existing `convert_file` dispatcher internally via a temp
+/// file so every supported format (including HWP which needs random
+/// access) works without duplicating detection/dispatch logic.
+fn stream_convert(ext: &str, mode: &str) -> io::Result<()> {
+    // 1. Read stdin bytes.
+    let mut bytes = Vec::new();
+    io::stdin().read_to_end(&mut bytes)?;
+    if bytes.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "stdin was empty"));
+    }
+
+    // 2. Materialize as tempfile with the right extension.
+    let ext_clean = ext.trim_start_matches('.').to_ascii_lowercase();
+    let tmp = tempfile::tempdir()?;
+    let in_path = tmp.path().join(format!("input.{}", ext_clean));
+    fs::write(&in_path, &bytes)?;
+
+    let out_dir = tmp.path().join("out");
+    fs::create_dir(&out_dir)?;
+
+    // 3. Run the existing converter with stdout redirected to /dev/null.
+    {
+        let _silencer = StdoutSilencer::new()?;
+        convert_file(&in_path, &out_dir, "mdx", false, false);
+    } // stdout restored here
+
+    // 4. Pick up the produced .mdx.
+    let mdx_path = fs::read_dir(&out_dir)?
+        .flatten()
+        .find(|e| e.path().extension().and_then(|s| s.to_str()) == Some("mdx"))
+        .map(|e| e.path())
+        .ok_or_else(|| io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no .mdx produced for ext='{}' (unsupported format or conversion failed)", ext_clean),
+        ))?;
+    let content = fs::read_to_string(&mdx_path)?;
+
+    // 5. Emit on real stdout — body-only if requested.
+    let emitted = match mode {
+        "body" | "text" => strip_frontmatter(&content),
+        _ => content,
+    };
+    io::stdout().write_all(emitted.as_bytes())?;
+    Ok(())
+}
+
+/// Remove a leading `---\n...\n---\n` YAML frontmatter block, if present.
+fn strip_frontmatter(s: &str) -> String {
+    let bytes = s.as_bytes();
+    if !s.starts_with("---\n") { return s.to_string(); }
+    // Find the closing delimiter line.
+    if let Some(end) = s[4..].find("\n---\n") {
+        let body_start = 4 + end + "\n---\n".len();
+        if body_start <= bytes.len() {
+            return s[body_start..].trim_start().to_string();
+        }
+    }
+    s.to_string()
 }
 
 fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool) {
