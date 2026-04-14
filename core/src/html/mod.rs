@@ -97,9 +97,17 @@ lazy_static! {
     static ref RE_ITALIC_EM: Regex = Regex::new(r"(?is)<em[^>]*>(.*?)</em>").unwrap();
     static ref RE_CODE_INLINE: Regex = Regex::new(r"(?is)<code[^>]*>(.*?)</code>").unwrap();
 
-    // Links and images.
+    // Links and images. Images also capture alt and title via separate regexes
+    // extracted from the full tag (since attribute order is unpredictable).
     static ref RE_LINK: Regex = Regex::new(r#"(?is)<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#).unwrap();
-    static ref RE_IMG: Regex = Regex::new(r#"(?is)<img\s[^>]*src="([^"]*)"[^>]*/?\s*>"#).unwrap();
+    static ref RE_IMG: Regex = Regex::new(r#"(?is)<img\s[^>]*?/?\s*>"#).unwrap();
+    static ref RE_IMG_SRC: Regex = Regex::new(r#"(?is)\bsrc\s*=\s*"([^"]*)""#).unwrap();
+    static ref RE_IMG_ALT: Regex = Regex::new(r#"(?is)\balt\s*=\s*"([^"]*)""#).unwrap();
+
+    // Form inputs — checkboxes are convertible to GFM task syntax.
+    static ref RE_INPUT: Regex = Regex::new(r#"(?is)<input\s[^>]*/?\s*>"#).unwrap();
+    static ref RE_INPUT_TYPE: Regex = Regex::new(r#"(?is)\btype\s*=\s*"([^"]*)""#).unwrap();
+    static ref RE_INPUT_CHECKED: Regex = Regex::new(r#"(?is)\bchecked\b"#).unwrap();
 
     // Block elements.
     static ref RE_PRE: Regex = Regex::new(r"(?is)<pre[^>]*>(.*?)</pre>").unwrap();
@@ -195,15 +203,46 @@ fn html_to_markdown(html: &str) -> String {
         format!("\n\n{}\n\n", md)
     }).to_string();
 
+    // Checkboxes → GFM task markers (must run before RE_INPUT's generic strip).
+    s = RE_INPUT.replace_all(&s, |c: &regex::Captures| {
+        let tag = c.get(0).unwrap().as_str();
+        let ty = RE_INPUT_TYPE
+            .captures(tag)
+            .map(|m| m.get(1).unwrap().as_str().to_ascii_lowercase())
+            .unwrap_or_default();
+        if ty == "checkbox" {
+            let checked = RE_INPUT_CHECKED.is_match(tag);
+            if checked { "[x] ".to_string() } else { "[ ] ".to_string() }
+        } else {
+            String::new()
+        }
+    }).to_string();
+
     // Inline formatting (before tag strip).
     s = RE_LINK.replace_all(&s, |c: &regex::Captures| {
         let href = c.get(1).unwrap().as_str();
         let text = strip_tags(c.get(2).unwrap().as_str());
-        format!("[{}]({})", text.trim(), href)
+        // Strip dangerous / non-navigational URL schemes (javascript:, vbscript:, data:).
+        // Preserves mailto, tel, http(s), ftp, and anchor (#…) links.
+        if is_dangerous_url(href) {
+            text.trim().to_string()
+        } else {
+            format!("[{}]({})", text.trim(), href)
+        }
     }).to_string();
 
     s = RE_IMG.replace_all(&s, |c: &regex::Captures| {
-        format!("![]({})", c.get(1).unwrap().as_str())
+        let tag = c.get(0).unwrap().as_str();
+        let src = RE_IMG_SRC
+            .captures(tag)
+            .map(|m| m.get(1).unwrap().as_str())
+            .unwrap_or("");
+        let alt = RE_IMG_ALT
+            .captures(tag)
+            .map(|m| m.get(1).unwrap().as_str())
+            .unwrap_or("");
+        let src_clean = truncate_data_uri(src);
+        format!("![{}]({})", alt, src_clean)
     }).to_string();
 
     s = RE_BOLD_STRONG.replace_all(&s, |c: &regex::Captures| {
@@ -337,6 +376,36 @@ fn escape_pipe(s: &str) -> String {
     s.replace('|', "\\|")
 }
 
+/// Truncate data: URIs so that base64-encoded images don't bloat the output.
+/// Returns `"data:mime;base64,..."` for data URIs longer than 64 chars.
+fn truncate_data_uri(src: &str) -> String {
+    if !src.starts_with("data:") { return src.to_string(); }
+    if src.len() <= 64 { return src.to_string(); }
+    match src.find(',') {
+        Some(idx) => {
+            // Keep the `data:mime;encoding,` prefix; replace the payload with `...`.
+            let mut out = String::with_capacity(idx + 4);
+            out.push_str(&src[..=idx]);
+            out.push_str("...");
+            out
+        }
+        None => {
+            // Malformed — fall back to first 64 chars + ellipsis.
+            format!("{}...", &src[..64])
+        }
+    }
+}
+
+/// Identify URL schemes that should not be emitted as Markdown links.
+/// Dangerous schemes: javascript:, vbscript:, data: (XSS / inline payload).
+/// Permitted schemes include http(s), mailto, tel, ftp, file, and anchor fragments.
+fn is_dangerous_url(href: &str) -> bool {
+    let h = href.trim_start().to_ascii_lowercase();
+    h.starts_with("javascript:")
+        || h.starts_with("vbscript:")
+        || h.starts_with("data:")
+}
+
 fn decode_entities(s: &str) -> String {
     let mut out = s.to_string();
     out = RE_ENTITY_NBSP.replace_all(&out, " ").to_string();
@@ -430,5 +499,80 @@ mod tests {
         let s = decode_entities("&amp; &lt; &gt; &quot; &nbsp;");
         // &nbsp; is decoded to a regular space, so result has trailing space.
         assert_eq!(s, "& < > \"  ");
+    }
+
+    #[test]
+    fn test_img_alt_preserved() {
+        let md = html_to_markdown(r#"<img src="cat.jpg" alt="A cat">"#);
+        assert!(md.contains("![A cat](cat.jpg)"), "got: {}", md);
+    }
+
+    #[test]
+    fn test_img_alt_any_attr_order() {
+        let md = html_to_markdown(r#"<img alt="dog" src="dog.png">"#);
+        assert!(md.contains("![dog](dog.png)"));
+    }
+
+    #[test]
+    fn test_img_data_uri_truncated() {
+        let long_b64 = "A".repeat(500);
+        let html = format!(r#"<img src="data:image/png;base64,{}" alt="big">"#, long_b64);
+        let md = html_to_markdown(&html);
+        assert!(md.contains("![big](data:image/png;base64,...)"), "got: {}", md);
+        assert!(!md.contains(&long_b64), "base64 payload was not truncated");
+    }
+
+    #[test]
+    fn test_img_small_data_uri_kept() {
+        let md = html_to_markdown(r#"<img src="data:image/svg,x" alt="tiny">"#);
+        assert!(md.contains("![tiny](data:image/svg,x)"));
+    }
+
+    #[test]
+    fn test_link_javascript_stripped() {
+        let md = html_to_markdown(r#"<a href="javascript:alert('x')">Click</a>"#);
+        assert!(!md.contains("javascript:"), "dangerous scheme leaked: {}", md);
+        assert!(md.contains("Click"));
+    }
+
+    #[test]
+    fn test_link_mailto_preserved() {
+        let md = html_to_markdown(r#"<a href="mailto:a@b.com">email</a>"#);
+        assert!(md.contains("[email](mailto:a@b.com)"), "got: {}", md);
+    }
+
+    #[test]
+    fn test_checkbox_checked() {
+        let md = html_to_markdown(r#"<input type="checkbox" checked> Done"#);
+        assert!(md.contains("[x]"), "got: {}", md);
+        assert!(md.contains("Done"));
+    }
+
+    #[test]
+    fn test_checkbox_unchecked() {
+        let md = html_to_markdown(r#"<input type="checkbox"> Pending"#);
+        assert!(md.contains("[ ]"), "got: {}", md);
+    }
+
+    #[test]
+    fn test_truncate_data_uri() {
+        let short = "data:image/svg,<svg/>";
+        assert_eq!(truncate_data_uri(short), short);
+        let long = format!("data:image/png;base64,{}", "A".repeat(200));
+        assert_eq!(truncate_data_uri(&long), "data:image/png;base64,...");
+        assert_eq!(truncate_data_uri("https://example.com"), "https://example.com");
+    }
+
+    #[test]
+    fn test_is_dangerous_url() {
+        assert!(is_dangerous_url("javascript:alert(1)"));
+        assert!(is_dangerous_url("JavaScript:void(0)"));
+        assert!(is_dangerous_url("  vbscript:msgbox"));
+        assert!(is_dangerous_url("data:text/html;base64,xxx"));
+        assert!(!is_dangerous_url("https://example.com"));
+        assert!(!is_dangerous_url("mailto:a@b.com"));
+        assert!(!is_dangerous_url("tel:+1234"));
+        assert!(!is_dangerous_url("#anchor"));
+        assert!(!is_dangerous_url("/relative/path"));
     }
 }

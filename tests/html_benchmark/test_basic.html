@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>HTML Benchmark</title>
+  <style>.x{color:red}</style>
+  <script>alert(1)</script>
+</head>
+<body>
+  <h1>Main Title</h1>
+  <p>Simple <strong>bold</strong> and <em>italic</em> text.</p>
+
+  <h2>Links</h2>
+  <p>Safe: <a href="https://example.com">Example</a></p>
+  <p>Dangerous: <a href="javascript:alert('xss')">Click me</a></p>
+  <p>Mailto: <a href="mailto:test@example.com">email</a></p>
+
+  <h2>Image</h2>
+  <img src="photo.jpg" alt="A cat" />
+  <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="inline" />
+
+  <h2>Form</h2>
+  <input type="checkbox" checked /> Task done
+  <br>
+  <input type="checkbox" /> Task pending
+
+  <h2>Table</h2>
+  <table>
+    <tr><th>Name</th><th>Score</th></tr>
+    <tr><td>Alice</td><td>95</td></tr>
+    <tr><td>Bob</td><td>87</td></tr>
+  </table>
+
+  <h2>List</h2>
+  <ul>
+    <li>First</li>
+    <li>Second</li>
+  </ul>
+</body>
+</html>
