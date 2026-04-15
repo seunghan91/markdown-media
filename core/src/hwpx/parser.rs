@@ -296,6 +296,35 @@ impl<R: Read + Seek> HwpxParser<R> {
     }
 }
 
+/// Determine whether a `<hh:strikeout shape="...">` value represents a real
+/// rendered strikethrough.
+///
+/// Whitelist of OWPML LineSym2 strike shapes that Hancom actually renders.
+/// Values like `3D` are emitted by Hancom's exporter as defaults on body-text
+/// charPr definitions and must NOT be treated as strikethrough — otherwise
+/// large portions of normal text get wrapped in `~~...~~` in the markdown
+/// output. Unknown values are treated as no-strike (fail-closed).
+fn is_real_strikeout_shape(shape: &str) -> bool {
+    matches!(
+        shape,
+        "CONT"
+            | "SOLID"
+            | "DOT"
+            | "DASH"
+            | "DASH_DOT"
+            | "DASH_DOT_DOT"
+            | "LONG_DASH"
+            | "DOUBLE"
+            | "DOUBLE_SLIM"
+            | "SLIM_THICK"
+            | "THICK_SLIM"
+            | "SLIM_THICK_SLIM"
+            | "WAVE"
+            | "DOUBLE_WAVE"
+            | "CIRCLE"
+    )
+}
+
 /// Parse character properties from header.xml
 fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
     let mut styles = HashMap::new();
@@ -328,11 +357,15 @@ fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
                         }
                     }
 
-                    // Check for strikeout (shape != NONE)
+                    // Check for strikeout. Whitelist known OWPML LineSym2 values.
+                    // Hancom Office sometimes emits non-spec values like `shape="3D"`
+                    // as a placeholder default that is NOT rendered as strikethrough.
+                    // Treating any non-NONE value as strike causes body text to be
+                    // wrapped in ~~...~~ (regression: 251113 venture press release).
                     if let Some(strike_pos) = char_pr_xml.find("<hh:strikeout ") {
                         let strike_xml = &char_pr_xml[strike_pos..];
                         if let Some(shape_val) = extract_attr(strike_xml, "shape") {
-                            style.strikeout = shape_val != "NONE";
+                            style.strikeout = is_real_strikeout_shape(&shape_val);
                         }
                     }
 
@@ -1335,6 +1368,10 @@ mod tests {
             </hh:charPr>
             <hh:charPr id="99" height="1000">
                 <hh:underline type="NONE"/>
+                <hh:strikeout shape="CONT"/>
+            </hh:charPr>
+            <hh:charPr id="42" height="1400">
+                <hh:underline type="NONE"/>
                 <hh:strikeout shape="3D"/>
             </hh:charPr>
         "#;
@@ -1359,11 +1396,31 @@ mod tests {
         assert!(style28.underline);
         assert!(!style28.strikeout);
 
-        // id 99: strikeout only
+        // id 99: real strikeout (CONT shape is in the whitelist)
         let style99 = styles.get(&99).unwrap();
         assert!(!style99.bold);
         assert!(!style99.underline);
         assert!(style99.strikeout);
+
+        // id 42: shape="3D" is a Hancom export default, NOT real strikethrough.
+        // Regression: 251113 venture press release wrapped body text in ~~...~~.
+        let style42 = styles.get(&42).unwrap();
+        assert!(!style42.strikeout, "shape=\"3D\" must not be treated as strike");
+    }
+
+    #[test]
+    fn test_is_real_strikeout_shape() {
+        // Real strikethrough shapes
+        assert!(is_real_strikeout_shape("CONT"));
+        assert!(is_real_strikeout_shape("SOLID"));
+        assert!(is_real_strikeout_shape("DASH"));
+        assert!(is_real_strikeout_shape("DOT"));
+
+        // Non-strike values: explicit none, Hancom export quirk, unknown
+        assert!(!is_real_strikeout_shape("NONE"));
+        assert!(!is_real_strikeout_shape("3D"));
+        assert!(!is_real_strikeout_shape(""));
+        assert!(!is_real_strikeout_shape("WHATEVER"));
     }
 
     #[test]
