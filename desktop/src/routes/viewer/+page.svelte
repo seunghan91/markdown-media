@@ -3,6 +3,7 @@
   import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
   import FidelityView from '$lib/components/FidelityView.svelte';
+  import HwpEditPanel from '$lib/components/HwpEditPanel.svelte';
   import NotesPanel from '$lib/components/NotesPanel.svelte';
   import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
@@ -22,6 +23,7 @@
   let diffRightTitle = '변경';
   let notesOpen = false;
   let sidecar: SidecarNotes = { schemaVersion: 1, notes: [] };
+  let hwpEditOpen = false;
   // Raw HWP/HWPX bytes for the fidelity (rhwp) viewer. Browser fallback
   // captures File.arrayBuffer(); Tauri path reads via plugin-fs on demand.
   let rawBytes: Uint8Array | null = null;
@@ -190,12 +192,20 @@
     <div class="header-right">
       <ViewerActions
         data={$viewerData}
+        sourcePath={$viewerPath}
         on:diff={openDiff}
         on:notes={() => (notesOpen = true)}
+        on:edit={() => (hwpEditOpen = true)}
       />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
   </div>
+
+  <HwpEditPanel
+    open={hwpEditOpen}
+    sourcePath={$viewerPath}
+    on:close={() => (hwpEditOpen = false)}
+  />
 
   {#if diffResult}
     <DiffPanel

@@ -3,13 +3,21 @@
   import type { ViewerData } from '$lib/types';
 
   export let data: ViewerData | null = null;
+  /**
+   * Path of the active source document. Used to decide whether the HWP-only
+   * "편집" button is visible. When null or not .hwp / .hwpx, edit UI hides.
+   */
+  export let sourcePath: string | null = null;
 
   const dispatch = createEventDispatcher<{
     diff: void;
     notes: void;
+    edit: void;
     copied: { kind: 'markdown' | 'html' };
     exported: { format: 'json' | 'html' | 'txt' };
   }>();
+
+  $: isHwp = !!sourcePath && /\.(hwp|hwpx)$/i.test(sourcePath);
 
   let copyFeedback: string | null = null;
   let exportOpen = false;
@@ -115,6 +123,34 @@
     <span>비교</span>
   </button>
 
+  {#if isHwp}
+    <button
+      type="button"
+      class="action-btn primary-edit"
+      disabled={!data}
+      on:click={() => dispatch('edit')}
+      aria-label="HWP 편집"
+      title="rhwp로 HWP 문단을 직접 편집하고 새 파일로 저장"
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+        <path
+          d="M12 20h9"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        />
+        <path
+          d="M16.5 3.5a2.121 2.121 0 113 3L7 19l-4 1 1-4L16.5 3.5z"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+          fill="none"
+        />
+      </svg>
+      <span>편집</span>
+    </button>
+  {/if}
+
   <button
     type="button"
     class="action-btn"
@@ -200,6 +236,20 @@
 
   .action-btn svg {
     color: var(--color-label-secondary);
+  }
+
+  .action-btn.primary-edit {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    color: var(--color-label-primary);
+  }
+
+  .action-btn.primary-edit svg {
+    color: var(--color-accent);
+  }
+
+  .action-btn.primary-edit:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
   }
 
   .export-wrapper {
