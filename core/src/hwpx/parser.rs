@@ -586,6 +586,7 @@ fn parse_section_xml(
                     char_styles,
                     &mut nested_counter,
                     &mut hoisted,
+                    0,
                 ) {
                     result.push_str("\n\n");
                     result.push_str(&table.to_markdown());
@@ -629,6 +630,17 @@ fn parse_section_xml(
 /// and LLMs can see the parent→child relationship even after hoisting.
 const NESTED_TABLE_MIN_ROWS: usize = 3;
 const NESTED_TABLE_MIN_COLS: usize = 2;
+
+/// Maximum table nesting depth the parser will recurse through. kordoc
+/// uses a single global `MAX_XML_DEPTH` on its DOM walker; our parser is
+/// string-based and most internal walkers are iterative, so the only
+/// unbounded recursion path is `parse_table_ctx` → `preprocess_nested_tables`
+/// → `parse_table_ctx`. Cap that chain to defend against hand-crafted or
+/// malformed HWPX whose nesting would blow the stack.
+///
+/// Real-world HWPX documents never exceed depth 3-4 even for elaborate
+/// forms; 16 leaves comfortable headroom.
+const MAX_NESTED_TABLE_DEPTH: usize = 16;
 
 /// Monotonic counter for nested-table marker numbering. Threaded through
 /// `parse_table_ctx` → `preprocess_nested_tables` so markers remain stable
@@ -676,7 +688,15 @@ fn preprocess_nested_tables(
     char_styles: &HashMap<u32, CharStyle>,
     counter: &mut NestedTableCounter,
     separate_out: &mut Vec<Table>,
+    depth: usize,
 ) -> String {
+    // Stop recursing once we'd exceed the depth cap. At this point we still
+    // emit the rest of the cell verbatim (so text in deeply nested tables
+    // isn't lost outright) but do NOT descend into another parse pass.
+    if depth >= MAX_NESTED_TABLE_DEPTH {
+        return cell_xml.to_string();
+    }
+
     let mut result = String::new();
     let mut pos = 0;
 
@@ -697,7 +717,7 @@ fn preprocess_nested_tables(
         let id = counter.next_id();
         let marker = format!("[중첩 테이블 #{}]", id);
 
-        match parse_table_ctx(nested_xml, char_styles, counter, separate_out) {
+        match parse_table_ctx(nested_xml, char_styles, counter, separate_out, depth + 1) {
             Some(nested_table) => {
                 let is_big = nested_table.rows >= NESTED_TABLE_MIN_ROWS
                     && nested_table.cols >= NESTED_TABLE_MIN_COLS;
@@ -749,7 +769,7 @@ fn preprocess_nested_tables(
 fn parse_table(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> Option<Table> {
     let mut counter = NestedTableCounter::default();
     let mut _separate = Vec::new();
-    parse_table_ctx(xml, char_styles, &mut counter, &mut _separate)
+    parse_table_ctx(xml, char_styles, &mut counter, &mut _separate, 0)
 }
 
 /// Like `parse_table` but threads a counter + out-list for nested-table
@@ -762,6 +782,7 @@ fn parse_table_ctx(
     char_styles: &HashMap<u32, CharStyle>,
     counter: &mut NestedTableCounter,
     separate_out: &mut Vec<Table>,
+    depth: usize,
 ) -> Option<Table> {
     let rows: usize = extract_attr(xml, "rowCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
     let cols: usize = extract_attr(xml, "colCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -833,7 +854,7 @@ fn parse_table_ctx(
         // `[중첩 테이블 #N]` markers in place so the GFM-renderable cell text
         // never contains nested pipes or newlines.
         let cell_xml_processed =
-            preprocess_nested_tables(cell_xml, char_styles, counter, separate_out);
+            preprocess_nested_tables(cell_xml, char_styles, counter, separate_out, depth);
         let text = extract_cell_text(&cell_xml_processed, char_styles);
         collected.push(CellMeta {
             col_addr,
@@ -2094,7 +2115,7 @@ mod tests {
         let mut counter = NestedTableCounter::default();
         let mut separate = Vec::new();
         let input = "<hp:subList><hp:p><hp:run><hp:t>hello</hp:t></hp:run></hp:p></hp:subList>";
-        let out = preprocess_nested_tables(input, &styles, &mut counter, &mut separate);
+        let out = preprocess_nested_tables(input, &styles, &mut counter, &mut separate, 0);
         assert_eq!(out, input);
         assert_eq!(counter.n, 0);
         assert!(separate.is_empty());
@@ -2119,7 +2140,7 @@ mod tests {
             "<hp:p><hp:run><hp:t>after</hp:t></hp:run></hp:p>",
             "</hp:subList>",
         );
-        let out = preprocess_nested_tables(cell_xml, &styles, &mut counter, &mut separate);
+        let out = preprocess_nested_tables(cell_xml, &styles, &mut counter, &mut separate, 0);
         assert!(
             out.contains("[중첩 테이블 #1]"),
             "marker should be inserted: {}",
@@ -2168,7 +2189,7 @@ mod tests {
             "</hp:tbl>",
             "</hp:subList>",
         );
-        let out = preprocess_nested_tables(cell_xml, &styles, &mut counter, &mut separate);
+        let out = preprocess_nested_tables(cell_xml, &styles, &mut counter, &mut separate, 0);
         assert!(out.contains("[중첩 테이블 #1]"), "marker: {}", out);
         assert!(
             !out.contains("r0c0"),
@@ -2179,6 +2200,33 @@ mod tests {
         let hoisted = &separate[0];
         assert_eq!(hoisted.rows, 3);
         assert_eq!(hoisted.cols, 2);
+    }
+
+    #[test]
+    fn test_preprocess_nested_tables_depth_guard() {
+        // At MAX depth the function must return input unchanged and NOT
+        // descend further. We pass the cap as the starting depth to force
+        // the guard on the very first call.
+        let styles = HashMap::new();
+        let mut counter = NestedTableCounter::default();
+        let mut separate = Vec::new();
+        let input = concat!(
+            "<hp:tbl rowCnt=\"1\" colCnt=\"1\">",
+            "<hp:tr><hp:tc name=\"\"><hp:cellAddr colAddr=\"0\" rowAddr=\"0\"/>",
+            "<hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>inner</hp:t></hp:run></hp:p></hp:subList>",
+            "</hp:tc></hp:tr></hp:tbl>",
+        );
+        let out = preprocess_nested_tables(
+            input,
+            &styles,
+            &mut counter,
+            &mut separate,
+            MAX_NESTED_TABLE_DEPTH,
+        );
+        assert_eq!(out, input, "at the depth cap we should short-circuit");
+        assert_eq!(counter.n, 0, "counter must not advance past the cap");
+        assert!(separate.is_empty(), "nothing should be hoisted past the cap");
     }
 
     #[test]
