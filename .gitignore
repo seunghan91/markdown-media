@@ -40,3 +40,5 @@ npm-debug.log*
 
 # External reference clones (read-only, not distributed)
 /reference/
+vendor/rhwp/target/
+vendor/rhwp/Cargo.lock
