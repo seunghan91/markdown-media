@@ -6,7 +6,7 @@ mod history;
 mod markdown;
 mod models;
 
-use commands::{batch, convert, export as export_commands, viewer};
+use commands::{batch, convert, export as export_commands, rhwp_edit, viewer};
 use history::HistoryStore;
 use tauri::Manager;
 
@@ -36,6 +36,8 @@ fn main() {
             batch::batch_convert,
             viewer::open_file,
             viewer::get_markdown_source,
+            rhwp_edit::rhwp_list_paragraphs,
+            rhwp_edit::rhwp_save_with_edits,
             get_history
         ])
         .run(tauri::generate_context!())

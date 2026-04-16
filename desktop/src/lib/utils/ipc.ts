@@ -140,6 +140,58 @@ export async function batchConvert(paths: string[], format: ExportFormat, output
   } satisfies BatchResult;
 }
 
+// ─── rhwp (vendored) HWP edit bridge ─────────────────────────────────────────
+
+export interface RhwpParagraph {
+  section: number;
+  index: number;
+  text: string;
+  charCount: number;
+}
+
+export interface RhwpParagraphEdit {
+  section: number;
+  index: number;
+  newText: string;
+}
+
+export interface RhwpSaveSummary {
+  sourceBytes: number;
+  outputBytes: number;
+  paragraphsEdited: number;
+  outputPath: string;
+}
+
+/**
+ * Parse a .hwp / .hwpx file via the vendored rhwp crate and return a flat
+ * list of top-level paragraphs. Browser fallback returns an empty list —
+ * edit functionality is native-only.
+ */
+export async function rhwpListParagraphs(path: string): Promise<RhwpParagraph[]> {
+  if (!isTauriEnvironment()) return [];
+  return invokeCommand<RhwpParagraph[]>('rhwp_list_paragraphs', { path });
+}
+
+/**
+ * Round-trip a HWP through rhwp's parse/serialize, optionally applying
+ * simple text replacements per paragraph. Returns size and count metadata
+ * for the caller to surface.
+ */
+export async function rhwpSaveWithEdits(
+  sourcePath: string,
+  targetPath: string,
+  edits: RhwpParagraphEdit[]
+): Promise<RhwpSaveSummary> {
+  if (!isTauriEnvironment()) {
+    throw new Error('HWP 편집 저장은 데스크톱(Tauri) 환경에서만 동작합니다.');
+  }
+  return invokeCommand<RhwpSaveSummary>('rhwp_save_with_edits', {
+    sourcePath,
+    targetPath,
+    edits: edits.map((e) => ({ section: e.section, index: e.index, new_text: e.newText })),
+  });
+}
+
 export async function exportMarkdown(
   markdown: string,
   format: Exclude<ExportFormat, 'md'>,
