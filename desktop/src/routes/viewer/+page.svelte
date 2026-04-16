@@ -1,6 +1,7 @@
 <script lang="ts">
   import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
+  import FidelityView from '$lib/components/FidelityView.svelte';
   import NotesPanel from '$lib/components/NotesPanel.svelte';
   import StatsPanel from '$lib/components/StatsPanel.svelte';
   import ViewerActions from '$lib/components/ViewerActions.svelte';
@@ -23,6 +24,27 @@
   let diffRightTitle = '변경';
   let notesOpen = false;
   let sidecar: SidecarNotes = { schemaVersion: 1, notes: [] };
+  // Raw HWP/HWPX bytes for the fidelity (rhwp) viewer. Browser fallback
+  // captures File.arrayBuffer(); Tauri path reads via plugin-fs on demand.
+  let rawBytes: Uint8Array | null = null;
+  let rawPending = false;
+
+  async function loadRawBytesFromPath(path: string): Promise<Uint8Array | null> {
+    try {
+      const { readFile } = await import('@tauri-apps/plugin-fs');
+      return await readFile(path);
+    } catch {
+      return null;
+    }
+  }
+
+  $: if ($viewerMode === 'fidelity' && rawBytes === null && $viewerPath && !rawPending) {
+    rawPending = true;
+    loadRawBytesFromPath($viewerPath).then((buf) => {
+      rawBytes = buf;
+      rawPending = false;
+    });
+  }
 
   // Reload sidecar whenever the active document changes. The document key
   // is the real path when available, otherwise the title — good enough for
@@ -45,6 +67,7 @@
   async function openByPath(path: string, name: string) {
     loading = true;
     error = '';
+    rawBytes = null; // reset cached bytes — will lazy-load when fidelity mode needs them
     try {
       viewerData.set(await openFile(path));
       activeFileName = name;
@@ -68,6 +91,7 @@
 
     loading = true;
     error = '';
+    rawBytes = null;
     try {
       const markdown = await first.text();
       const html = await markdownToHtml(markdown);
@@ -80,6 +104,11 @@
         }
       } satisfies ViewerData);
       activeFileName = first.name;
+      // Capture raw bytes eagerly in browser fallback — the File object is
+      // ephemeral, and if the user toggles to fidelity mode later we can't
+      // recover it.
+      const buf = await first.arrayBuffer();
+      rawBytes = new Uint8Array(buf);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : '파일을 열지 못했습니다.';
     } finally {
@@ -184,6 +213,13 @@
       on:paths={(event) => handlePaths(event.detail.paths)}
       on:files={(event) => handleFiles(event.detail.files)}
     />
+  {:else if $viewerMode === 'fidelity'}
+    <div class="viewer-body">
+      {#if error}
+        <div class="error-bar">{error}</div>
+      {/if}
+      <FidelityView bytes={rawBytes} fileName={activeFileName} />
+    </div>
   {:else}
     <div class="viewer-body" class:split={$viewerMode === 'split'}>
       {#if error}

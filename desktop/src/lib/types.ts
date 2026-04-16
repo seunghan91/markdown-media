@@ -1,5 +1,5 @@
 export type AppMode = 'convert' | 'viewer' | 'batch' | 'export';
-export type ViewerMode = 'render' | 'split' | 'source';
+export type ViewerMode = 'render' | 'split' | 'source' | 'fidelity';
 export type ExportFormat = 'md' | 'docx' | 'hwpx' | 'pdf';
 
 export interface ExtractedImage {

@@ -11,7 +11,8 @@
   const items: { value: ViewerMode; label: string }[] = [
     { value: 'render', label: '렌더' },
     { value: 'split', label: '나란히' },
-    { value: 'source', label: '소스' }
+    { value: 'source', label: '소스' },
+    { value: 'fidelity', label: '원본' }
   ];
 </script>
 
