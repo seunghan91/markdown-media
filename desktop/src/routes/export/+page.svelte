@@ -94,8 +94,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    max-width: 1400px;
-    margin: 0 auto;
+    max-width: 100%;
   }
 
   .card {
@@ -115,7 +114,7 @@
 
   .export-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: var(--space-4);
     align-items: start;
   }
@@ -231,9 +230,5 @@
     overflow: auto;
   }
 
-  @media (max-width: 960px) {
-    .export-grid {
-      grid-template-columns: 1fr;
-    }
-  }
+  /* auto-fit handles all breakpoints */
 </style>

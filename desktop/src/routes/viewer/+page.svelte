@@ -3,9 +3,9 @@
   import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
   import FidelityView from '$lib/components/FidelityView.svelte';
+  import HwpEditPanel from '$lib/components/HwpEditPanel.svelte';
   import HwpSidebar from '$lib/components/HwpSidebar.svelte';
   import NotesPanel from '$lib/components/NotesPanel.svelte';
-  import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
   import { setViewerMode, viewerData, viewerMode, viewerPath } from '$lib/stores/viewer';
   import { openFile, markdownToHtml, pickFileWithDialog } from '$lib/utils/ipc';
@@ -24,9 +24,10 @@
   let notesOpen = false;
   let sidecar: SidecarNotes = { schemaVersion: 1, notes: [] };
   $: isHwpSource = !!$viewerPath && /\.(hwp|hwpx)$/i.test($viewerPath);
+  let hwpEditOpen = false;
 
   function enterHwpEditor() {
-    if (isHwpSource) setViewerMode('fidelity');
+    if (isHwpSource) hwpEditOpen = true;
   }
   // Raw HWP/HWPX bytes for the fidelity (rhwp) viewer. Browser fallback
   // captures File.arrayBuffer(); Tauri path reads via plugin-fs on demand.
@@ -194,14 +195,15 @@
       <p class="file-desc">렌더, 나란히, 소스 보기 모드를 전환할 수 있습니다.</p>
     </div>
     <div class="header-right">
-      <ViewerActions
-        data={$viewerData}
-        on:diff={openDiff}
-        on:notes={() => (notesOpen = true)}
-      />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
   </div>
+
+  <HwpEditPanel
+    open={hwpEditOpen}
+    sourcePath={$viewerPath}
+    on:close={() => (hwpEditOpen = false)}
+  />
 
   {#if diffResult}
     <DiffPanel
@@ -230,7 +232,13 @@
     />
   {:else if $viewerMode === 'fidelity'}
     <div class="viewer-shell">
-      <HwpSidebar sourcePath={$viewerPath} on:editHwp={enterHwpEditor} />
+      <HwpSidebar
+        data={$viewerData}
+        sourcePath={$viewerPath}
+        on:diff={openDiff}
+        on:notes={() => (notesOpen = true)}
+        on:editHwp={enterHwpEditor}
+      />
       <div class="viewer-body">
         {#if error}
           <div class="error-bar">{error}</div>
@@ -240,7 +248,13 @@
     </div>
   {:else}
     <div class="viewer-shell">
-      <HwpSidebar sourcePath={$viewerPath} on:editHwp={enterHwpEditor} />
+      <HwpSidebar
+        data={$viewerData}
+        sourcePath={$viewerPath}
+        on:diff={openDiff}
+        on:notes={() => (notesOpen = true)}
+        on:editHwp={enterHwpEditor}
+      />
       <div class="viewer-body" class:split={$viewerMode === 'split'}>
       {#if error}
         <div class="error-bar">{error}</div>

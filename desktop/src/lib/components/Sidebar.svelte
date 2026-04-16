@@ -135,22 +135,5 @@
     border-radius: var(--radius-sm);
   }
 
-  @media (max-width: 960px) {
-    .sidebar {
-      height: auto;
-      width: 100%;
-      border-radius: 0;
-      padding: 6px;
-    }
-
-    .rail {
-      flex-direction: row;
-      align-items: center;
-      overflow-x: auto;
-    }
-
-    .spacer {
-      display: none;
-    }
-  }
+  /* Desktop app: sidebar always vertical, no mobile breakpoint */
 </style>

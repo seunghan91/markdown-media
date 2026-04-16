@@ -71,13 +71,5 @@
   }
 
 
-  @media (max-width: 960px) {
-    .toolbar {
-      padding: 10px 12px;
-    }
-
-    .segment {
-      overflow-x: auto;
-    }
-  }
+  /* Desktop app: toolbar always full width, no mobile breakpoint */
 </style>
