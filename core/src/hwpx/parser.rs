@@ -906,6 +906,38 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
     out
 }
 
+/// Extract equation script from `<hp:equation>` and emit as a fenced LaTeX
+/// block. Hancom's equation script is a near-superset of LaTeX for ~80% of
+/// common formulas (`\frac`, `\sqrt`, Greek letters, integrals, sums, etc.)
+/// so round-tripping the raw script into `$$...$$` renders usefully in
+/// GitHub, Obsidian, and most markdown pipelines — and is directly readable
+/// by LLMs, which was the main reason MDM's old `[수식: …]` placeholder was
+/// insufficient.
+///
+///   <hp:equation version="...">
+///     <hp:script>\frac{a^2 + b^2}{c}</hp:script>
+///   </hp:equation>
+///
+/// Returns `Some("$$ script $$")` when a non-empty script is present,
+/// else `None`. Uses a single-line `$...$` when the script has no newline
+/// so short inline equations don't create stray paragraph breaks.
+fn extract_equation_markdown(inner: &str) -> Option<String> {
+    let script_start = inner.find("<hp:script")?;
+    let after_open = script_start + inner[script_start..].find('>')? + 1;
+    let script_close = after_open + inner[after_open..].find("</hp:script>")?;
+    let raw = &inner[after_open..script_close];
+    let decoded = decode_xml_entities(raw);
+    let trimmed = decoded.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.contains('\n') {
+        Some(format!("\n\n$$\n{}\n$$\n\n", trimmed))
+    } else {
+        Some(format!(" ${}$ ", trimmed))
+    }
+}
+
 /// Extract inline footnote / endnote content as `[각주: ...]` /
 /// `[미주: ...]` markers appended at the position of the reference.
 ///
@@ -1273,12 +1305,18 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
         let next_dutmal = para_xml[pos..].find("<hp:dutmal").map(|i| pos + i);
         let next_footnote = para_xml[pos..].find("<hp:footNote").map(|i| pos + i);
         let next_endnote = para_xml[pos..].find("<hp:endNote").map(|i| pos + i);
+        let next_equation = para_xml[pos..].find("<hp:equation").map(|i| pos + i);
+        let next_header = para_xml[pos..].find("<hp:header").map(|i| pos + i);
+        let next_footer = para_xml[pos..].find("<hp:footer").map(|i| pos + i);
 
         let candidates = [
             next_run.map(|i| (i, "run")),
             next_dutmal.map(|i| (i, "dutmal")),
             next_footnote.map(|i| (i, "footnote")),
             next_endnote.map(|i| (i, "endnote")),
+            next_equation.map(|i| (i, "equation")),
+            next_header.map(|i| (i, "header")),
+            next_footer.map(|i| (i, "footer")),
         ];
         let Some((abs, kind)) = candidates.iter().filter_map(|c| *c).min_by_key(|(i, _)| *i) else {
             break;
@@ -1316,6 +1354,50 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
                 None => break,
             };
             let inner = &para_xml[after_open..close];
+            if let Some(marker) = extract_note_content(inner, label) {
+                if !result.is_empty() && !result.ends_with(char::is_whitespace) {
+                    result.push(' ');
+                }
+                result.push_str(&marker);
+            }
+            pos = close + close_tag.len();
+            continue;
+        }
+
+        if kind == "equation" {
+            let after_open = match para_xml[abs..].find('>') {
+                Some(i) => abs + i + 1,
+                None => break,
+            };
+            let close = match para_xml[after_open..].find("</hp:equation>") {
+                Some(i) => after_open + i,
+                None => break,
+            };
+            let inner = &para_xml[after_open..close];
+            if let Some(block) = extract_equation_markdown(inner) {
+                result.push_str(&block);
+            }
+            pos = close + 14; // len("</hp:equation>")
+            continue;
+        }
+
+        if kind == "header" || kind == "footer" {
+            let (close_tag, label) = if kind == "header" {
+                ("</hp:header>", "머리말")
+            } else {
+                ("</hp:footer>", "꼬리말")
+            };
+            let after_open = match para_xml[abs..].find('>') {
+                Some(i) => abs + i + 1,
+                None => break,
+            };
+            let close = match para_xml[after_open..].find(close_tag) {
+                Some(i) => after_open + i,
+                None => break,
+            };
+            let inner = &para_xml[after_open..close];
+            // Headers/footers share the subList structure with footnotes,
+            // so reuse the same extractor.
             if let Some(marker) = extract_note_content(inner, label) {
                 if !result.is_empty() && !result.ends_with(char::is_whitespace) {
                     result.push(' ');
