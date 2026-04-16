@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
   import FidelityView from '$lib/components/FidelityView.svelte';
@@ -12,6 +13,7 @@
   import { computeStats, type DocumentStats } from '$lib/utils/markdownStats';
   import { diffLines, type DiffResult } from '$lib/utils/markdownDiff';
   import { loadNotes, saveNotes, type SidecarNotes } from '$lib/utils/notesStore';
+  import { linkScroll } from '$lib/utils/scrollSync';
 
   let loading = false;
   let error = '';
@@ -165,6 +167,28 @@
     sidecar = next;
     saveNotes(currentDocumentKey(), next);
   }
+
+  // ── Split-mode scroll sync ───────────────────────────────────────────────
+  // Bind the rendered <article> and source <textarea> so they scroll together.
+  // Destroyed and re-wired when split mode toggles on/off.
+  let renderedPane: HTMLElement | null = null;
+  let sourcePane: HTMLTextAreaElement | null = null;
+  let disposeScrollSync: (() => void) | null = null;
+
+  async function rewireScrollSync() {
+    disposeScrollSync?.();
+    disposeScrollSync = null;
+    if ($viewerMode !== 'split') return;
+    // Wait one tick so newly-mounted nodes are in the DOM.
+    await tick();
+    if (renderedPane && sourcePane) {
+      disposeScrollSync = linkScroll(renderedPane, sourcePane);
+    }
+  }
+
+  $: if ($viewerMode) {
+    rewireScrollSync();
+  }
 </script>
 
 <div class="viewer-page">
@@ -231,7 +255,7 @@
           {#if $viewerMode === 'split'}
             <div class="pane-badge">렌더링</div>
           {/if}
-          <article class="rendered-pane">
+          <article class="rendered-pane" bind:this={renderedPane}>
             {@html $viewerData.html}
           </article>
         </div>
@@ -244,6 +268,7 @@
           {/if}
           <textarea
             class="source-pane"
+            bind:this={sourcePane}
             bind:value={sourceMarkdown}
             on:input={handleSourceInput}
             spellcheck="false"
