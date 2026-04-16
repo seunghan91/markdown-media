@@ -10,7 +10,7 @@
 //! wasm-pack build core/ --target web --features wasm
 //! ```
 
-#![cfg(feature = "wasm")]
+#![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen::prelude::*;
 
@@ -22,7 +22,6 @@ use wasm_bindgen::prelude::*;
 /// stack traces in the browser console.
 #[wasm_bindgen(start)]
 pub fn init() {
-    #[cfg(feature = "wasm")]
     console_error_panic_hook::set_once();
 }
 

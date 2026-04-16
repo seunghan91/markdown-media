@@ -6,7 +6,9 @@ on:
     paths:
       - "docs/**"
       - "playground/**"
+      - "converter/**"
       - "viewer/**"
+      - "core/pkg/**"
       - "README.md"
       - "start.md"
       - "start.ko.md"
@@ -35,8 +37,8 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Build @mdm/parser (dist)
-        working-directory: packages/parser-js
+      - name: Build @markdown-media/viewer (dist)
+        working-directory: packages/viewer-js
         run: |
           npm install
           npm run build:prod
@@ -56,10 +58,16 @@ jobs:
           mkdir -p _site/viewer
           cp viewer/index.html _site/viewer/
 
-          # Parser dist (CDN-accessible from playground)
+          # Converter (WASM demo)
+          mkdir -p _site/converter
+          cp converter/index.html _site/converter/
+          cp core/pkg/mdm_core.js _site/converter/mdm_core.js
+          cp core/pkg/mdm_core_bg.wasm _site/converter/mdm_core_bg.wasm
+
+          # Viewer dist (CDN-accessible from playground)
           mkdir -p _site/dist
-          cp packages/parser-js/dist/index.umd.js _site/dist/mdm-parser.umd.js
-          cp packages/parser-js/dist/index.browser.mjs _site/dist/mdm-parser.mjs
+          cp packages/viewer-js/dist/index.umd.js _site/dist/mdm-viewer.umd.js
+          cp packages/viewer-js/dist/index.browser.mjs _site/dist/mdm-viewer.mjs
 
           echo "Site prepared:"
           find _site -type f | sort

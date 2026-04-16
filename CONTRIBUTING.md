@@ -18,7 +18,7 @@ git clone https://github.com/seunghan91/markdown-media.git
 cd markdown-media
 
 # Install JavaScript dependencies
-cd packages/parser-js
+cd packages/viewer-js
 npm install
 
 # Install Python dependencies
@@ -35,7 +35,7 @@ cargo build
 ```
 markdown-media/
 ├── packages/
-│   ├── parser-js/      # JavaScript parser
+│   ├── viewer-js/      # MDM format viewer/renderer
 │   ├── parser-py/      # Python helpers
 │   └── parser-rs/      # Rust parser (planned)
 ├── core/               # Rust core engine
@@ -63,7 +63,7 @@ markdown-media/
 
    ```bash
    # JavaScript
-   cd packages/parser-js
+   cd packages/viewer-js
    npm test
 
    # Rust

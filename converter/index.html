@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MDM Converter — HWP/PDF/DOCX → Markdown</title>
+  <meta name="description" content="Drop any HWP, HWPX, PDF, DOCX file and get clean Markdown instantly. No upload, no server — runs in your browser.">
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8b949e;
+      --accent: #58a6ff; --accent-hover: #79b8ff;
+      --success: #3fb950; --warning: #d29922;
+      --mono: 'JetBrains Mono','Fira Code',Consolas,monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; min-height: 100vh; }
+
+    header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 12px 24px; display: flex; align-items: center; gap: 16px;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); }
+    .logo-icon {
+      width: 32px; height: 32px; background: linear-gradient(135deg, var(--accent), #b88eff);
+      border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      font-size: 16px; font-weight: 800; color: #fff;
+    }
+    .logo-text { font-size: 18px; font-weight: 700; }
+    .header-links { margin-left: auto; display: flex; gap: 12px; font-size: 13px; }
+    .header-links a { color: var(--muted); text-decoration: none; }
+    .header-links a:hover { color: var(--accent); }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px; }
+
+    h1 { font-size: 28px; font-weight: 800; margin-bottom: 8px; }
+    .subtitle { color: var(--muted); font-size: 15px; margin-bottom: 32px; }
+    .subtitle code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+
+    /* Drop zone */
+    .dropzone {
+      border: 2px dashed var(--border); border-radius: 12px;
+      padding: 60px 40px; text-align: center; cursor: pointer;
+      transition: all .2s; position: relative;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent); background: rgba(88,166,255,.05);
+    }
+    .dropzone.dragover .drop-icon { transform: scale(1.1); }
+    .drop-icon { font-size: 48px; margin-bottom: 16px; transition: transform .2s; }
+    .drop-text { font-size: 16px; margin-bottom: 8px; }
+    .drop-hint { font-size: 13px; color: var(--muted); }
+    .drop-formats {
+      display: flex; gap: 8px; justify-content: center; margin-top: 16px;
+    }
+    .format-tag {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 4px 12px; border-radius: 16px; font-size: 12px; color: var(--muted);
+    }
+    .dropzone input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer;
+    }
+
+    /* Status */
+    .status-bar {
+      display: none; margin-top: 16px; padding: 12px 16px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; font-size: 13px;
+    }
+    .status-bar.visible { display: flex; align-items: center; gap: 12px; }
+    .spinner {
+      width: 16px; height: 16px; border: 2px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin .6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status-text { flex: 1; }
+    .status-time { color: var(--muted); }
+
+    /* Result */
+    .result { display: none; margin-top: 24px; }
+    .result.visible { display: block; }
+    .result-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .result-header h2 { font-size: 18px; }
+    .result-actions { display: flex; gap: 8px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      cursor: pointer; border: 1px solid var(--border); background: transparent;
+      color: var(--text); transition: all .15s;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--accent); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #0d1117; }
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    .result-meta {
+      display: flex; gap: 16px; margin-bottom: 16px; font-size: 12px; color: var(--muted);
+    }
+    .meta-item { display: flex; align-items: center; gap: 4px; }
+
+    .output-box {
+      background: #0d1117; border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden; max-height: 70vh; position: relative;
+    }
+    .output-box textarea {
+      width: 100%; min-height: 400px; max-height: 70vh; padding: 20px;
+      font-family: var(--mono); font-size: 13px; line-height: 1.7;
+      color: var(--text); background: transparent; border: none; outline: none;
+      resize: vertical;
+    }
+
+    /* WASM status */
+    .wasm-status {
+      position: fixed; bottom: 16px; right: 16px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 14px; font-size: 12px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .wasm-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--warning);
+    }
+    .wasm-dot.ready { background: var(--success); }
+    .wasm-dot.error { background: #f85149; }
+
+    @media (max-width: 640px) {
+      .container { padding: 24px 16px; }
+      .dropzone { padding: 40px 20px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="../">
+    <div class="logo-icon">M</div>
+    <span class="logo-text">MDM Converter</span>
+  </a>
+  <div class="header-links">
+    <a href="../playground/">Playground</a>
+    <a href="https://github.com/seunghan91/markdown-media">GitHub</a>
+    <a href="https://www.npmjs.com/package/@markdown-media/wasm">npm</a>
+  </div>
+</header>
+
+<div class="container">
+  <h1>HWP / PDF / DOCX → Markdown</h1>
+  <p class="subtitle">
+    파일을 드롭하면 브라우저에서 즉시 변환됩니다. 서버 업로드 없음.
+    <code>npm i @markdown-media/wasm</code>
+  </p>
+
+  <div class="dropzone" id="dropzone">
+    <input type="file" id="file-input" accept=".hwp,.hwpx,.pdf,.docx">
+    <div class="drop-icon">📄</div>
+    <div class="drop-text">파일을 여기에 드래그하거나 클릭해서 선택</div>
+    <div class="drop-hint">모든 변환은 브라우저 내에서 처리됩니다 (WebAssembly)</div>
+    <div class="drop-formats">
+      <span class="format-tag">HWP</span>
+      <span class="format-tag">HWPX</span>
+      <span class="format-tag">PDF</span>
+      <span class="format-tag">DOCX</span>
+    </div>
+  </div>
+
+  <div class="status-bar" id="status-bar">
+    <div class="spinner"></div>
+    <span class="status-text" id="status-text">변환 중...</span>
+    <span class="status-time" id="status-time"></span>
+  </div>
+
+  <div class="result" id="result">
+    <div class="result-header">
+      <h2 id="result-title">변환 결과</h2>
+      <div class="result-actions">
+        <button class="btn" id="btn-copy">복사</button>
+        <button class="btn" id="btn-download">다운로드 .md</button>
+        <button class="btn" id="btn-json">JSON 보기</button>
+      </div>
+    </div>
+    <div class="result-meta" id="result-meta"></div>
+    <div class="output-box">
+      <textarea id="output" readonly></textarea>
+    </div>
+  </div>
+</div>
+
+<div class="wasm-status">
+  <div class="wasm-dot" id="wasm-dot"></div>
+  <span id="wasm-label">WASM 로딩...</span>
+</div>
+
+<script type="module">
+  const wasmDot = document.getElementById('wasm-dot');
+  const wasmLabel = document.getElementById('wasm-label');
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  const statusBar = document.getElementById('status-bar');
+  const statusText = document.getElementById('status-text');
+  const statusTime = document.getElementById('status-time');
+  const result = document.getElementById('result');
+  const resultTitle = document.getElementById('result-title');
+  const resultMeta = document.getElementById('result-meta');
+  const output = document.getElementById('output');
+
+  let wasmModule = null;
+
+  async function loadWasm() {
+    try {
+      // Try CDN (npm) first, then local fallback
+      const paths = [
+        './mdm_core.js',
+        '../core/pkg/mdm_core.js',
+        'https://unpkg.com/@markdown-media/wasm@0.1.0/mdm_core.js'
+      ];
+
+      let init, convert_to_markdown, convert_to_json, detect_format, get_version;
+
+      for (const path of paths) {
+        try {
+          const mod = await import(path);
+          init = mod.default;
+          convert_to_markdown = mod.convert_to_markdown;
+          convert_to_json = mod.convert_to_json;
+          detect_format = mod.detect_format;
+          get_version = mod.get_version;
+          break;
+        } catch { continue; }
+      }
+
+      if (!init) throw new Error('WASM module not found');
+
+      await init();
+      wasmModule = { convert_to_markdown, convert_to_json, detect_format, get_version };
+
+      wasmDot.classList.add('ready');
+      wasmLabel.textContent = `WASM v${get_version()} ready`;
+    } catch (e) {
+      wasmDot.classList.add('error');
+      wasmLabel.textContent = 'WASM 로드 실패';
+      console.error('WASM load error:', e);
+    }
+  }
+
+  loadWasm();
+
+  // Drag & drop
+  ['dragenter','dragover'].forEach(ev => {
+    dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  });
+  ['dragleave','drop'].forEach(ev => {
+    dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('dragover'); });
+  });
+  dropzone.addEventListener('drop', e => {
+    const file = e.dataTransfer.files[0];
+    if (file) convert(file);
+  });
+  fileInput.addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file) convert(file);
+    fileInput.value = '';
+  });
+
+  async function convert(file) {
+    if (!wasmModule) {
+      alert('WASM 엔진이 아직 로드되지 않았습니다. 잠시 후 다시 시도해주세요.');
+      return;
+    }
+
+    statusBar.classList.add('visible');
+    statusText.textContent = `${file.name} 변환 중...`;
+    statusTime.textContent = '';
+    result.classList.remove('visible');
+
+    const t0 = performance.now();
+
+    try {
+      const data = new Uint8Array(await file.arrayBuffer());
+      const format = wasmModule.detect_format(data, file.name);
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+      // Try JSON first for richer output
+      let markdown, jsonData;
+      try {
+        const jsonStr = wasmModule.convert_to_json(data, file.name);
+        jsonData = JSON.parse(jsonStr);
+        markdown = jsonData.markdown;
+      } catch {
+        markdown = wasmModule.convert_to_markdown(data, file.name);
+      }
+
+      const totalElapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+      statusText.textContent = `${file.name} 변환 완료`;
+      statusTime.textContent = `${totalElapsed}s`;
+
+      resultTitle.textContent = file.name.replace(/\.[^.]+$/, '.md');
+
+      const lines = markdown.split('\n').length;
+      const chars = markdown.length;
+      resultMeta.innerHTML = `
+        <span class="meta-item">포맷: <strong>${format.toUpperCase()}</strong></span>
+        <span class="meta-item">크기: <strong>${(file.size / 1024).toFixed(1)} KB</strong></span>
+        <span class="meta-item">줄: <strong>${lines.toLocaleString()}</strong></span>
+        <span class="meta-item">문자: <strong>${chars.toLocaleString()}</strong></span>
+        <span class="meta-item">시간: <strong>${totalElapsed}s</strong></span>
+      `;
+
+      output.value = markdown;
+      result.classList.add('visible');
+
+      // Store for JSON view
+      output.dataset.json = jsonData ? JSON.stringify(jsonData, null, 2) : '';
+      output.dataset.markdown = markdown;
+    } catch (e) {
+      statusText.textContent = `변환 실패: ${e.message || e}`;
+      statusTime.textContent = '';
+      console.error('Convert error:', e);
+    }
+  }
+
+  // Actions
+  document.getElementById('btn-copy').addEventListener('click', () => {
+    navigator.clipboard.writeText(output.value).then(() => {
+      const btn = document.getElementById('btn-copy');
+      btn.textContent = '복사됨!';
+      setTimeout(() => btn.textContent = '복사', 1500);
+    });
+  });
+
+  document.getElementById('btn-download').addEventListener('click', () => {
+    const blob = new Blob([output.value], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (resultTitle.textContent || 'converted') + '';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  document.getElementById('btn-json').addEventListener('click', () => {
+    const btn = document.getElementById('btn-json');
+    if (btn.textContent === 'JSON 보기') {
+      if (output.dataset.json) {
+        output.value = output.dataset.json;
+        btn.textContent = 'Markdown 보기';
+      } else {
+        alert('JSON 데이터가 없습니다.');
+      }
+    } else {
+      output.value = output.dataset.markdown;
+      btn.textContent = 'JSON 보기';
+    }
+  });
+</script>
+</body>
+</html>

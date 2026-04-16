@@ -31,7 +31,7 @@ pub mod legal;
 pub mod manifest;
 pub mod utils;
 
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
 pub use hwp::HwpParser;

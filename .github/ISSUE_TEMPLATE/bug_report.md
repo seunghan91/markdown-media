@@ -27,7 +27,7 @@ A clear and concise description of what you expected to happen.
 - OS: [e.g. macOS, Linux, Windows]
 - Node.js version: [e.g. 20.0.0]
 - Python version: [e.g. 3.11]
-- Package version: [e.g. @mdm/parser@0.1.0]
+- Package version: [e.g. @markdown-media/wasm@0.1.0 or @markdown-media/viewer@0.1.0]
 
 ## Additional context
 

@@ -9,7 +9,7 @@
     "strict": false,
     "noEmit": true,
     "paths": {
-      "@mdm/parser": ["./src/index.js"]
+      "@markdown-media/viewer": ["./src/index.js"]
     }
   },
   "include": ["src/**/*.js", "src/**/*.d.ts"],

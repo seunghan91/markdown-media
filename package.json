@@ -5,10 +5,10 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "npm run test:parser-js",
-    "test:parser-js": "cd packages/parser-js && npm test",
+    "test": "npm run test:viewer",
+    "test:viewer": "cd packages/viewer-js && npm test",
     "build:core": "cd core && cargo build --release",
-    "lint": "eslint packages/parser-js/src cli",
+    "lint": "eslint packages/viewer-js/src cli",
     "format": "prettier --write \"**/*.{js,json,md}\""
   },
   "keywords": [

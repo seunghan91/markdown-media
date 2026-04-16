@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">
+      <img src="icons/icon-128.png" alt="MDM">
+    </div>
+    <div class="header-info">
+      <div class="header-title">MDM Converter</div>
+      <div class="header-subtitle" id="version">엔진 로딩 중...</div>
+    </div>
+  </div>
+
+  <!-- Drop zone -->
+  <div class="card">
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="file-input" accept=".hwp,.hwpx,.pdf,.docx">
+      <div class="drop-icon">📄</div>
+      <div class="drop-text">파일을 여기로 드래그</div>
+      <div class="drop-hint">브라우저에서 바로 변환 · 서버 전송 없음</div>
+      <div class="drop-formats">
+        <span class="format-tag">HWP</span>
+        <span class="format-tag">HWPX</span>
+        <span class="format-tag">PDF</span>
+        <span class="format-tag">DOCX</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div class="status" id="status">
+    <div class="spinner"></div>
+    <span class="status-text" id="status-text">변환 중...</span>
+    <span class="status-time" id="status-time"></span>
+  </div>
+
+  <!-- Result -->
+  <div class="result" id="result">
+    <div class="result-header">
+      <span class="result-title" id="result-title">변환 결과</span>
+      <div class="result-actions">
+        <button class="btn" id="btn-copy" title="복사">📋</button>
+        <button class="btn" id="btn-download" title="다운로드">💾</button>
+        <button class="btn" id="btn-json" title="JSON 보기">{ }</button>
+      </div>
+    </div>
+    <div class="result-meta" id="result-meta"></div>
+    <div class="output-card">
+      <textarea id="output" readonly></textarea>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <a href="https://github.com/seunghan91/markdown-media" target="_blank">GitHub</a>
+    <span>·</span>
+    <a href="https://www.npmjs.com/package/@markdown-media/wasm" target="_blank">npm</a>
+    <span>·</span>
+    <span>pip install mdm-parser</span>
+  </div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

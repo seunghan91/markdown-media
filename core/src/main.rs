@@ -131,6 +131,23 @@ enum Commands {
         format: String,
     },
 
+    /// Inspect document structure: tables (merged cells, nested), equations, images.
+    ///
+    /// Shows what the converter extracts and what gets lost in Markdown output.
+    /// Useful for debugging conversion quality.
+    ///
+    /// Example:
+    ///   hwp2mdm inspect report.hwp
+    ///   hwp2mdm inspect report.hwp --format json
+    Inspect {
+        /// Input file
+        input: PathBuf,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
     /// Read a document from stdin and emit Markdown to stdout.
     ///
     /// Designed for MCP/subprocess integration: pipe bytes in, get clean
@@ -181,6 +198,9 @@ fn main() {
         }
         Some(Commands::Info { input, format }) => {
             show_info(&input, &format);
+        }
+        Some(Commands::Inspect { input, format }) => {
+            inspect_file(&input, &format);
         }
         Some(Commands::Stream { ext, mode }) => {
             if let Err(e) = stream_convert(&ext, &mode) {
@@ -1834,4 +1854,93 @@ fn show_pdf_info(input: &Path, format: &str, file_size: &str) {
         }
         Err(e) => eprintln!("❌ Error: {}", e),
     }
+}
+
+fn inspect_file(input: &Path, format: &str) {
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    match ext.as_str() {
+        "hwp" => inspect_hwp(input, format),
+        "hwpx" => {
+            eprintln!("inspect for HWPX: coming soon (use analyze for now)");
+        }
+        _ => {
+            eprintln!("inspect supports HWP/HWPX only (got .{})", ext);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn inspect_hwp(input: &Path, format: &str) {
+    let mut parser = match HwpParser::open(input) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("Error: {}", e); return; }
+    };
+
+    let tables = match parser.extract_tables() {
+        Ok(t) => t,
+        Err(e) => { eprintln!("Error extracting tables: {}", e); return; }
+    };
+
+    if format == "json" {
+        let json_tables: Vec<serde_json::Value> = tables.iter().enumerate().map(|(i, t)| {
+            let cells: Vec<serde_json::Value> = t.cell_spans.iter().map(|s| {
+                json!({
+                    "row": s.row_addr, "col": s.col_addr,
+                    "rowspan": s.row_span, "colspan": s.col_span
+                })
+            }).collect();
+            let merged_count = cells.iter().filter(|c| {
+                c["rowspan"].as_u64().unwrap_or(1) > 1 || c["colspan"].as_u64().unwrap_or(1) > 1
+            }).count();
+            json!({
+                "id": format!("table_{:03}", i + 1),
+                "rows": t.rows, "cols": t.cols,
+                "merged_cells": merged_count,
+                "cells": cells
+            })
+        }).collect();
+
+        let tables_with_merges = tables.iter().filter(|t| {
+            t.cell_spans.iter().any(|s| s.row_span > 1 || s.col_span > 1)
+        }).count();
+
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "file": input.display().to_string(),
+            "tables": json_tables,
+            "summary": {
+                "total_tables": tables.len(),
+                "tables_with_merges": tables_with_merges
+            }
+        })).unwrap());
+        return;
+    }
+
+    println!("MDM Inspect: {}", input.display());
+    println!("{}", "=".repeat(60));
+
+    if tables.is_empty() {
+        println!("\n  No tables found.");
+    } else {
+        println!("\n  Tables: {}", tables.len());
+        for (i, table) in tables.iter().enumerate() {
+            let merged: Vec<_> = table.cell_spans.iter()
+                .filter(|s| s.row_span > 1 || s.col_span > 1)
+                .collect();
+
+            println!("\n  table_{:03}: {}x{} (rows x cols)", i + 1, table.rows, table.cols);
+
+            if merged.is_empty() {
+                println!("    No merged cells");
+            } else {
+                println!("    Merged cells: {}", merged.len());
+                for s in &merged {
+                    println!("      [{},{}] span {}x{}", s.row_addr, s.col_addr, s.row_span, s.col_span);
+                }
+            }
+        }
+    }
+
+    println!("\n{}", "=".repeat(60));
+    println!("Use --format json for machine-readable output");
 }

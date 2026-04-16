@@ -81,7 +81,7 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
-  # ── npm: JS parser + WASM ──
+  # ── npm: WASM core + JS viewer ──
   publish-npm:
     name: npm
     if: github.event.inputs.target == 'npm' || github.event.inputs.target == 'all' || github.event_name == 'release'
@@ -92,8 +92,13 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
-      - name: Publish @mdm/parser
-        working-directory: packages/parser-js
+      - name: Publish @markdown-media/wasm
+        working-directory: core/pkg
+        run: npm publish --access public || true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish @markdown-media/viewer
+        working-directory: packages/viewer-js
         run: |
           npm install
           npm publish --access public || true

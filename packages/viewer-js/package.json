@@ -1,7 +1,7 @@
 {
-  "name": "@mdm/parser",
+  "name": "@markdown-media/viewer",
   "version": "0.1.0",
-  "description": "MDM (Markdown+Media) parser for JavaScript - Parse and render media-rich markdown documents",
+  "description": "MDM (Markdown+Media) viewer for JavaScript - Render media-rich markdown documents to HTML",
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "browser": "dist/index.browser.mjs",
@@ -62,7 +62,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/seunghan91/markdown-media.git",
-    "directory": "packages/parser-js"
+    "directory": "packages/viewer-js"
   },
   "bugs": {
     "url": "https://github.com/seunghan91/markdown-media/issues"

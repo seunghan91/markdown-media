@@ -43,8 +43,8 @@ export default [
       sourcemap: true,
       exports: 'named',
       banner: `/**
- * @mdm/parser v${pkg.version}
- * MDM (Markdown+Media) Parser
+ * @markdown-media/viewer v${pkg.version}
+ * MDM (Markdown+Media) Viewer
  * (c) ${new Date().getFullYear()} MDM Team
  * @license MIT
  */`,
@@ -74,8 +74,8 @@ export default [
       sourcemap: true,
       exports: 'named',
       banner: `/**
- * @mdm/parser v${pkg.version}
- * MDM (Markdown+Media) Parser
+ * @markdown-media/viewer v${pkg.version}
+ * MDM (Markdown+Media) Viewer
  * (c) ${new Date().getFullYear()} MDM Team
  * @license MIT
  */`,
@@ -107,8 +107,8 @@ export default [
         'js-yaml': 'jsyaml',
       },
       banner: `/**
- * @mdm/parser v${pkg.version}
- * MDM (Markdown+Media) Parser - Browser Bundle
+ * @markdown-media/viewer v${pkg.version}
+ * MDM (Markdown+Media) Viewer - Browser Bundle
  * (c) ${new Date().getFullYear()} MDM Team
  * @license MIT
  */`,
@@ -141,8 +141,8 @@ export default [
       sourcemap: true,
       exports: 'named',
       banner: `/**
- * @mdm/parser v${pkg.version}
- * MDM (Markdown+Media) Parser - Browser ES Module
+ * @markdown-media/viewer v${pkg.version}
+ * MDM (Markdown+Media) Viewer - Browser ES Module
  * (c) ${new Date().getFullYear()} MDM Team
  * @license MIT
  */`,

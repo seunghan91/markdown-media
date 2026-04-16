@@ -30,8 +30,8 @@ echo ""
 echo "📦 Step 1: Running tests..."
 echo ""
 
-cd packages/parser-js
-echo "Testing @mdm/parser..."
+cd packages/viewer-js
+echo "Testing @markdown-media/viewer..."
 npm test
 cd ../..
 
@@ -63,12 +63,21 @@ echo ""
 echo "📤 Step 4: Publishing npm packages..."
 echo ""
 
-read -p "Publish @mdm/parser? (y/n) " -n 1 -r
+read -p "Publish @markdown-media/wasm? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    cd packages/parser-js
+    cd core/pkg
     npm publish --access public
-    echo -e "${GREEN}✓${NC} Published @mdm/parser"
+    echo -e "${GREEN}✓${NC} Published @markdown-media/wasm"
+    cd ../..
+fi
+
+read -p "Publish @markdown-media/viewer? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    cd packages/viewer-js
+    npm publish --access public
+    echo -e "${GREEN}✓${NC} Published @markdown-media/viewer"
     cd ../..
 fi
 

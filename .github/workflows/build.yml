@@ -45,14 +45,14 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install parser-js dependencies
-        working-directory: packages/parser-js
+      - name: Install viewer-js dependencies
+        working-directory: packages/viewer-js
         run: npm install
 
       - name: Install CLI dependencies
         working-directory: cli
         run: npm install
 
-      - name: Test parser-js
-        working-directory: packages/parser-js
+      - name: Test viewer-js
+        working-directory: packages/viewer-js
         run: npm test
