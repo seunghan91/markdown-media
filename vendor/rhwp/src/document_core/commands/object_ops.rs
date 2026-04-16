@@ -8,6 +8,12 @@ use crate::error::HwpError;
 use crate::model::event::DocumentEvent;
 use super::super::helpers::get_textbox_from_shape;
 
+/// 도형 최소 크기 (HWPUNIT).
+/// 0으로 내려가면 Rectangle은 x_coords=[0,0,0,0]이 되고,
+/// Group은 current/original 스케일이 0이 되어 자식이 전부 사라진다.
+/// table_ops의 MIN_CELL_SIZE와 동일한 기준을 사용한다.
+const MIN_SHAPE_SIZE: u32 = 200;
+
 impl DocumentCore {
     pub fn get_picture_properties_native(
         &self,
@@ -1399,8 +1405,8 @@ impl DocumentCore {
     fn apply_common_obj_attr_from_json(c: &mut crate::model::shape::CommonObjAttr, props_json: &str) {
         use super::super::helpers::{json_u32, json_bool, json_str};
 
-        if let Some(w) = json_u32(props_json, "width") { c.width = w; }
-        if let Some(h) = json_u32(props_json, "height") { c.height = h; }
+        if let Some(w) = json_u32(props_json, "width") { c.width = w.max(MIN_SHAPE_SIZE); }
+        if let Some(h) = json_u32(props_json, "height") { c.height = h.max(MIN_SHAPE_SIZE); }
         if let Some(tac) = json_bool(props_json, "treatAsChar") {
             c.treat_as_char = tac;
             if tac { c.attr |= 0x01; } else { c.attr &= !0x01; }
@@ -1601,9 +1607,11 @@ impl DocumentCore {
         };
 
         // CommonObjAttr 업데이트
+        // 리사이즈 핸들을 반대편으로 끌어당길 때 studio가 width/height=0 을 보내
+        // 도형이 렌더러상 사라지는 버그 방어: 최소 크기 clamp.
         let c = shape.common_mut();
-        let new_w = super::super::helpers::json_u32(props_json, "width");
-        let new_h = super::super::helpers::json_u32(props_json, "height");
+        let new_w = super::super::helpers::json_u32(props_json, "width").map(|w| w.max(MIN_SHAPE_SIZE));
+        let new_h = super::super::helpers::json_u32(props_json, "height").map(|h| h.max(MIN_SHAPE_SIZE));
         Self::apply_common_obj_attr_from_json(c, props_json);
 
         // ShapeComponentAttr 크기/회전/채우기 동기화
@@ -3610,5 +3618,114 @@ impl DocumentCore {
 
         self.event_log.push(DocumentEvent::PictureInserted { section: section_idx, para: para_idx });
         Ok(format!("{{\"ok\":true,\"paraIdx\":{},\"controlIdx\":{},\"footnoteNumber\":{}}}", para_idx, insert_idx, footnote_number))
+    }
+}
+
+#[cfg(test)]
+mod resize_clamp_tests {
+    use super::*;
+    use crate::model::document::{Document, Section, SectionDef};
+    use crate::model::page::PageDef;
+
+    fn make_test_core() -> DocumentCore {
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            section_def: SectionDef {
+                page_def: PageDef {
+                    width: 59528,
+                    height: 84188,
+                    margin_left: 8504,
+                    margin_right: 8504,
+                    margin_top: 5668,
+                    margin_bottom: 4252,
+                    margin_header: 4252,
+                    margin_footer: 4252,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            paragraphs: vec![Paragraph::default()],
+            raw_stream: None,
+        });
+        let mut core = DocumentCore::new_empty();
+        // set_document이 composed/styles/pagination 벡터를 일관되게 초기화한다.
+        core.set_document(doc);
+        core
+    }
+
+    fn create_rectangle(core: &mut DocumentCore) -> (usize, usize) {
+        let res = core
+            .create_shape_control_native(0, 0, 0, 9000, 6750, 0, 0, false, "InFrontOfText", "rectangle", false, false, &[])
+            .expect("create rectangle");
+        let para_idx = res
+            .split("\"paraIdx\":").nth(1).and_then(|s| s.split(',').next())
+            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+        let ctrl_idx = res
+            .split("\"controlIdx\":").nth(1).and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+        (para_idx, ctrl_idx)
+    }
+
+    fn shape_common<'a>(core: &'a DocumentCore, para: usize, ctrl: usize) -> &'a crate::model::shape::CommonObjAttr {
+        let c = &core.document.sections[0].paragraphs[para].controls[ctrl];
+        match c {
+            Control::Shape(s) => s.common(),
+            _ => panic!("expected shape"),
+        }
+    }
+
+    /// 리사이즈 핸들을 반대편 너머로 잡아끌 때 studio가 width=0 을 보내도
+    /// 도형 공통 크기는 MIN_SHAPE_SIZE 이상을 유지해야 한다.
+    #[test]
+    fn resize_to_zero_width_clamps_to_min() {
+        let mut core = make_test_core();
+        let (para, ctrl) = create_rectangle(&mut core);
+
+        core.set_shape_properties_native(0, para, ctrl, r#"{"width":0,"height":0}"#)
+            .expect("resize to 0");
+
+        let common = shape_common(&core, para, ctrl);
+        assert!(common.width >= MIN_SHAPE_SIZE, "width clamped: {}", common.width);
+        assert!(common.height >= MIN_SHAPE_SIZE, "height clamped: {}", common.height);
+    }
+
+    /// Rectangle은 common.width/height 를 기반으로 x_coords/y_coords 를 재계산한다.
+    /// 0으로 내려가면 [0,0,0,0]이 되어 화면에서 사라졌던 버그 방어.
+    #[test]
+    fn rectangle_coords_nonzero_after_shrink_to_zero() {
+        let mut core = make_test_core();
+        let (para, ctrl) = create_rectangle(&mut core);
+
+        core.set_shape_properties_native(0, para, ctrl, r#"{"width":0,"height":0}"#)
+            .expect("resize to 0");
+
+        let ctrl_ref = &core.document.sections[0].paragraphs[para].controls[ctrl];
+        if let Control::Shape(shape) = ctrl_ref {
+            if let ShapeObject::Rectangle(rect) = shape.as_ref() {
+                assert_ne!(rect.x_coords, [0, 0, 0, 0], "Rectangle x_coords collapsed");
+                assert_ne!(rect.y_coords, [0, 0, 0, 0], "Rectangle y_coords collapsed");
+            } else {
+                panic!("expected Rectangle variant");
+            }
+        }
+    }
+
+    /// 반복된 0-resize 후에도 원상 복구 가능한 양의 크기로 리사이즈할 수 있어야 한다.
+    /// (영상의 버그 시나리오: 핸들 여러 번 클릭 → 도형 소실 → 되돌리기 불가)
+    #[test]
+    fn repeated_zero_resize_does_not_corrupt_state() {
+        let mut core = make_test_core();
+        let (para, ctrl) = create_rectangle(&mut core);
+
+        for _ in 0..5 {
+            core.set_shape_properties_native(0, para, ctrl, r#"{"width":0,"height":0}"#)
+                .expect("repeated resize");
+        }
+        core.set_shape_properties_native(0, para, ctrl, r#"{"width":12000,"height":8000}"#)
+            .expect("restore");
+
+        let common = shape_common(&core, para, ctrl);
+        assert_eq!(common.width, 12000);
+        assert_eq!(common.height, 8000);
     }
 }
