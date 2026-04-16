@@ -6,6 +6,7 @@
 
   const dispatch = createEventDispatcher<{
     stats: void;
+    diff: void;
     copied: { kind: 'markdown' | 'html' };
     exported: { format: 'json' | 'html' | 'txt' };
   }>();
@@ -111,6 +112,23 @@
       <line x1="6" y1="20" x2="6" y2="14" stroke="currentColor" stroke-width="1.6" />
     </svg>
     <span>통계</span>
+  </button>
+
+  <button
+    type="button"
+    class="action-btn"
+    disabled={!data}
+    on:click={() => dispatch('diff')}
+    aria-label="다른 문서와 비교"
+    title="두 번째 HWP/문서를 골라 신구 대조"
+  >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path d="M8 3v18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      <path d="M16 3v18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      <path d="M5 7l3-4 3 4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none" />
+      <path d="M13 17l3 4 3-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none" />
+    </svg>
+    <span>비교</span>
   </button>
 
   <div class="export-wrapper">

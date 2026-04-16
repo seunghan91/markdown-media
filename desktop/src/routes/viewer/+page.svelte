@@ -1,12 +1,14 @@
 <script lang="ts">
+  import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
   import StatsPanel from '$lib/components/StatsPanel.svelte';
   import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
   import { setViewerMode, viewerData, viewerMode, viewerPath } from '$lib/stores/viewer';
-  import { openFile, markdownToHtml } from '$lib/utils/ipc';
+  import { openFile, markdownToHtml, pickFileWithDialog } from '$lib/utils/ipc';
   import type { ViewerData } from '$lib/types';
   import { computeStats, type DocumentStats } from '$lib/utils/markdownStats';
+  import { diffLines, type DiffResult } from '$lib/utils/markdownDiff';
 
   let loading = false;
   let error = '';
@@ -14,6 +16,9 @@
   let sourceMarkdown = '';
   let statsOpen = false;
   let stats: DocumentStats | null = null;
+  let diffOpen = false;
+  let diffResult: DiffResult | null = null;
+  let diffRightTitle = '변경';
 
   $: if ($viewerData) {
     sourceMarkdown = $viewerData.markdown;
@@ -88,6 +93,28 @@
     stats = computeStats($viewerData.markdown);
     statsOpen = true;
   }
+
+  async function openDiff() {
+    if (!$viewerData) return;
+    const picked = await pickFileWithDialog({
+      title: '비교할 문서 선택',
+      filters: [{ name: '문서 파일', extensions: ['hwp', 'hwpx', 'pdf', 'docx', 'md'] }]
+    });
+    if (!picked || Array.isArray(picked)) return;
+
+    loading = true;
+    error = '';
+    try {
+      const other = await openFile(picked);
+      diffResult = diffLines($viewerData.markdown, other.markdown);
+      diffRightTitle = other.metadata.title ?? picked.split('/').pop() ?? '변경';
+      diffOpen = true;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : '비교 문서를 열지 못했습니다.';
+    } finally {
+      loading = false;
+    }
+  }
 </script>
 
 <div class="viewer-page">
@@ -97,13 +124,23 @@
       <p class="file-desc">렌더, 나란히, 소스 보기 모드를 전환할 수 있습니다.</p>
     </div>
     <div class="header-right">
-      <ViewerActions data={$viewerData} on:stats={openStats} />
+      <ViewerActions data={$viewerData} on:stats={openStats} on:diff={openDiff} />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
   </div>
 
   {#if stats}
     <StatsPanel {stats} open={statsOpen} on:close={() => (statsOpen = false)} />
+  {/if}
+
+  {#if diffResult}
+    <DiffPanel
+      open={diffOpen}
+      leftTitle={activeFileName}
+      rightTitle={diffRightTitle}
+      result={diffResult}
+      on:close={() => (diffOpen = false)}
+    />
   {/if}
 
   {#if !$viewerData}
