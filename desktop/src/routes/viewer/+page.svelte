@@ -3,7 +3,6 @@
   import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
   import FidelityView from '$lib/components/FidelityView.svelte';
-  import HwpEditPanel from '$lib/components/HwpEditPanel.svelte';
   import HwpSidebar from '$lib/components/HwpSidebar.svelte';
   import NotesPanel from '$lib/components/NotesPanel.svelte';
   import ViewerActions from '$lib/components/ViewerActions.svelte';
@@ -24,8 +23,11 @@
   let diffRightTitle = '변경';
   let notesOpen = false;
   let sidecar: SidecarNotes = { schemaVersion: 1, notes: [] };
-  let hwpEditOpen = false;
   $: isHwpSource = !!$viewerPath && /\.(hwp|hwpx)$/i.test($viewerPath);
+
+  function enterHwpEditor() {
+    if (isHwpSource) setViewerMode('fidelity');
+  }
   // Raw HWP/HWPX bytes for the fidelity (rhwp) viewer. Browser fallback
   // captures File.arrayBuffer(); Tauri path reads via plugin-fs on demand.
   let rawBytes: Uint8Array | null = null;
@@ -201,12 +203,6 @@
     </div>
   </div>
 
-  <HwpEditPanel
-    open={hwpEditOpen}
-    sourcePath={$viewerPath}
-    on:close={() => (hwpEditOpen = false)}
-  />
-
   {#if diffResult}
     <DiffPanel
       open={diffOpen}
@@ -233,10 +229,8 @@
       on:files={(event) => handleFiles(event.detail.files)}
     />
   {:else if $viewerMode === 'fidelity'}
-    <div class="viewer-shell" class:has-hwp={isHwpSource}>
-      {#if isHwpSource}
-        <HwpSidebar sourcePath={$viewerPath} on:edit={() => (hwpEditOpen = true)} />
-      {/if}
+    <div class="viewer-shell">
+      <HwpSidebar sourcePath={$viewerPath} on:editHwp={enterHwpEditor} />
       <div class="viewer-body">
         {#if error}
           <div class="error-bar">{error}</div>
@@ -245,10 +239,8 @@
       </div>
     </div>
   {:else}
-    <div class="viewer-shell" class:has-hwp={isHwpSource}>
-      {#if isHwpSource}
-        <HwpSidebar sourcePath={$viewerPath} on:edit={() => (hwpEditOpen = true)} />
-      {/if}
+    <div class="viewer-shell">
+      <HwpSidebar sourcePath={$viewerPath} on:editHwp={enterHwpEditor} />
       <div class="viewer-body" class:split={$viewerMode === 'split'}>
       {#if error}
         <div class="error-bar">{error}</div>

@@ -1,52 +1,29 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { rhwpSaveWithEdits } from '$lib/utils/ipc';
 
   /**
-   * Left-column toolbar that appears only when the active file is HWP /
-   * HWPX. Every action here routes through the vendored rhwp crate —
-   * separate from the right-hand header bar, which operates on the MDM
-   * extracted markdown.
+   * Persistent left-column toolbar. Always visible in the viewer. The
+   * primary action is "HWP 편집하기" which switches the viewer into
+   * 원본(fidelity) mode — rhwp-studio loaded via `@rhwp/editor` iframe,
+   * a full-fledged HWP editor. Disabled unless the current file is
+   * .hwp / .hwpx.
    */
   export let sourcePath: string | null = null;
 
-  const dispatch = createEventDispatcher<{
-    edit: void;
-    saved: { bytes: number; path: string };
-  }>();
+  const dispatch = createEventDispatcher<{ editHwp: void }>();
 
-  let roundtripping = false;
-  let feedback: string | null = null;
-
-  async function roundTripCopy() {
-    if (!sourcePath) return;
-    const target = sourcePath.replace(/(\.hwpx?)$/i, '-copy$1');
-    roundtripping = true;
-    feedback = null;
-    try {
-      const summary = await rhwpSaveWithEdits(sourcePath, target, []);
-      feedback = `복사본 저장됨 · ${(summary.outputBytes / 1024).toFixed(1)}KB`;
-      dispatch('saved', { bytes: summary.outputBytes, path: summary.outputPath });
-    } catch (e) {
-      feedback = e instanceof Error ? e.message : 'HWP 복사본 저장 실패';
-    } finally {
-      roundtripping = false;
-      setTimeout(() => (feedback = null), 2500);
-    }
-  }
+  $: isHwp = !!sourcePath && /\.(hwp|hwpx)$/i.test(sourcePath);
 </script>
 
-<aside class="hwp-sidebar" aria-label="HWP 전용 도구">
-  <div class="head">
-    <div class="badge">HWP</div>
-    <span class="caption">rhwp 기반</span>
-  </div>
-
+<aside class="hwp-sidebar" aria-label="HWP 도구">
   <button
     type="button"
     class="sb-btn primary"
-    on:click={() => dispatch('edit')}
-    title="rhwp로 HWP 문단을 직접 편집"
+    disabled={!isHwp}
+    on:click={() => dispatch('editHwp')}
+    title={isHwp
+      ? 'rhwp 에디터로 HWP 편집 (원본 모드 전환)'
+      : 'HWP / HWPX 파일을 먼저 열어주세요'}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
       <path d="M12 20h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
@@ -57,37 +34,12 @@
         stroke-linejoin="round"
       />
     </svg>
-    <span>편집</span>
+    <span>HWP 편집하기</span>
   </button>
 
-  <button
-    type="button"
-    class="sb-btn"
-    disabled={roundtripping}
-    on:click={roundTripCopy}
-    title="rhwp의 parse → serialize를 거쳐 `-copy` 접미사로 저장"
-  >
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-      <path
-        d="M19 14v5a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h5"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linejoin="round"
-      />
-      <path d="M15 3h6v6" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
-      <path d="M10 14L21 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-    </svg>
-    <span>{roundtripping ? '저장 중…' : 'HWP 복사본'}</span>
-  </button>
-
-  {#if feedback}
-    <div class="feedback">{feedback}</div>
-  {/if}
-
-  <div class="spacer"></div>
-
-  <p class="foot">
-    편집·저장은 vendor된 <code>rhwp 0.7.2</code>에서 직접 수행됩니다. 원본 파일은 수정되지 않습니다.
+  <p class="hint">
+    rhwp 에디터 (원본 모드)로 전환합니다. 저장은 에디터의 <strong>파일 &gt; 저장</strong> 메뉴를
+    사용하세요.
   </p>
 </aside>
 
@@ -95,42 +47,19 @@
   .hwp-sidebar {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: var(--space-3);
     padding: var(--space-3);
-    width: 160px;
-    min-width: 160px;
+    width: 180px;
+    min-width: 180px;
     border-right: 1px solid var(--color-separator-non-opaque);
     background: color-mix(in srgb, var(--color-accent) 4%, var(--color-bg-card));
-  }
-
-  .head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: 0 4px 6px;
-    border-bottom: 1px solid var(--color-separator-non-opaque);
-  }
-
-  .badge {
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--color-accent);
-    color: white;
-    font-size: var(--text-caption2-size);
-    font-weight: 700;
-    letter-spacing: 0.05em;
-  }
-
-  .caption {
-    font-size: var(--text-caption2-size);
-    color: var(--color-label-tertiary);
   }
 
   .sb-btn {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 10px;
+    padding: 10px 12px;
     border: 1px solid var(--color-separator-non-opaque);
     border-radius: var(--radius-sm);
     background: var(--color-bg-card);
@@ -151,7 +80,7 @@
   }
 
   .sb-btn:disabled {
-    opacity: 0.45;
+    opacity: 0.35;
     cursor: not-allowed;
   }
 
@@ -159,6 +88,7 @@
     background: var(--color-accent);
     color: white;
     border-color: var(--color-accent);
+    font-weight: 600;
   }
 
   .sb-btn.primary svg {
@@ -169,32 +99,15 @@
     background: color-mix(in srgb, var(--color-accent) 88%, black);
   }
 
-  .feedback {
-    padding: 6px 8px;
-    border-radius: var(--radius-xs);
-    background: color-mix(in srgb, var(--color-success) 15%, transparent);
-    color: var(--color-success);
-    font-size: var(--text-caption1-size);
-    line-height: 1.3;
-  }
-
-  .spacer {
-    flex: 1;
-  }
-
-  .foot {
+  .hint {
     margin: 0;
-    padding: var(--space-2) 4px 0;
-    border-top: 1px solid var(--color-separator-non-opaque);
     font-size: var(--text-caption2-size);
     color: var(--color-label-tertiary);
-    line-height: 1.4;
+    line-height: 1.45;
   }
 
-  .foot code {
-    padding: 1px 4px;
-    border-radius: var(--radius-xs);
-    background: var(--color-fill-quaternary);
-    font-size: 0.92em;
+  .hint strong {
+    color: var(--color-label-secondary);
+    font-weight: 600;
   }
 </style>
