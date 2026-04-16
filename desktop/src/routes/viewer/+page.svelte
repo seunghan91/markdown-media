@@ -1,14 +1,19 @@
 <script lang="ts">
   import DropZone from '$lib/components/DropZone.svelte';
+  import StatsPanel from '$lib/components/StatsPanel.svelte';
+  import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
   import { setViewerMode, viewerData, viewerMode, viewerPath } from '$lib/stores/viewer';
   import { openFile, markdownToHtml } from '$lib/utils/ipc';
   import type { ViewerData } from '$lib/types';
+  import { computeStats, type DocumentStats } from '$lib/utils/markdownStats';
 
   let loading = false;
   let error = '';
   let activeFileName = '선택된 파일 없음';
   let sourceMarkdown = '';
+  let statsOpen = false;
+  let stats: DocumentStats | null = null;
 
   $: if ($viewerData) {
     sourceMarkdown = $viewerData.markdown;
@@ -77,6 +82,12 @@
       });
     }
   }
+
+  function openStats() {
+    if (!$viewerData) return;
+    stats = computeStats($viewerData.markdown);
+    statsOpen = true;
+  }
 </script>
 
 <div class="viewer-page">
@@ -86,9 +97,14 @@
       <p class="file-desc">렌더, 나란히, 소스 보기 모드를 전환할 수 있습니다.</p>
     </div>
     <div class="header-right">
+      <ViewerActions data={$viewerData} on:stats={openStats} />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
   </div>
+
+  {#if stats}
+    <StatsPanel {stats} open={statsOpen} on:close={() => (statsOpen = false)} />
+  {/if}
 
   {#if !$viewerData}
     <DropZone
@@ -165,7 +181,11 @@
   }
 
   .header-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
     flex-shrink: 0;
+    flex-wrap: wrap;
   }
 
   .pane-wrapper {
