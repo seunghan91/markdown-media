@@ -44,6 +44,61 @@
     }
   }
 
+  let exporting = false;
+  let exportProgress = 0;
+
+  function downloadBlob(content: string, filename: string, mime: string) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function baseName(): string {
+    return fileName.replace(/\.[^.]+$/, '') || 'document';
+  }
+
+  async function exportCurrentPage() {
+    if (!editor || status !== 'ready') return;
+    exporting = true;
+    try {
+      const svg = await editor.getPageSvg(1);
+      downloadBlob(svg, `${baseName()}-p1.svg`, 'image/svg+xml');
+    } catch (err) {
+      errorMessage = err instanceof Error ? err.message : 'SVG 내보내기 실패';
+      status = 'error';
+    } finally {
+      exporting = false;
+    }
+  }
+
+  async function exportAllPages() {
+    if (!editor || status !== 'ready' || pageCount === 0) return;
+    exporting = true;
+    exportProgress = 0;
+    try {
+      // Concatenate pages into one SVG gallery file — simpler than
+      // shipping a zip and still useful for manual inspection.
+      const parts: string[] = [];
+      for (let i = 1; i <= pageCount; i++) {
+        const svg = await editor.getPageSvg(i);
+        parts.push(`<!-- page ${i} -->\n${svg}`);
+        exportProgress = Math.round((i / pageCount) * 100);
+      }
+      const combined = parts.join('\n\n');
+      downloadBlob(combined, `${baseName()}-all-pages.svg`, 'image/svg+xml');
+    } catch (err) {
+      errorMessage = err instanceof Error ? err.message : '페이지 내보내기 실패';
+      status = 'error';
+    } finally {
+      exporting = false;
+      exportProgress = 0;
+    }
+  }
+
   $: if (bytes && container) {
     loadBytes(bytes, fileName);
   }
@@ -82,6 +137,30 @@
     <div class="footer">
       <span class="badge">rhwp 원본 렌더링</span>
       <span class="meta">페이지 {pageCount}</span>
+      <div class="actions">
+        <button
+          type="button"
+          class="ghost"
+          disabled={exporting}
+          on:click={exportCurrentPage}
+          title="첫 페이지를 SVG 파일로 저장"
+        >
+          1페이지 SVG
+        </button>
+        <button
+          type="button"
+          class="ghost"
+          disabled={exporting || pageCount === 0}
+          on:click={exportAllPages}
+          title="모든 페이지를 하나의 SVG 갤러리 파일로 저장"
+        >
+          {#if exporting}
+            내보내는 중… {exportProgress}%
+          {:else}
+            전체 SVG
+          {/if}
+        </button>
+      </div>
     </div>
   {/if}
 </div>
@@ -160,5 +239,32 @@
     font-size: var(--text-caption1-size);
     color: var(--color-label-secondary);
     font-variant-numeric: tabular-nums;
+  }
+
+  .actions {
+    margin-left: auto;
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .ghost {
+    padding: 4px 10px;
+    border: 1px solid var(--color-separator-non-opaque);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--color-label-secondary);
+    font-size: var(--text-caption1-size);
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ghost:hover:not(:disabled) {
+    background: var(--color-fill-quaternary);
+    color: var(--color-label-primary);
+  }
+
+  .ghost:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 </style>
