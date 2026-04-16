@@ -1,46 +1,18 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import type { ViewerData } from '$lib/types';
-  import {
-    buildPrompt,
-    listPresets,
-    listProviders,
-    openInChat,
-    type LlmProvider,
-    type PromptPreset,
-  } from '$lib/utils/aiPrompts';
 
   export let data: ViewerData | null = null;
 
   const dispatch = createEventDispatcher<{
-    stats: void;
     diff: void;
     notes: void;
     copied: { kind: 'markdown' | 'html' };
     exported: { format: 'json' | 'html' | 'txt' };
-    ai: { provider: LlmProvider; preset: PromptPreset };
   }>();
 
   let copyFeedback: string | null = null;
   let exportOpen = false;
-  let aiOpen = false;
-
-  const presets = listPresets();
-  const providers = listProviders();
-  let activePreset: PromptPreset = 'summary';
-
-  async function askAi(provider: LlmProvider) {
-    if (!data) return;
-    const prompt = buildPrompt(activePreset, data.markdown);
-    try {
-      await navigator.clipboard.writeText(prompt);
-    } catch {
-      // swallow — we still open the chat so the user can paste manually
-    }
-    await openInChat(provider);
-    dispatch('ai', { provider, preset: activePreset });
-    aiOpen = false;
-  }
 
   async function copyMarkdown() {
     if (!data) return;
@@ -130,22 +102,6 @@
     type="button"
     class="action-btn"
     disabled={!data}
-    on:click={() => dispatch('stats')}
-    aria-label="문서 통계"
-    title="문단·표·이미지 수치를 확인"
-  >
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-      <line x1="18" y1="20" x2="18" y2="10" stroke="currentColor" stroke-width="1.6" />
-      <line x1="12" y1="20" x2="12" y2="4" stroke="currentColor" stroke-width="1.6" />
-      <line x1="6" y1="20" x2="6" y2="14" stroke="currentColor" stroke-width="1.6" />
-    </svg>
-    <span>통계</span>
-  </button>
-
-  <button
-    type="button"
-    class="action-btn"
-    disabled={!data}
     on:click={() => dispatch('diff')}
     aria-label="다른 문서와 비교"
     title="두 번째 HWP/문서를 골라 신구 대조"
@@ -178,59 +134,6 @@
     </svg>
     <span>메모</span>
   </button>
-
-  <div class="export-wrapper">
-    <button
-      type="button"
-      class="action-btn ai-btn"
-      disabled={!data}
-      aria-haspopup="menu"
-      aria-expanded={aiOpen}
-      on:click={() => (aiOpen = !aiOpen)}
-      title="프롬프트와 함께 외부 LLM으로 보내기"
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-        <path
-          d="M12 2l2.5 5 5 0.7-3.6 3.5 0.8 5L12 14l-4.7 2.2 0.8-5L4.5 7.7 9.5 7z"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linejoin="round"
-          fill="none"
-        />
-      </svg>
-      <span>AI에 묻기</span>
-    </button>
-    {#if aiOpen}
-      <div class="menu ai-menu" role="menu">
-        <div class="ai-section">
-          <div class="ai-label">프롬프트</div>
-          <div class="preset-row">
-            {#each presets as preset}
-              <button
-                type="button"
-                class="preset-chip"
-                class:active={preset.id === activePreset}
-                on:click={() => (activePreset = preset.id)}
-              >
-                {preset.label}
-              </button>
-            {/each}
-          </div>
-        </div>
-        <div class="ai-section">
-          <div class="ai-label">어디로 보낼까요</div>
-          {#each providers as provider}
-            <button role="menuitem" on:click={() => askAi(provider.id)}>
-              {provider.label}
-            </button>
-          {/each}
-        </div>
-        <p class="ai-hint">
-          선택한 프롬프트 + 문서 내용이 클립보드로 복사됩니다. 챗 창이 열리면 붙여넣기 하세요.
-        </p>
-      </div>
-    {/if}
-  </div>
 
   <div class="export-wrapper">
     <button
@@ -331,60 +234,5 @@
 
   .menu button:hover {
     background: var(--color-fill-quaternary);
-  }
-
-  .ai-menu {
-    min-width: 240px;
-    padding: var(--space-3);
-    gap: var(--space-2);
-  }
-
-  .ai-section {
-    padding: var(--space-1) 0;
-    border-bottom: 1px solid var(--color-separator-non-opaque);
-  }
-
-  .ai-section:last-of-type {
-    border-bottom: 0;
-  }
-
-  .ai-label {
-    font-size: var(--text-caption2-size);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--color-label-tertiary);
-    text-transform: uppercase;
-    padding: 4px var(--space-1) 6px;
-  }
-
-  .preset-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding-bottom: 6px;
-  }
-
-  .preset-chip {
-    padding: 3px 10px;
-    border: 1px solid var(--color-separator-non-opaque);
-    border-radius: 999px;
-    background: transparent;
-    color: var(--color-label-secondary);
-    font-size: var(--text-caption1-size);
-    cursor: pointer;
-  }
-
-  .preset-chip.active {
-    background: var(--color-accent);
-    color: white;
-    border-color: var(--color-accent);
-  }
-
-  .ai-hint {
-    margin: 4px 0 0;
-    padding: 0 var(--space-1);
-    font-size: var(--text-caption2-size);
-    color: var(--color-label-tertiary);
-    line-height: 1.4;
   }
 </style>

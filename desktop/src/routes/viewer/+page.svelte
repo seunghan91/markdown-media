@@ -4,13 +4,11 @@
   import DropZone from '$lib/components/DropZone.svelte';
   import FidelityView from '$lib/components/FidelityView.svelte';
   import NotesPanel from '$lib/components/NotesPanel.svelte';
-  import StatsPanel from '$lib/components/StatsPanel.svelte';
   import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
   import { setViewerMode, viewerData, viewerMode, viewerPath } from '$lib/stores/viewer';
   import { openFile, markdownToHtml, pickFileWithDialog } from '$lib/utils/ipc';
   import type { ViewerData } from '$lib/types';
-  import { computeStats, type DocumentStats } from '$lib/utils/markdownStats';
   import { diffLines, type DiffResult } from '$lib/utils/markdownDiff';
   import { loadNotes, saveNotes, type SidecarNotes } from '$lib/utils/notesStore';
   import { linkScroll } from '$lib/utils/scrollSync';
@@ -19,8 +17,6 @@
   let error = '';
   let activeFileName = '선택된 파일 없음';
   let sourceMarkdown = '';
-  let statsOpen = false;
-  let stats: DocumentStats | null = null;
   let diffOpen = false;
   let diffResult: DiffResult | null = null;
   let diffRightTitle = '변경';
@@ -131,12 +127,6 @@
     }
   }
 
-  function openStats() {
-    if (!$viewerData) return;
-    stats = computeStats($viewerData.markdown);
-    statsOpen = true;
-  }
-
   async function openDiff() {
     if (!$viewerData) return;
     const picked = await pickFileWithDialog({
@@ -200,17 +190,12 @@
     <div class="header-right">
       <ViewerActions
         data={$viewerData}
-        on:stats={openStats}
         on:diff={openDiff}
         on:notes={() => (notesOpen = true)}
       />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
   </div>
-
-  {#if stats}
-    <StatsPanel {stats} open={statsOpen} on:close={() => (statsOpen = false)} />
-  {/if}
 
   {#if diffResult}
     <DiffPanel
