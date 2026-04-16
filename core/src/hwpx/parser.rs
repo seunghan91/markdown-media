@@ -1217,6 +1217,8 @@ fn extract_runs_text(xml: &str) -> String {
         let dt1 = xml[pos..].find("<hp:drawText>");
         let dt2 = xml[pos..].find("<hp:drawText ");
         let tab = xml[pos..].find("<hp:tab/>");
+        // Hancom 실제 출력 형식: `<hp:tab width="..." leader="0" type="1"/>`
+        let tab2 = xml[pos..].find("<hp:tab ");
         let lb = xml[pos..].find("<hp:lineBreak/>");
         // Ruby / 덧말 — treat as a single unit; we skip mainText (already
         // in the surrounding run flow) and emit subText as parenthetical.
@@ -1236,6 +1238,7 @@ fn extract_runs_text(xml: &str) -> String {
             dm1.map(|i| (i, "dm")),
             dm2.map(|i| (i, "dm")),
             tab.map(|i| (i, "tab")),
+            tab2.map(|i| (i, "tab2")),
             lb.map(|i| (i, "lb")),
             img1.map(|i| (i, "img")),
             img2.map(|i| (i, "img")),
@@ -1259,9 +1262,12 @@ fn extract_runs_text(xml: &str) -> String {
                     None => break,
                 };
                 let raw = &xml[after_open..close];
-                // <hp:lineBreak/> can appear inside <hp:t> content
+                // <hp:lineBreak/> / <hp:tab/> can appear inside <hp:t> content
                 let raw = raw.replace("<hp:lineBreak/>", "\n");
                 let raw = raw.replace("<hp:lineBreak />", "\n");
+                let raw = raw.replace("<hp:tab/>", "\t");
+                // 한컴 실제 형식: <hp:tab width="..." leader="0" type="1"/>
+                let raw = replace_attributed_tab(&raw);
                 out.push_str(&decode_xml_entities(&raw));
                 pos = close + 7;
             }
@@ -1304,6 +1310,14 @@ fn extract_runs_text(xml: &str) -> String {
                 out.push('\t');
                 pos = abs + 9;
             }
+            "tab2" => {
+                // attributed: `<hp:tab width="..." leader="0" type="1"/>`
+                out.push('\t');
+                pos = match xml[abs..].find("/>") {
+                    Some(i) => abs + i + 2,
+                    None => break,
+                };
+            }
             "lb" => {
                 out.push('\n');
                 pos = abs + 15;
@@ -1327,6 +1341,28 @@ fn extract_runs_text(xml: &str) -> String {
         }
     }
 
+    out
+}
+
+/// `<hp:tab width="..." leader="0" type="1"/>` 같은 속성 포함 탭을 `\t`로 치환.
+fn replace_attributed_tab(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pos = 0;
+    while let Some(rel) = s[pos..].find("<hp:tab ") {
+        let abs = pos + rel;
+        out.push_str(&s[pos..abs]);
+        match s[abs..].find("/>") {
+            Some(end) => {
+                out.push('\t');
+                pos = abs + end + 2;
+            }
+            None => {
+                out.push_str(&s[abs..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(&s[pos..]);
     out
 }
 
@@ -1691,9 +1727,12 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
                         let t_start_pos = idx + 6; // skip "<hp:t>"
                         if let Some(t_end) = run_content[t_start_pos..].find("</hp:t>") {
                             let text = &run_content[t_start_pos..t_start_pos + t_end];
-                            // <hp:lineBreak/> can appear inside <hp:t> content
+                            // <hp:lineBreak/> / <hp:tab/> can appear inside <hp:t> content
                             let text = text.replace("<hp:lineBreak/>", "\n");
                             let text = text.replace("<hp:lineBreak />", "\n");
+                            let text = text.replace("<hp:tab/>", "\t");
+                            // Hancom 실제 형식: <hp:tab width="..." leader="0" type="1"/>
+                            let text = replace_attributed_tab(&text);
                             text_content.push_str(&text);
                             t_pos = t_start_pos + t_end + 7;
                         } else {
@@ -2297,6 +2336,27 @@ mod tests {
             apply_markdown_formatting("핵심", &style_bold_emph),
             "<mark>**핵심**</mark>"
         );
+    }
+
+    #[test]
+    fn test_attributed_tab_converts_to_tab_char() {
+        // 한컴 실제 출력 형식
+        let xml = r#"<hp:t>앞<hp:tab width="3028" leader="0" type="1"/>뒤</hp:t>"#;
+        let result = extract_runs_text(xml);
+        assert_eq!(result, "앞\t뒤");
+    }
+
+    #[test]
+    fn test_self_closing_tab_converts_to_tab_char() {
+        let xml = r#"<hp:t>앞<hp:tab/>뒤</hp:t>"#;
+        let result = extract_runs_text(xml);
+        assert_eq!(result, "앞\t뒤");
+    }
+
+    #[test]
+    fn test_replace_attributed_tab_helper() {
+        let s = r#"A<hp:tab width="100" leader="0" type="1"/>B<hp:tab width="200" type="1"/>C"#;
+        assert_eq!(replace_attributed_tab(s), "A\tB\tC");
     }
 
     #[test]
