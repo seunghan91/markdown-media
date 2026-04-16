@@ -1,6 +1,6 @@
 {
   "name": "markdown-media",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "The Universal Standard for integrating Rich Media (SVG, Images, Video) into Markdown. Core engine for HWP/PDF conversion.",
   "main": "index.js",
   "type": "module",
