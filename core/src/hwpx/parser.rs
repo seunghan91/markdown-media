@@ -16,6 +16,10 @@ pub struct CharStyle {
     pub italic: bool,
     pub underline: bool,
     pub strikeout: bool,
+    /// 강조점 (방점) — 한국 공공 문서에서 핵심 용어 강조에 쓰인다.
+    /// OWPML symMark 속성이 NONE 이외(DOT/CIRCLE/TICK/TILDE/MIDDLE_DOT/COLON)
+    /// 면 true. 마크다운 출력은 `<mark>` 태그로 감싸 의미 정보를 보존한다.
+    pub emphasis_dot: bool,
 }
 
 /// Image information from HWPX file
@@ -325,6 +329,52 @@ fn is_real_strikeout_shape(shape: &str) -> bool {
     )
 }
 
+/// Determine whether a `<hh:underline type="...">` value represents a real
+/// rendered underline.
+///
+/// OWPML defines `type` as position of the line relative to the baseline:
+///   - `NONE`   — no underline
+///   - `BOTTOM` — under the text (standard underline)
+///   - `TOP`    — above the text (used in vertical layouts)
+///
+/// Like `strikeout`, Hancom can emit placeholder/unknown values on default
+/// charPr entries. Treating "anything but NONE" as underline (blacklist) is
+/// a forward-compatibility hazard identical to the strike shape bug fixed
+/// in the previous commit — a future placeholder (e.g. `"3D"`) on
+/// `<hh:underline type>` would silently underline entire bodies.
+///
+/// Whitelist only the two positions Hancom actually renders; unknown values
+/// are fail-closed to no-underline.
+fn is_real_underline_type(underline_type: &str) -> bool {
+    matches!(underline_type, "BOTTOM" | "TOP")
+}
+
+/// Determine whether a `<hh:charPr symMark="...">` value represents a real
+/// emphasis dot (강조점 / 방점).
+///
+/// OWPML symMark values:
+///   - `NONE`        — no mark
+///   - `DOT`         — ● filled circle
+///   - `CIRCLE`      — ○ open circle
+///   - `TICK`        — ˇ caron
+///   - `TILDE`       — ˜ tilde
+///   - `MIDDLE_DOT`  — ･ halfwidth middle dot
+///   - `COLON`       — : colon (rare)
+///
+/// Korean government documents and legal texts heavily use emphasis dots
+/// for highlighting important terms (see 공문서 작성 규정 별표 2). Without
+/// preserving this signal, the extracted markdown loses author intent that
+/// matters to downstream LLM tasks.
+///
+/// Whitelist approach mirrors `is_real_strikeout_shape` / `is_real_underline_type`:
+/// unknown future placeholders are fail-closed to no-emphasis.
+fn is_real_emphasis_mark(sym_mark: &str) -> bool {
+    matches!(
+        sym_mark,
+        "DOT" | "CIRCLE" | "TICK" | "TILDE" | "MIDDLE_DOT" | "COLON"
+    )
+}
+
 /// Parse character properties from header.xml
 fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
     let mut styles = HashMap::new();
@@ -349,11 +399,14 @@ fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
                     // Check for italic
                     style.italic = char_pr_xml.contains("<hh:italic") || char_pr_xml.contains("<hh:italic/>");
 
-                    // Check for underline (type != NONE)
+                    // Check for underline. Whitelist OWPML position values.
+                    // Symmetric to the strikeout whitelist: unknown / future
+                    // placeholder values on default charPr must NOT be rendered
+                    // as underline, or entire body text will be underlined.
                     if let Some(underline_pos) = char_pr_xml.find("<hh:underline ") {
                         let underline_xml = &char_pr_xml[underline_pos..];
                         if let Some(type_val) = extract_attr(underline_xml, "type") {
-                            style.underline = type_val != "NONE";
+                            style.underline = is_real_underline_type(&type_val);
                         }
                     }
 
@@ -367,6 +420,12 @@ fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
                         if let Some(shape_val) = extract_attr(strike_xml, "shape") {
                             style.strikeout = is_real_strikeout_shape(&shape_val);
                         }
+                    }
+
+                    // Check for emphasis dot (강조점 / 방점). The symMark attribute
+                    // lives on <hh:charPr> itself, not a sub-element.
+                    if let Some(sym_mark) = extract_attr(char_pr_xml, "symMark") {
+                        style.emphasis_dot = is_real_emphasis_mark(&sym_mark);
                     }
 
                     styles.insert(id_num, style);
@@ -805,7 +864,7 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
         let text = extract_runs_text(run_content);
         if !text.is_empty() {
             match style {
-                Some(s) if s.bold || s.italic || s.underline || s.strikeout => {
+                Some(s) if s.bold || s.italic || s.underline || s.strikeout || s.emphasis_dot => {
                     out.push_str(&apply_markdown_formatting(&text, s));
                 }
                 _ => out.push_str(&text),
@@ -1127,7 +1186,10 @@ fn apply_markdown_formatting(text: &str, style: &CharStyle) -> String {
 
     let mut result = trimmed.to_string();
 
-    // Apply formatting in order: strikeout, bold, italic, underline
+    // Apply formatting in order: strikeout, bold/italic, underline, emphasis_dot
+    // Emphasis dot (강조점) uses <mark> to preserve the "emphasized term" semantic
+    // that Korean government and legal documents rely on heavily. <mark> renders
+    // visually in most markdown previewers and carries a clear signal to LLMs.
     if style.strikeout {
         result = format!("~~{}~~", result);
     }
@@ -1140,6 +1202,9 @@ fn apply_markdown_formatting(text: &str, style: &CharStyle) -> String {
     }
     if style.underline {
         result = format!("<u>{}</u>", result);
+    }
+    if style.emphasis_dot {
+        result = format!("<mark>{}</mark>", result);
     }
 
     format!("{}{}{}", prefix_space, result, suffix_space)
@@ -1294,18 +1359,14 @@ mod tests {
         // Test bold
         let style = CharStyle {
             bold: true,
-            italic: false,
-            underline: false,
-            strikeout: false,
+            ..Default::default()
         };
         assert_eq!(apply_markdown_formatting("테스트", &style), "**테스트**");
 
         // Test italic
         let style = CharStyle {
-            bold: false,
             italic: true,
-            underline: false,
-            strikeout: false,
+            ..Default::default()
         };
         assert_eq!(apply_markdown_formatting("테스트", &style), "*테스트*");
 
@@ -1313,35 +1374,30 @@ mod tests {
         let style = CharStyle {
             bold: true,
             italic: true,
-            underline: false,
-            strikeout: false,
+            ..Default::default()
         };
         assert_eq!(apply_markdown_formatting("테스트", &style), "***테스트***");
 
         // Test underline
         let style = CharStyle {
-            bold: false,
-            italic: false,
             underline: true,
-            strikeout: false,
+            ..Default::default()
         };
         assert_eq!(apply_markdown_formatting("테스트", &style), "<u>테스트</u>");
 
         // Test strikeout
         let style = CharStyle {
-            bold: false,
-            italic: false,
-            underline: false,
             strikeout: true,
+            ..Default::default()
         };
         assert_eq!(apply_markdown_formatting("테스트", &style), "~~테스트~~");
 
         // Test combined: bold + underline + strikeout
         let style = CharStyle {
             bold: true,
-            italic: false,
             underline: true,
             strikeout: true,
+            ..Default::default()
         };
         assert_eq!(
             apply_markdown_formatting("테스트", &style),
@@ -1424,6 +1480,89 @@ mod tests {
     }
 
     #[test]
+    fn test_is_real_underline_type() {
+        // Real underline positions
+        assert!(is_real_underline_type("BOTTOM"));
+        assert!(is_real_underline_type("TOP"));
+
+        // Non-underline values, including forward-compat fail-closed cases
+        assert!(!is_real_underline_type("NONE"));
+        assert!(!is_real_underline_type("3D")); // hypothetical future placeholder
+        assert!(!is_real_underline_type(""));
+        assert!(!is_real_underline_type("bottom")); // case-sensitive
+    }
+
+    #[test]
+    fn test_is_real_emphasis_mark() {
+        // All six OWPML symMark values
+        assert!(is_real_emphasis_mark("DOT"));
+        assert!(is_real_emphasis_mark("CIRCLE"));
+        assert!(is_real_emphasis_mark("TICK"));
+        assert!(is_real_emphasis_mark("TILDE"));
+        assert!(is_real_emphasis_mark("MIDDLE_DOT"));
+        assert!(is_real_emphasis_mark("COLON"));
+
+        // Non-emphasis / fail-closed
+        assert!(!is_real_emphasis_mark("NONE"));
+        assert!(!is_real_emphasis_mark(""));
+        assert!(!is_real_emphasis_mark("FILLED_CIRCLE")); // not an OWPML value
+        assert!(!is_real_emphasis_mark("dot")); // case-sensitive
+    }
+
+    #[test]
+    fn test_parse_char_properties_emphasis_dot() {
+        let header_xml = r#"
+            <hh:charPr id="100" height="1000" symMark="NONE">
+                <hh:underline type="NONE"/>
+                <hh:strikeout shape="NONE"/>
+            </hh:charPr>
+            <hh:charPr id="101" height="1000" symMark="DOT">
+                <hh:underline type="NONE"/>
+                <hh:strikeout shape="NONE"/>
+            </hh:charPr>
+            <hh:charPr id="102" height="1000" symMark="CIRCLE">
+                <hh:underline type="NONE"/>
+                <hh:strikeout shape="NONE"/>
+            </hh:charPr>
+        "#;
+        let styles = parse_char_properties(header_xml);
+
+        // symMark="NONE" → no emphasis
+        assert!(!styles.get(&100).unwrap().emphasis_dot);
+
+        // symMark="DOT" (●) → emphasis present
+        assert!(styles.get(&101).unwrap().emphasis_dot);
+
+        // symMark="CIRCLE" (○) → emphasis present
+        assert!(styles.get(&102).unwrap().emphasis_dot);
+    }
+
+    #[test]
+    fn test_emphasis_dot_markdown_formatting() {
+        let style = CharStyle {
+            bold: false,
+            italic: false,
+            underline: false,
+            strikeout: false,
+            emphasis_dot: true,
+        };
+        assert_eq!(apply_markdown_formatting("중요", &style), "<mark>중요</mark>");
+
+        // Combined: bold + emphasis dot → both preserved
+        let style_bold_emph = CharStyle {
+            bold: true,
+            italic: false,
+            underline: false,
+            strikeout: false,
+            emphasis_dot: true,
+        };
+        assert_eq!(
+            apply_markdown_formatting("핵심", &style_bold_emph),
+            "<mark>**핵심**</mark>"
+        );
+    }
+
+    #[test]
     fn test_remove_xml_tags() {
         let text = "앞<hp:tab width=\"100\" type=\"1\"/>뒤";
         let result = remove_xml_tags(text, "hp:tab");
@@ -1434,7 +1573,10 @@ mod tests {
 
     #[test]
     fn test_bold_spacing_fix() {
-        let style = CharStyle { bold: true, italic: false, underline: false, strikeout: false };
+        let style = CharStyle {
+            bold: true,
+            ..Default::default()
+        };
         assert_eq!(apply_markdown_formatting(" text", &style), " **text**");
         assert_eq!(apply_markdown_formatting("text ", &style), "**text** ");
         assert_eq!(apply_markdown_formatting(" text ", &style), " **text** ");
