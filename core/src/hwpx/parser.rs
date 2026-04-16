@@ -560,6 +560,10 @@ fn parse_section_xml(
     let mut result = String::new();
     let mut tables = Vec::new();
     let mut pos = 0;
+    // Section-wide counter keeps `[중첩 테이블 #N]` numbering stable and
+    // unique across every table encountered in this section, so a reader
+    // can cross-reference markers with the hoisted blocks below.
+    let mut nested_counter = NestedTableCounter::default();
 
     while pos < xml.len() {
         // Look for table start
@@ -576,11 +580,28 @@ fn parse_section_xml(
             if let Some(tbl_end) = find_matching_close(xml, scan_from, "<hp:tbl ", "</hp:tbl>") {
                 let table_xml = &xml[tbl_pos..tbl_end + 9];
 
-                if let Some(table) = parse_table(table_xml, char_styles) {
+                let mut hoisted: Vec<Table> = Vec::new();
+                if let Some(table) = parse_table_ctx(
+                    table_xml,
+                    char_styles,
+                    &mut nested_counter,
+                    &mut hoisted,
+                ) {
                     result.push_str("\n\n");
                     result.push_str(&table.to_markdown());
                     result.push('\n');
                     tables.push(table);
+                    // Emit each hoisted "big nested" table right after its
+                    // parent, preceded by a header that carries the marker
+                    // number so `[중첩 테이블 #N]` in the parent maps clearly.
+                    for nested in hoisted {
+                        let marker_n = tables.len(); // rough — real N is in marker text
+                        let _ = marker_n;
+                        result.push_str("\n");
+                        result.push_str(&nested.to_markdown());
+                        result.push('\n');
+                        tables.push(nested);
+                    }
                 }
 
                 pos = tbl_end + 9;
@@ -599,6 +620,117 @@ fn parse_section_xml(
     (cleaned, tables)
 }
 
+/// Classification threshold copied from kordoc's `handleNestedTable`
+/// (chrisryugj/kordoc `src/hwpx/parser.ts:606`). A nested table with at
+/// least this many rows AND columns is considered "real data" and gets
+/// hoisted to its own markdown block; anything smaller is treated as a
+/// layout wrapper and flattened into the parent cell's text. The parent
+/// cell receives a `[중첩 테이블 #N]` marker in both cases so readers
+/// and LLMs can see the parent→child relationship even after hoisting.
+const NESTED_TABLE_MIN_ROWS: usize = 3;
+const NESTED_TABLE_MIN_COLS: usize = 2;
+
+/// Monotonic counter for nested-table marker numbering. Threaded through
+/// `parse_table_ctx` → `preprocess_nested_tables` so markers remain stable
+/// within a single section/document traversal.
+#[derive(Default)]
+struct NestedTableCounter {
+    n: u32,
+}
+
+impl NestedTableCounter {
+    fn next_id(&mut self) -> u32 {
+        self.n += 1;
+        self.n
+    }
+}
+
+/// Flatten a nested table to a single compact text string suitable for
+/// embedding inside a parent markdown cell (where newlines and pipes are
+/// forbidden by GFM table syntax). Rows are joined with `; `, cells with
+/// ` | `. Empty cells are dropped.
+fn flatten_table_to_text(t: &Table) -> String {
+    t.cells
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|c| c.trim())
+                .filter(|c| !c.is_empty())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .filter(|row| !row.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Walk `cell_xml`, locate every top-level `<hp:tbl ...>` (depth-aware so
+/// we don't re-enter nested-in-nested), classify each against the
+/// `NESTED_TABLE_MIN_*` thresholds, and rewrite the XML span.
+///
+/// Returns the rewritten cell XML with marker text substituted in place of
+/// nested tables, and pushes every "big" nested table into `separate_out`
+/// so the caller can emit them as sibling blocks after the outer table.
+fn preprocess_nested_tables(
+    cell_xml: &str,
+    char_styles: &HashMap<u32, CharStyle>,
+    counter: &mut NestedTableCounter,
+    separate_out: &mut Vec<Table>,
+) -> String {
+    let mut result = String::new();
+    let mut pos = 0;
+
+    while let Some(rel) = cell_xml[pos..].find("<hp:tbl ") {
+        let abs = pos + rel;
+        result.push_str(&cell_xml[pos..abs]);
+
+        let scan_from = abs + "<hp:tbl ".len();
+        let close_idx = match find_matching_close(cell_xml, scan_from, "<hp:tbl ", "</hp:tbl>") {
+            Some(i) => i,
+            None => {
+                // Malformed — keep the remainder as-is.
+                result.push_str(&cell_xml[abs..]);
+                return result;
+            }
+        };
+        let nested_xml = &cell_xml[abs..close_idx + "</hp:tbl>".len()];
+        let id = counter.next_id();
+        let marker = format!("[중첩 테이블 #{}]", id);
+
+        match parse_table_ctx(nested_xml, char_styles, counter, separate_out) {
+            Some(nested_table) => {
+                let is_big = nested_table.rows >= NESTED_TABLE_MIN_ROWS
+                    && nested_table.cols >= NESTED_TABLE_MIN_COLS;
+                if is_big {
+                    separate_out.push(nested_table);
+                    // Parent cell keeps only the reference — big nested is
+                    // hoisted to its own block for clean GFM rendering.
+                    result.push_str(&marker);
+                } else {
+                    // Small / layout wrapper — inline flatten under the marker
+                    // so no data is lost and the cell remains GFM-legal.
+                    let flat = flatten_table_to_text(&nested_table);
+                    result.push_str(&marker);
+                    if !flat.is_empty() {
+                        result.push(' ');
+                        result.push_str(&flat);
+                    }
+                }
+            }
+            None => {
+                // Unparseable — fall back to keeping the raw XML so downstream
+                // text extraction at least picks up the inner <hp:t> runs.
+                result.push_str(nested_xml);
+            }
+        }
+
+        pos = close_idx + "</hp:tbl>".len();
+    }
+
+    result.push_str(&cell_xml[pos..]);
+    result
+}
+
 /// Parse a single HWPX table from XML.
 ///
 /// Walks `<hp:tc>` elements collecting cell text + position metadata from
@@ -610,7 +742,27 @@ fn parse_section_xml(
 /// Without addr-based placement, mdm's HWPX parser previously rendered merged
 /// header tables with mis-aligned columns and dropped rows where the cell
 /// count didn't match `rowCnt × colCnt`.
+///
+/// Wraps `parse_table_ctx` with a fresh counter — callers who want marker
+/// numbering to stay coherent across multiple top-level tables should call
+/// `parse_table_ctx` directly and supply a shared counter.
 fn parse_table(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> Option<Table> {
+    let mut counter = NestedTableCounter::default();
+    let mut _separate = Vec::new();
+    parse_table_ctx(xml, char_styles, &mut counter, &mut _separate)
+}
+
+/// Like `parse_table` but threads a counter + out-list for nested-table
+/// hoisting. Big nested tables (≥`NESTED_TABLE_MIN_ROWS` AND ≥
+/// `NESTED_TABLE_MIN_COLS`) are appended to `separate_out`; their positions
+/// in the parent cell are replaced with `[중첩 테이블 #N]` markers. Small
+/// nested tables are flattened into the parent cell under the same marker.
+fn parse_table_ctx(
+    xml: &str,
+    char_styles: &HashMap<u32, CharStyle>,
+    counter: &mut NestedTableCounter,
+    separate_out: &mut Vec<Table>,
+) -> Option<Table> {
     let rows: usize = extract_attr(xml, "rowCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
     let cols: usize = extract_attr(xml, "colCnt").and_then(|s| s.parse().ok()).unwrap_or(0);
     if rows == 0 || cols == 0 {
@@ -677,7 +829,12 @@ fn parse_table(xml: &str, char_styles: &HashMap<u32, CharStyle>) -> Option<Table
             None => (1, 1),
         };
 
-        let text = extract_cell_text(cell_xml, char_styles);
+        // Pre-process: hoist big nested tables to `separate_out` and drop
+        // `[중첩 테이블 #N]` markers in place so the GFM-renderable cell text
+        // never contains nested pipes or newlines.
+        let cell_xml_processed =
+            preprocess_nested_tables(cell_xml, char_styles, counter, separate_out);
+        let text = extract_cell_text(&cell_xml_processed, char_styles);
         collected.push(CellMeta {
             col_addr,
             row_addr,
@@ -1900,6 +2057,128 @@ mod tests {
         assert!(!is_real_underline_type("3D")); // hypothetical future placeholder
         assert!(!is_real_underline_type(""));
         assert!(!is_real_underline_type("bottom")); // case-sensitive
+    }
+
+    #[test]
+    fn test_flatten_table_to_text() {
+        let t = Table {
+            rows: 2,
+            cols: 2,
+            cells: vec![
+                vec!["A".to_string(), "B".to_string()],
+                vec!["C".to_string(), "D".to_string()],
+            ],
+            has_header: false,
+        };
+        assert_eq!(flatten_table_to_text(&t), "A | B; C | D");
+    }
+
+    #[test]
+    fn test_flatten_table_skips_empty_cells() {
+        let t = Table {
+            rows: 2,
+            cols: 2,
+            cells: vec![
+                vec!["A".to_string(), "".to_string()],
+                vec!["".to_string(), "D".to_string()],
+            ],
+            has_header: false,
+        };
+        assert_eq!(flatten_table_to_text(&t), "A; D");
+    }
+
+    #[test]
+    fn test_preprocess_nested_tables_no_nested() {
+        // Plain cell content with no <hp:tbl>: preprocessing is a no-op.
+        let styles = HashMap::new();
+        let mut counter = NestedTableCounter::default();
+        let mut separate = Vec::new();
+        let input = "<hp:subList><hp:p><hp:run><hp:t>hello</hp:t></hp:run></hp:p></hp:subList>";
+        let out = preprocess_nested_tables(input, &styles, &mut counter, &mut separate);
+        assert_eq!(out, input);
+        assert_eq!(counter.n, 0);
+        assert!(separate.is_empty());
+    }
+
+    #[test]
+    fn test_preprocess_nested_tables_small_flattens() {
+        // 1×1 nested table should be flattened into the parent cell text
+        // under the `[중첩 테이블 #1]` marker — no separate block emitted.
+        let styles = HashMap::new();
+        let mut counter = NestedTableCounter::default();
+        let mut separate = Vec::new();
+        let cell_xml = concat!(
+            "<hp:subList>",
+            "<hp:p><hp:run><hp:t>before</hp:t></hp:run></hp:p>",
+            "<hp:tbl rowCnt=\"1\" colCnt=\"1\">",
+            "<hp:tr><hp:tc name=\"\"><hp:cellAddr colAddr=\"0\" rowAddr=\"0\"/>",
+            "<hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>inner</hp:t></hp:run></hp:p></hp:subList>",
+            "</hp:tc></hp:tr>",
+            "</hp:tbl>",
+            "<hp:p><hp:run><hp:t>after</hp:t></hp:run></hp:p>",
+            "</hp:subList>",
+        );
+        let out = preprocess_nested_tables(cell_xml, &styles, &mut counter, &mut separate);
+        assert!(
+            out.contains("[중첩 테이블 #1]"),
+            "marker should be inserted: {}",
+            out
+        );
+        assert!(
+            out.contains("inner"),
+            "small nested body should be flattened inline: {}",
+            out
+        );
+        assert!(separate.is_empty(), "small nested must NOT be hoisted");
+        assert_eq!(counter.n, 1);
+    }
+
+    #[test]
+    fn test_preprocess_nested_tables_big_hoists() {
+        // 3×2 nested table exceeds the threshold: should be hoisted into
+        // `separate_out` and the parent cell should only see the marker.
+        let styles = HashMap::new();
+        let mut counter = NestedTableCounter::default();
+        let mut separate = Vec::new();
+        let cell_xml = concat!(
+            "<hp:subList>",
+            "<hp:tbl rowCnt=\"3\" colCnt=\"2\">",
+            // row 0
+            "<hp:tr>",
+            "<hp:tc name=\"\"><hp:cellAddr colAddr=\"0\" rowAddr=\"0\"/><hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>r0c0</hp:t></hp:run></hp:p></hp:subList></hp:tc>",
+            "<hp:tc name=\"\"><hp:cellAddr colAddr=\"1\" rowAddr=\"0\"/><hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>r0c1</hp:t></hp:run></hp:p></hp:subList></hp:tc>",
+            "</hp:tr>",
+            // row 1
+            "<hp:tr>",
+            "<hp:tc name=\"\"><hp:cellAddr colAddr=\"0\" rowAddr=\"1\"/><hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>r1c0</hp:t></hp:run></hp:p></hp:subList></hp:tc>",
+            "<hp:tc name=\"\"><hp:cellAddr colAddr=\"1\" rowAddr=\"1\"/><hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>r1c1</hp:t></hp:run></hp:p></hp:subList></hp:tc>",
+            "</hp:tr>",
+            // row 2
+            "<hp:tr>",
+            "<hp:tc name=\"\"><hp:cellAddr colAddr=\"0\" rowAddr=\"2\"/><hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>r2c0</hp:t></hp:run></hp:p></hp:subList></hp:tc>",
+            "<hp:tc name=\"\"><hp:cellAddr colAddr=\"1\" rowAddr=\"2\"/><hp:cellSpan colSpan=\"1\" rowSpan=\"1\"/>",
+            "<hp:subList><hp:p><hp:run><hp:t>r2c1</hp:t></hp:run></hp:p></hp:subList></hp:tc>",
+            "</hp:tr>",
+            "</hp:tbl>",
+            "</hp:subList>",
+        );
+        let out = preprocess_nested_tables(cell_xml, &styles, &mut counter, &mut separate);
+        assert!(out.contains("[중첩 테이블 #1]"), "marker: {}", out);
+        assert!(
+            !out.contains("r0c0"),
+            "big nested body should NOT appear in parent cell text: {}",
+            out
+        );
+        assert_eq!(separate.len(), 1, "big nested should be hoisted");
+        let hoisted = &separate[0];
+        assert_eq!(hoisted.rows, 3);
+        assert_eq!(hoisted.cols, 2);
     }
 
     #[test]

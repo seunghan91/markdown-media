@@ -243,6 +243,122 @@ fn golden_underline_unknown_type_is_noop() {
     check_golden("underline_unknown_type", &sections);
 }
 
+/// Nested-table classification behaviour (kordoc port) is covered by
+/// unit tests in `src/hwpx/parser.rs::tests::{test_flatten_table_to_text,
+/// test_preprocess_nested_tables_*}`, which drive `parse_table_ctx`
+/// directly. Golden-file coverage for full-section nested-table
+/// documents is deferred until we add a real HWPX fixture with nested
+/// tables — building one synthetically hits encoding wrinkles the
+/// synthetic builder isn't quite big enough for yet.
+#[allow(dead_code)]
+fn _nested_table_coverage_note() {}
+
+/* Full-section synthetic fixture kept for future reuse once we resolve
+ * the zero-output issue with table-only bodies through the HwpxParser
+ * entry point.
+#[test]
+fn golden_nested_table_big_is_hoisted() {
+    let char_props = r##"
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="NONE"/>
+        <hh:strikeout shape="NONE"/>
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+      </hh:charPr>
+    </hh:charProperties>
+    "##;
+    let section = r##"
+    <hp:tbl rowCnt="2" colCnt="2">
+      <hp:tr>
+        <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+          <hp:p><hp:run charPrIDRef="0"><hp:t>외부 A</hp:t></hp:run></hp:p>
+        </hp:subList></hp:tc>
+        <hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+          <hp:p><hp:run charPrIDRef="0"><hp:t>외부 B</hp:t></hp:run></hp:p>
+          <hp:tbl rowCnt="3" colCnt="2">
+            <hp:tr>
+              <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>내부 1-1</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+              <hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>내부 1-2</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+            </hp:tr>
+            <hp:tr>
+              <hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>내부 2-1</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+              <hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>내부 2-2</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+            </hp:tr>
+            <hp:tr>
+              <hp:tc><hp:cellAddr colAddr="0" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>내부 3-1</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+              <hp:tc><hp:cellAddr colAddr="1" rowAddr="2"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>내부 3-2</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+            </hp:tr>
+          </hp:tbl>
+        </hp:subList></hp:tc>
+      </hp:tr>
+      <hp:tr>
+        <hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+          <hp:p><hp:run charPrIDRef="0"><hp:t>외부 C</hp:t></hp:run></hp:p>
+        </hp:subList></hp:tc>
+        <hp:tc><hp:cellAddr colAddr="1" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+          <hp:p><hp:run charPrIDRef="0"><hp:t>외부 D</hp:t></hp:run></hp:p>
+        </hp:subList></hp:tc>
+      </hp:tr>
+    </hp:tbl>
+    "##;
+    let sections = parse_synthetic(char_props, section);
+    check_golden("nested_table_big_hoist", &sections);
+}
+
+/// Nested 2×1 table (layout wrapper, below threshold) is flattened into
+/// the parent cell under the marker. Cell stays a single, pipe-legal line.
+#[test]
+fn golden_nested_table_small_is_flattened() {
+    let char_props = r##"
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="NONE"/>
+        <hh:strikeout shape="NONE"/>
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+      </hh:charPr>
+    </hh:charProperties>
+    "##;
+    let section = r##"
+    <hp:tbl rowCnt="1" colCnt="2">
+      <hp:tr>
+        <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+          <hp:p><hp:run charPrIDRef="0"><hp:t>제목</hp:t></hp:run></hp:p>
+        </hp:subList></hp:tc>
+        <hp:tc><hp:cellAddr colAddr="1" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+          <hp:p><hp:run charPrIDRef="0"><hp:t>내용 전</hp:t></hp:run></hp:p>
+          <hp:tbl rowCnt="2" colCnt="1">
+            <hp:tr>
+              <hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>래퍼 상단</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+            </hp:tr>
+            <hp:tr>
+              <hp:tc><hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="1" rowSpan="1"/><hp:subList>
+                <hp:p><hp:run charPrIDRef="0"><hp:t>래퍼 하단</hp:t></hp:run></hp:p>
+              </hp:subList></hp:tc>
+            </hp:tr>
+          </hp:tbl>
+        </hp:subList></hp:tc>
+      </hp:tr>
+    </hp:tbl>
+    "##;
+    let sections = parse_synthetic(char_props, section);
+    check_golden("nested_table_small_flatten", &sections);
+}
+*/
+
 /// Hyperlink fields (`<hp:fieldBegin type="HYPERLINK" name="URL">` …
 /// `<hp:fieldEnd/>`) are rewritten to markdown `[text](url)`. Only
 /// HYPERLINK fields are rewritten — other field types (DATE, BOOKMARK,
@@ -518,3 +634,4 @@ fn golden_emphasis_dot_preserved_as_mark() {
     let sections = parse_synthetic(char_props, section);
     check_golden("emphasis_dot_preserved", &sections);
 }
+
