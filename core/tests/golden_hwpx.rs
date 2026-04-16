@@ -243,6 +243,40 @@ fn golden_underline_unknown_type_is_noop() {
     check_golden("underline_unknown_type", &sections);
 }
 
+/// Hyperlink fields (`<hp:fieldBegin type="HYPERLINK" name="URL">` …
+/// `<hp:fieldEnd/>`) are rewritten to markdown `[text](url)`. Only
+/// HYPERLINK fields are rewritten — other field types (DATE, BOOKMARK,
+/// CROSSREF) pass their text through unchanged.
+#[test]
+fn golden_hyperlink_field_rewrite() {
+    let char_props = r##"
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="NONE"/>
+        <hh:strikeout shape="NONE"/>
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+      </hh:charPr>
+    </hh:charProperties>
+    "##;
+    let section = r##"
+    <hp:p>
+      <hp:run charPrIDRef="0">
+        <hp:t>자세한 내용은 </hp:t>
+      </hp:run>
+      <hp:fieldBegin type="HYPERLINK" name="https://www.mois.go.kr/" instId="1"/>
+      <hp:run charPrIDRef="0">
+        <hp:t>행정안전부 홈페이지</hp:t>
+      </hp:run>
+      <hp:fieldEnd type="HYPERLINK" instId="1"/>
+      <hp:run charPrIDRef="0">
+        <hp:t>를 참조.</hp:t>
+      </hp:run>
+    </hp:p>
+    "##;
+    let sections = parse_synthetic(char_props, section);
+    check_golden("hyperlink_field", &sections);
+}
+
 /// Inline equation with a single-line script is emitted as `$…$`.
 /// Hancom's script is near-LaTeX for most common cases, so round-tripping
 /// into math markdown gives LLMs something they can actually read.

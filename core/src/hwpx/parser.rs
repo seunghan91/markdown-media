@@ -1296,6 +1296,18 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
     let mut result = String::new();
     let mut pos = 0;
 
+    // Hyperlink field span state. When `<hp:fieldBegin type="HYPERLINK"
+    // name="URL">` is seen we remember the URL and the `result.len()` at
+    // that point; every run-emitted char between it and the matching
+    // `<hp:fieldEnd>` becomes the link text. The accumulated range then
+    // gets rewritten from `text` to `[text](url)` at fieldEnd.
+    //
+    // Non-hyperlink fields (DATE, BOOKMARK, CROSSREF, …) are left alone —
+    // their text is already inline in the following runs and carries
+    // itself.
+    let mut link_url: Option<String> = None;
+    let mut link_start: usize = 0;
+
     loop {
         // Find the next paragraph-level element. `<hp:run >`, `<hp:dutmal>`,
         // `<hp:footNote>`, and `<hp:endNote>` are siblings at this level; the
@@ -1308,6 +1320,8 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
         let next_equation = para_xml[pos..].find("<hp:equation").map(|i| pos + i);
         let next_header = para_xml[pos..].find("<hp:header").map(|i| pos + i);
         let next_footer = para_xml[pos..].find("<hp:footer").map(|i| pos + i);
+        let next_field_begin = para_xml[pos..].find("<hp:fieldBegin").map(|i| pos + i);
+        let next_field_end = para_xml[pos..].find("<hp:fieldEnd").map(|i| pos + i);
 
         let candidates = [
             next_run.map(|i| (i, "run")),
@@ -1317,6 +1331,8 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
             next_equation.map(|i| (i, "equation")),
             next_header.map(|i| (i, "header")),
             next_footer.map(|i| (i, "footer")),
+            next_field_begin.map(|i| (i, "fieldBegin")),
+            next_field_end.map(|i| (i, "fieldEnd")),
         ];
         let Some((abs, kind)) = candidates.iter().filter_map(|c| *c).min_by_key(|(i, _)| *i) else {
             break;
@@ -1405,6 +1421,61 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
                 result.push_str(&marker);
             }
             pos = close + close_tag.len();
+            continue;
+        }
+
+        if kind == "fieldBegin" {
+            // `<hp:fieldBegin type="HYPERLINK" name="https://…"/>` is a
+            // self-closing element that begins a hyperlink span. Other
+            // field types (DATE, CROSSREF, …) are ignored — their text is
+            // already in the following run flow.
+            let after_open = match para_xml[abs..].find('>') {
+                Some(i) => abs + i + 1,
+                None => break,
+            };
+            let tag_xml = &para_xml[abs..after_open];
+            let field_type = extract_attr(tag_xml, "type").unwrap_or_default();
+            if field_type == "HYPERLINK" {
+                if let Some(url) = extract_attr(tag_xml, "name") {
+                    link_url = Some(url);
+                    link_start = result.len();
+                }
+            }
+            pos = after_open;
+            continue;
+        }
+
+        if kind == "fieldEnd" {
+            let after_open = match para_xml[abs..].find('>') {
+                Some(i) => abs + i + 1,
+                None => break,
+            };
+            if let Some(url) = link_url.take() {
+                // Rewrite the text we accumulated since fieldBegin into a
+                // `[text](url)` markdown link. Trim leading/trailing space
+                // off the text portion so we don't swallow paragraph gaps.
+                let link_text_raw = result[link_start..].to_string();
+                let link_text = link_text_raw.trim().to_string();
+                if !link_text.is_empty() {
+                    result.truncate(link_start);
+                    // Preserve leading whitespace that was before the trim.
+                    let leading = link_text_raw
+                        .chars()
+                        .take_while(|c| c.is_whitespace())
+                        .collect::<String>();
+                    let trailing = link_text_raw
+                        .chars()
+                        .rev()
+                        .take_while(|c| c.is_whitespace())
+                        .collect::<String>();
+                    result.push_str(&leading);
+                    result.push_str(&format!("[{}]({})", link_text, url));
+                    // Append trailing whitespace in original order.
+                    let trailing: String = trailing.chars().rev().collect();
+                    result.push_str(&trailing);
+                }
+            }
+            pos = after_open;
             continue;
         }
 
