@@ -4,6 +4,7 @@
   import DropZone from '$lib/components/DropZone.svelte';
   import FidelityView from '$lib/components/FidelityView.svelte';
   import HwpEditPanel from '$lib/components/HwpEditPanel.svelte';
+  import HwpSidebar from '$lib/components/HwpSidebar.svelte';
   import NotesPanel from '$lib/components/NotesPanel.svelte';
   import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
@@ -24,6 +25,7 @@
   let notesOpen = false;
   let sidecar: SidecarNotes = { schemaVersion: 1, notes: [] };
   let hwpEditOpen = false;
+  $: isHwpSource = !!$viewerPath && /\.(hwp|hwpx)$/i.test($viewerPath);
   // Raw HWP/HWPX bytes for the fidelity (rhwp) viewer. Browser fallback
   // captures File.arrayBuffer(); Tauri path reads via plugin-fs on demand.
   let rawBytes: Uint8Array | null = null;
@@ -192,10 +194,8 @@
     <div class="header-right">
       <ViewerActions
         data={$viewerData}
-        sourcePath={$viewerPath}
         on:diff={openDiff}
         on:notes={() => (notesOpen = true)}
-        on:edit={() => (hwpEditOpen = true)}
       />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
@@ -233,14 +233,23 @@
       on:files={(event) => handleFiles(event.detail.files)}
     />
   {:else if $viewerMode === 'fidelity'}
-    <div class="viewer-body">
-      {#if error}
-        <div class="error-bar">{error}</div>
+    <div class="viewer-shell" class:has-hwp={isHwpSource}>
+      {#if isHwpSource}
+        <HwpSidebar sourcePath={$viewerPath} on:edit={() => (hwpEditOpen = true)} />
       {/if}
-      <FidelityView bytes={rawBytes} fileName={activeFileName} />
+      <div class="viewer-body">
+        {#if error}
+          <div class="error-bar">{error}</div>
+        {/if}
+        <FidelityView bytes={rawBytes} fileName={activeFileName} />
+      </div>
     </div>
   {:else}
-    <div class="viewer-body" class:split={$viewerMode === 'split'}>
+    <div class="viewer-shell" class:has-hwp={isHwpSource}>
+      {#if isHwpSource}
+        <HwpSidebar sourcePath={$viewerPath} on:edit={() => (hwpEditOpen = true)} />
+      {/if}
+      <div class="viewer-body" class:split={$viewerMode === 'split'}>
       {#if error}
         <div class="error-bar">{error}</div>
       {/if}
@@ -270,6 +279,7 @@
           ></textarea>
         </div>
       {/if}
+      </div>
     </div>
   {/if}
 </div>
@@ -342,14 +352,22 @@
     background: color-mix(in srgb, var(--color-success) 8%, transparent);
   }
 
-  .viewer-body {
-    display: grid;
-    grid-template-columns: 1fr;
+  .viewer-shell {
+    display: flex;
     min-height: 500px;
     border-radius: var(--radius-card);
     background: var(--color-bg-card);
     box-shadow: var(--card-shadow);
     border: 1px solid var(--color-separator-non-opaque);
+    overflow: hidden;
+  }
+
+  .viewer-body {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    min-height: 500px;
     overflow: hidden;
   }
 
