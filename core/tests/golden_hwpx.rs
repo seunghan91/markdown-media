@@ -243,6 +243,111 @@ fn golden_underline_unknown_type_is_noop() {
     check_golden("underline_unknown_type", &sections);
 }
 
+/// Footnote is expanded inline as `[각주: …]` right after the text it
+/// attaches to. Matches the existing `[이미지: …]` placeholder convention
+/// so all annotations share one visual grammar in the extracted markdown.
+#[test]
+fn golden_footnote_inline_expansion() {
+    let char_props = r##"
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="NONE"/>
+        <hh:strikeout shape="NONE"/>
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+      </hh:charPr>
+    </hh:charProperties>
+    "##;
+    let section = r#"
+    <hp:p>
+      <hp:run charPrIDRef="0">
+        <hp:t>주요 사항</hp:t>
+      </hp:run>
+      <hp:footNote number="1" instId="100">
+        <hp:subList>
+          <hp:p>
+            <hp:run charPrIDRef="0">
+              <hp:t>근거: 공공기관 운영에 관한 법률 제2조.</hp:t>
+            </hp:run>
+          </hp:p>
+        </hp:subList>
+      </hp:footNote>
+      <hp:run charPrIDRef="0">
+        <hp:t>은 다음과 같다.</hp:t>
+      </hp:run>
+    </hp:p>
+    "#;
+    let sections = parse_synthetic(char_props, section);
+    check_golden("footnote_inline", &sections);
+}
+
+/// Endnote uses "미주" label instead of "각주" but is otherwise identical.
+#[test]
+fn golden_endnote_inline_expansion() {
+    let char_props = r##"
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="NONE"/>
+        <hh:strikeout shape="NONE"/>
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+      </hh:charPr>
+    </hh:charProperties>
+    "##;
+    let section = r#"
+    <hp:p>
+      <hp:run charPrIDRef="0">
+        <hp:t>본 보고서</hp:t>
+      </hp:run>
+      <hp:endNote number="1" instId="200">
+        <hp:subList>
+          <hp:p>
+            <hp:run charPrIDRef="0">
+              <hp:t>2026년 1분기 재정자료 참고.</hp:t>
+            </hp:run>
+          </hp:p>
+        </hp:subList>
+      </hp:endNote>
+      <hp:run charPrIDRef="0">
+        <hp:t>의 자료는 확정치이다.</hp:t>
+      </hp:run>
+    </hp:p>
+    "#;
+    let sections = parse_synthetic(char_props, section);
+    check_golden("endnote_inline", &sections);
+}
+
+/// Ruby (덧말 / 루비) annotation preserved as parenthetical. Base text
+/// is in a sibling `<hp:run>` and must NOT be duplicated by the dutmal
+/// mainText scan.
+#[test]
+fn golden_ruby_annotation_parenthetical() {
+    let char_props = r##"
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1000">
+        <hh:underline type="NONE"/>
+        <hh:strikeout shape="NONE"/>
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+      </hh:charPr>
+    </hh:charProperties>
+    "##;
+    // HWPX dutmal: mainText duplicated in flow, subText is the annotation.
+    let section = r#"
+    <hp:p>
+      <hp:run charPrIDRef="0">
+        <hp:t>한자</hp:t>
+      </hp:run>
+      <hp:dutmal posType="TOP" align="CENTER">
+        <hp:mainText><hp:t>한자</hp:t></hp:mainText>
+        <hp:subText><hp:t>hanja</hp:t></hp:subText>
+      </hp:dutmal>
+      <hp:run charPrIDRef="0">
+        <hp:t>는 중요합니다.</hp:t>
+      </hp:run>
+    </hp:p>
+    "#;
+    let sections = parse_synthetic(char_props, section);
+    check_golden("ruby_annotation", &sections);
+}
+
 /// Emphasis dot (강조점) is preserved as `<mark>...</mark>` — Korean
 /// government documents lean on this to highlight key terms.
 #[test]

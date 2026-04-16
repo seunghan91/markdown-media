@@ -831,23 +831,47 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
     let mut pos = 0;
 
     while pos < xml.len() {
-        // Find next <hp:run>
+        // Find the next paragraph-level element we care about: <hp:run> or
+        // <hp:dutmal> (ruby annotation). Whichever comes first wins.
         let run_start = xml[pos..].find("<hp:run").map(|i| pos + i);
-        let Some(run_abs) = run_start else { break; };
+        let dutmal_start = xml[pos..].find("<hp:dutmal").map(|i| pos + i);
 
-        // Find end of opening tag
-        let after_open = match xml[run_abs..].find('>') {
-            Some(i) => run_abs + i + 1,
+        let next = match (run_start, dutmal_start) {
+            (Some(r), Some(d)) if d < r => ("dutmal", d),
+            (Some(r), _) => ("run", r),
+            (None, Some(d)) => ("dutmal", d),
+            (None, None) => break,
+        };
+
+        let abs = next.1;
+        let after_open = match xml[abs..].find('>') {
+            Some(i) => abs + i + 1,
             None => break,
         };
 
+        if next.0 == "dutmal" {
+            // <hp:dutmal>...</hp:dutmal>  — ruby wrapper at paragraph level.
+            // subText becomes a parenthetical annotation appended to the
+            // preceding run's output (which is already in `out`).
+            let close = match xml[after_open..].find("</hp:dutmal>") {
+                Some(i) => after_open + i,
+                None => break,
+            };
+            let inner = &xml[after_open..close];
+            if let Some(annotation) = extract_dutmal_annotation(inner) {
+                out.push_str(&annotation);
+            }
+            pos = close + 12; // len("</hp:dutmal>")
+            continue;
+        }
+
         // Self-closing <hp:run .../> — skip
-        if xml[run_abs..after_open].ends_with('/') {
+        if xml[abs..after_open].ends_with('/') {
             pos = after_open;
             continue;
         }
 
-        let open_tag = &xml[run_abs..after_open];
+        let open_tag = &xml[abs..after_open];
 
         // Lookup charPrIDRef → char_styles for bold/italic
         let style = extract_attr(open_tag, "charPrIDRef")
@@ -882,6 +906,93 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
     out
 }
 
+/// Extract inline footnote / endnote content as `[각주: ...]` /
+/// `[미주: ...]` markers appended at the position of the reference.
+///
+/// HWPX represents footnotes/endnotes as controls attached to paragraphs:
+///
+///   <hp:ctrl>
+///     <hp:footNote number="1" instId="..." suffixChar="">
+///       <hp:subList>
+///         <hp:p><hp:run><hp:t>각주 본문</hp:t></hp:run></hp:p>
+///       </hp:subList>
+///     </hp:footNote>
+///   </hp:ctrl>
+///
+/// For LLM consumption and search, inline expansion is more useful than
+/// a pandoc-style `[^N]`/`[^N]: ...` pair — the annotation stays local to
+/// the paragraph that owns it. This matches the existing `[이미지: ...]`
+/// placeholder convention already used for embedded images.
+///
+/// Returns `Some("[각주: body]")` when a subList paragraph is found,
+/// else `None`. The label argument is "각주" (footnote) or "미주" (endnote).
+fn extract_note_content(note_inner: &str, label: &str) -> Option<String> {
+    // subList contains one or more <hp:p> paragraphs; concatenate their text.
+    let sublist_start = note_inner.find("<hp:subList")?;
+    let after_open = sublist_start + note_inner[sublist_start..].find('>')? + 1;
+    let sublist_close = after_open + note_inner[after_open..].find("</hp:subList>")?;
+    let sublist_xml = &note_inner[after_open..sublist_close];
+
+    let mut body = String::new();
+    let mut pos = 0;
+    while let Some(p_rel) = sublist_xml[pos..].find("<hp:p") {
+        let p_start = pos + p_rel;
+        let p_open_end = match sublist_xml[p_start..].find('>') {
+            Some(i) => p_start + i + 1,
+            None => break,
+        };
+        let p_close = match sublist_xml[p_open_end..].find("</hp:p>") {
+            Some(i) => p_open_end + i,
+            None => break,
+        };
+        let p_inner = &sublist_xml[p_open_end..p_close];
+        let p_text = extract_runs_text(p_inner);
+        if !p_text.trim().is_empty() {
+            if !body.is_empty() {
+                body.push(' ');
+            }
+            body.push_str(p_text.trim());
+        }
+        pos = p_close + 7;
+    }
+
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("[{}: {}]", label, trimmed))
+    }
+}
+
+/// Extract the `<hp:subText>...</hp:subText>` content of an `<hp:dutmal>`
+/// element and emit it as a parenthetical ruby annotation.
+///
+/// HWPX represents 덧말(ruby) via `<hp:dutmal>` at paragraph level. The
+/// element contains two children:
+///   - `<hp:mainText>` — the base text, already duplicated in the
+///     surrounding `<hp:run>` flow (rhwp confirms this). We skip it to
+///     avoid double-emission.
+///   - `<hp:subText>`  — the ruby annotation (reading / hanja / gloss).
+///
+/// Korean markdown convention for ruby is parenthetical: `한자(hanja)`.
+/// This preserves the annotation for LLM consumption without fragile
+/// HTML ruby tags, and matches how human authors transcribe these
+/// documents. Returns `Some(" (sub)")` when subText is present, else `None`.
+fn extract_dutmal_annotation(dutmal_inner: &str) -> Option<String> {
+    let sub_start = dutmal_inner.find("<hp:subText")?;
+    let after_open = sub_start + dutmal_inner[sub_start..].find('>')? + 1;
+    let sub_close = after_open + dutmal_inner[after_open..].find("</hp:subText>")?;
+    let sub_xml = &dutmal_inner[after_open..sub_close];
+    // Reuse extract_runs_text to pull <hp:t> contents out of subText.
+    let sub_text = extract_runs_text(sub_xml);
+    let trimmed = sub_text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("({})", trimmed))
+    }
+}
+
 /// Walk every `<hp:t>` run inside a fragment, decode XML entities, also pick up
 /// `<hp:drawText>...</hp:drawText>` textbox bodies recursively, plus
 /// `<hp:pic>` / `<hp:img>` references which become `[이미지: imageN]` markers.
@@ -897,6 +1008,10 @@ fn extract_runs_text(xml: &str) -> String {
         let dt2 = xml[pos..].find("<hp:drawText ");
         let tab = xml[pos..].find("<hp:tab/>");
         let lb = xml[pos..].find("<hp:lineBreak/>");
+        // Ruby / 덧말 — treat as a single unit; we skip mainText (already
+        // in the surrounding run flow) and emit subText as parenthetical.
+        let dm1 = xml[pos..].find("<hp:dutmal>");
+        let dm2 = xml[pos..].find("<hp:dutmal ");
         // Image references: hc:img carries binaryItemIDRef. It usually lives
         // inside an <hp:pic> wrapper but kordoc just emits one marker per
         // hc:img occurrence regardless of wrapper.
@@ -908,6 +1023,8 @@ fn extract_runs_text(xml: &str) -> String {
             t2.map(|i| (i, "t")),
             dt1.map(|i| (i, "dt")),
             dt2.map(|i| (i, "dt")),
+            dm1.map(|i| (i, "dm")),
+            dm2.map(|i| (i, "dm")),
             tab.map(|i| (i, "tab")),
             lb.map(|i| (i, "lb")),
             img1.map(|i| (i, "img")),
@@ -956,6 +1073,22 @@ fn extract_runs_text(xml: &str) -> String {
                     out.push_str(inner_text.trim());
                 }
                 pos = close + 14;
+            }
+            "dm" => {
+                // <hp:dutmal> ... </hp:dutmal>  — ruby annotation wrapper
+                let after_open = match xml[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let close = match xml[after_open..].find("</hp:dutmal>") {
+                    Some(i) => after_open + i,
+                    None => break,
+                };
+                let inner = &xml[after_open..close];
+                if let Some(annotation) = extract_dutmal_annotation(inner) {
+                    out.push_str(&annotation);
+                }
+                pos = close + 12; // len("</hp:dutmal>")
             }
             "tab" => {
                 out.push('\t');
@@ -1011,6 +1144,58 @@ fn extract_attr(xml: &str, attr: &str) -> Option<String> {
 ///
 /// When `heading_styles` contains a mapping for the paragraph's `styleIDRef`,
 /// the paragraph text is prefixed with the appropriate number of `#` markers.
+/// Depth-aware locator for the `</hp:p>` that closes the currently open
+/// paragraph starting just past `from`. Needed because paragraphs can
+/// nest — `<hp:footNote>` / `<hp:endNote>` / `<hp:tc>` each carry their
+/// own `<hp:subList>` with inner `<hp:p>` elements. Naive substring search
+/// for `</hp:p>` would grab the first inner close, truncating the outer
+/// paragraph.
+///
+/// `find_matching_close` exists but uses substring matching for the
+/// opening token, which would count `<hp:pic>` / `<hp:pageHide>` as
+/// paragraph openings. This helper checks the character following
+/// `<hp:p` to distinguish real paragraph opens.
+fn find_matching_close_para(xml: &str, from: usize) -> Option<usize> {
+    let mut depth: usize = 1;
+    let mut scan = from;
+    while scan < xml.len() && depth > 0 {
+        // Next real `<hp:p>` / `<hp:p ` opening (skip `<hp:pic>` etc).
+        let next_open: Option<usize> = {
+            let mut search_from = scan;
+            loop {
+                match xml[search_from..].find("<hp:p") {
+                    Some(rel) => {
+                        let abs = search_from + rel;
+                        let next_char = xml[abs + 5..].chars().next();
+                        if matches!(next_char, Some('>') | Some(' ')) {
+                            break Some(abs);
+                        }
+                        // False positive (pic/pageHide/...) — advance past it.
+                        search_from = abs + 5;
+                    }
+                    None => break None,
+                }
+            }
+        };
+        let next_close = xml[scan..].find("</hp:p>").map(|i| scan + i);
+        match (next_open, next_close) {
+            (Some(o), Some(c)) if o < c => {
+                depth += 1;
+                scan = o + 5; // past "<hp:p"
+            }
+            (_, Some(c)) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(c);
+                }
+                scan = c + 7; // past "</hp:p>"
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn extract_text_with_formatting(
     xml: &str,
     char_styles: &HashMap<u32, CharStyle>,
@@ -1019,45 +1204,56 @@ fn extract_text_with_formatting(
     let mut result = String::new();
     let mut pos = 0;
 
-    // Process paragraph by paragraph
+    // Process paragraph by paragraph. We scan for `<hp:p` opening and use
+    // depth-aware matching to find the paired `</hp:p>` — naive substring
+    // matching would be fooled by nested `<hp:p>` inside `<hp:footNote>` /
+    // `<hp:endNote>` subLists.
     while let Some(p_start) = xml[pos..].find("<hp:p") {
         let p_pos = pos + p_start;
 
-        // Find the end of paragraph
-        if let Some(p_end) = xml[p_pos..].find("</hp:p>") {
-            let para_xml = &xml[p_pos..p_pos + p_end + 7];
-
-            // Check for heading via styleIDRef on the <hp:p> tag
-            let heading_level = extract_attr(para_xml, "styleIDRef")
-                .and_then(|id_str| id_str.parse::<u32>().ok())
-                .and_then(|id| heading_styles.get(&id).copied())
-                .unwrap_or(0);
-
-            // Extract runs from this paragraph
-            let para_text = extract_runs_with_formatting(para_xml, char_styles);
-            if !para_text.is_empty() {
-                if heading_level > 0 && heading_level <= 7 {
-                    // Ensure blank line before heading for proper Markdown rendering
-                    if !result.is_empty() && !result.ends_with('\n') {
-                        result.push('\n');
-                    }
-                    for _ in 0..heading_level {
-                        result.push('#');
-                    }
-                    result.push(' ');
-                    // Strip bold markers from heading text (headings are inherently prominent)
-                    let clean_heading = para_text.trim().replace("**", "");
-                    result.push_str(&clean_heading);
-                } else {
-                    result.push_str(&para_text);
-                }
-                result.push('\n');
-            }
-
-            pos = p_pos + p_end + 7;
-        } else {
-            break;
+        // Confirm this is a real `<hp:p` opening (not `<hp:pic>` etc).
+        let after_tag_start = p_pos + 5;
+        let ch = xml[after_tag_start..].chars().next();
+        if !matches!(ch, Some('>') | Some(' ')) {
+            pos = after_tag_start;
+            continue;
         }
+
+        let p_close = match find_matching_close_para(xml, after_tag_start) {
+            Some(idx) => idx,
+            None => break,
+        };
+
+        let para_xml = &xml[p_pos..p_close + 7];
+
+        // Check for heading via styleIDRef on the <hp:p> tag
+        let heading_level = extract_attr(para_xml, "styleIDRef")
+            .and_then(|id_str| id_str.parse::<u32>().ok())
+            .and_then(|id| heading_styles.get(&id).copied())
+            .unwrap_or(0);
+
+        // Extract runs from this paragraph
+        let para_text = extract_runs_with_formatting(para_xml, char_styles);
+        if !para_text.is_empty() {
+            if heading_level > 0 && heading_level <= 7 {
+                // Ensure blank line before heading for proper Markdown rendering
+                if !result.is_empty() && !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                for _ in 0..heading_level {
+                    result.push('#');
+                }
+                result.push(' ');
+                // Strip bold markers from heading text (headings are inherently prominent)
+                let clean_heading = para_text.trim().replace("**", "");
+                result.push_str(&clean_heading);
+            } else {
+                result.push_str(&para_text);
+            }
+            result.push('\n');
+        }
+
+        pos = p_close + 7;
     }
 
     result
@@ -1068,8 +1264,69 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
     let mut result = String::new();
     let mut pos = 0;
 
-    while let Some(run_start) = para_xml[pos..].find("<hp:run ") {
-        let run_pos = pos + run_start;
+    loop {
+        // Find the next paragraph-level element. `<hp:run >`, `<hp:dutmal>`,
+        // `<hp:footNote>`, and `<hp:endNote>` are siblings at this level; the
+        // earliest wins. Notes and ruby both annotate surrounding text so we
+        // emit their content inline right after whatever precedes them.
+        let next_run = para_xml[pos..].find("<hp:run ").map(|i| pos + i);
+        let next_dutmal = para_xml[pos..].find("<hp:dutmal").map(|i| pos + i);
+        let next_footnote = para_xml[pos..].find("<hp:footNote").map(|i| pos + i);
+        let next_endnote = para_xml[pos..].find("<hp:endNote").map(|i| pos + i);
+
+        let candidates = [
+            next_run.map(|i| (i, "run")),
+            next_dutmal.map(|i| (i, "dutmal")),
+            next_footnote.map(|i| (i, "footnote")),
+            next_endnote.map(|i| (i, "endnote")),
+        ];
+        let Some((abs, kind)) = candidates.iter().filter_map(|c| *c).min_by_key(|(i, _)| *i) else {
+            break;
+        };
+
+        if kind == "dutmal" {
+            let after_open = match para_xml[abs..].find('>') {
+                Some(i) => abs + i + 1,
+                None => break,
+            };
+            let close = match para_xml[after_open..].find("</hp:dutmal>") {
+                Some(i) => after_open + i,
+                None => break,
+            };
+            let inner = &para_xml[after_open..close];
+            if let Some(annotation) = extract_dutmal_annotation(inner) {
+                result.push_str(&annotation);
+            }
+            pos = close + 12; // len("</hp:dutmal>")
+            continue;
+        }
+
+        if kind == "footnote" || kind == "endnote" {
+            let (close_tag, label) = if kind == "footnote" {
+                ("</hp:footNote>", "각주")
+            } else {
+                ("</hp:endNote>", "미주")
+            };
+            let after_open = match para_xml[abs..].find('>') {
+                Some(i) => abs + i + 1,
+                None => break,
+            };
+            let close = match para_xml[after_open..].find(close_tag) {
+                Some(i) => after_open + i,
+                None => break,
+            };
+            let inner = &para_xml[after_open..close];
+            if let Some(marker) = extract_note_content(inner, label) {
+                if !result.is_empty() && !result.ends_with(char::is_whitespace) {
+                    result.push(' ');
+                }
+                result.push_str(&marker);
+            }
+            pos = close + close_tag.len();
+            continue;
+        }
+
+        let run_pos = abs;
 
         // Get charPrIDRef attribute
         let run_tag_end = para_xml[run_pos..].find('>').unwrap_or(0);
