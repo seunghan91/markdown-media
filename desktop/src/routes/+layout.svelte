@@ -15,6 +15,7 @@
     if (pathname.startsWith('/viewer')) return 'viewer';
     if (pathname.startsWith('/batch')) return 'batch';
     if (pathname.startsWith('/export')) return 'export';
+    if (pathname.startsWith('/hwp-edit')) return 'hwp-edit';
     return 'convert';
   };
 

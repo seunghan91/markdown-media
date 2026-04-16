@@ -3,9 +3,8 @@
   import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
   import FidelityView from '$lib/components/FidelityView.svelte';
-  import HwpEditPanel from '$lib/components/HwpEditPanel.svelte';
-  import HwpSidebar from '$lib/components/HwpSidebar.svelte';
   import NotesPanel from '$lib/components/NotesPanel.svelte';
+  import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
   import { setViewerMode, viewerData, viewerMode, viewerPath } from '$lib/stores/viewer';
   import { openFile, markdownToHtml, pickFileWithDialog } from '$lib/utils/ipc';
@@ -23,12 +22,6 @@
   let diffRightTitle = '변경';
   let notesOpen = false;
   let sidecar: SidecarNotes = { schemaVersion: 1, notes: [] };
-  $: isHwpSource = !!$viewerPath && /\.(hwp|hwpx)$/i.test($viewerPath);
-  let hwpEditOpen = false;
-
-  function enterHwpEditor() {
-    if (isHwpSource) hwpEditOpen = true;
-  }
   // Raw HWP/HWPX bytes for the fidelity (rhwp) viewer. Browser fallback
   // captures File.arrayBuffer(); Tauri path reads via plugin-fs on demand.
   let rawBytes: Uint8Array | null = null;
@@ -195,15 +188,14 @@
       <p class="file-desc">렌더, 나란히, 소스 보기 모드를 전환할 수 있습니다.</p>
     </div>
     <div class="header-right">
+      <ViewerActions
+        data={$viewerData}
+        on:diff={openDiff}
+        on:notes={() => (notesOpen = true)}
+      />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
   </div>
-
-  <HwpEditPanel
-    open={hwpEditOpen}
-    sourcePath={$viewerPath}
-    on:close={() => (hwpEditOpen = false)}
-  />
 
   {#if diffResult}
     <DiffPanel
@@ -231,31 +223,14 @@
       on:files={(event) => handleFiles(event.detail.files)}
     />
   {:else if $viewerMode === 'fidelity'}
-    <div class="viewer-shell">
-      <HwpSidebar
-        data={$viewerData}
-        sourcePath={$viewerPath}
-        on:diff={openDiff}
-        on:notes={() => (notesOpen = true)}
-        on:editHwp={enterHwpEditor}
-      />
-      <div class="viewer-body">
-        {#if error}
-          <div class="error-bar">{error}</div>
-        {/if}
-        <FidelityView bytes={rawBytes} fileName={activeFileName} />
-      </div>
+    <div class="viewer-body">
+      {#if error}
+        <div class="error-bar">{error}</div>
+      {/if}
+      <FidelityView bytes={rawBytes} fileName={activeFileName} />
     </div>
   {:else}
-    <div class="viewer-shell">
-      <HwpSidebar
-        data={$viewerData}
-        sourcePath={$viewerPath}
-        on:diff={openDiff}
-        on:notes={() => (notesOpen = true)}
-        on:editHwp={enterHwpEditor}
-      />
-      <div class="viewer-body" class:split={$viewerMode === 'split'}>
+    <div class="viewer-body" class:split={$viewerMode === 'split'}>
       {#if error}
         <div class="error-bar">{error}</div>
       {/if}
@@ -285,7 +260,6 @@
           ></textarea>
         </div>
       {/if}
-      </div>
     </div>
   {/if}
 </div>
@@ -358,19 +332,13 @@
     background: color-mix(in srgb, var(--color-success) 8%, transparent);
   }
 
-  .viewer-shell {
-    display: flex;
-    min-height: 500px;
+  .viewer-body {
+    flex: 1;
+    min-width: 0;
     border-radius: var(--radius-card);
     background: var(--color-bg-card);
     box-shadow: var(--card-shadow);
     border: 1px solid var(--color-separator-non-opaque);
-    overflow: hidden;
-  }
-
-  .viewer-body {
-    flex: 1;
-    min-width: 0;
     display: grid;
     grid-template-columns: 1fr;
     min-height: 500px;

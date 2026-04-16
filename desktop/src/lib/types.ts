@@ -1,4 +1,4 @@
-export type AppMode = 'convert' | 'viewer' | 'batch' | 'export';
+export type AppMode = 'convert' | 'viewer' | 'batch' | 'export' | 'hwp-edit';
 export type ViewerMode = 'render' | 'split' | 'source' | 'fidelity';
 export type ExportFormat = 'md' | 'docx' | 'hwpx' | 'pdf';
 
