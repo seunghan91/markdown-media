@@ -1,6 +1,7 @@
 <script lang="ts">
   import DiffPanel from '$lib/components/DiffPanel.svelte';
   import DropZone from '$lib/components/DropZone.svelte';
+  import NotesPanel from '$lib/components/NotesPanel.svelte';
   import StatsPanel from '$lib/components/StatsPanel.svelte';
   import ViewerActions from '$lib/components/ViewerActions.svelte';
   import ViewerToggle from '$lib/components/ViewerToggle.svelte';
@@ -9,6 +10,7 @@
   import type { ViewerData } from '$lib/types';
   import { computeStats, type DocumentStats } from '$lib/utils/markdownStats';
   import { diffLines, type DiffResult } from '$lib/utils/markdownDiff';
+  import { loadNotes, saveNotes, type SidecarNotes } from '$lib/utils/notesStore';
 
   let loading = false;
   let error = '';
@@ -19,6 +21,16 @@
   let diffOpen = false;
   let diffResult: DiffResult | null = null;
   let diffRightTitle = '변경';
+  let notesOpen = false;
+  let sidecar: SidecarNotes = { schemaVersion: 1, notes: [] };
+
+  // Reload sidecar whenever the active document changes. The document key
+  // is the real path when available, otherwise the title — good enough for
+  // v1 before we wire the Tauri fs backend.
+  $: if ($viewerData) {
+    const key = $viewerPath ?? $viewerData.metadata.title ?? 'unnamed';
+    sidecar = loadNotes(key);
+  }
 
   $: if ($viewerData) {
     sourceMarkdown = $viewerData.markdown;
@@ -115,6 +127,15 @@
       loading = false;
     }
   }
+
+  function currentDocumentKey(): string {
+    return $viewerPath ?? $viewerData?.metadata.title ?? 'unnamed';
+  }
+
+  function onNotesChange(next: SidecarNotes) {
+    sidecar = next;
+    saveNotes(currentDocumentKey(), next);
+  }
 </script>
 
 <div class="viewer-page">
@@ -124,7 +145,12 @@
       <p class="file-desc">렌더, 나란히, 소스 보기 모드를 전환할 수 있습니다.</p>
     </div>
     <div class="header-right">
-      <ViewerActions data={$viewerData} on:stats={openStats} on:diff={openDiff} />
+      <ViewerActions
+        data={$viewerData}
+        on:stats={openStats}
+        on:diff={openDiff}
+        on:notes={() => (notesOpen = true)}
+      />
       <ViewerToggle mode={$viewerMode} on:change={(event) => setViewerMode(event.detail)} />
     </div>
   </div>
@@ -142,6 +168,14 @@
       on:close={() => (diffOpen = false)}
     />
   {/if}
+
+  <NotesPanel
+    open={notesOpen}
+    documentTitle={activeFileName}
+    {sidecar}
+    on:close={() => (notesOpen = false)}
+    on:change={(e) => onNotesChange(e.detail)}
+  />
 
   {#if !$viewerData}
     <DropZone

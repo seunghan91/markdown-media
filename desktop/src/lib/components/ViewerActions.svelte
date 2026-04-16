@@ -7,6 +7,7 @@
   const dispatch = createEventDispatcher<{
     stats: void;
     diff: void;
+    notes: void;
     copied: { kind: 'markdown' | 'html' };
     exported: { format: 'json' | 'html' | 'txt' };
   }>();
@@ -129,6 +130,26 @@
       <path d="M13 17l3 4 3-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none" />
     </svg>
     <span>비교</span>
+  </button>
+
+  <button
+    type="button"
+    class="action-btn"
+    disabled={!data}
+    on:click={() => dispatch('notes')}
+    aria-label="메모"
+    title="원본은 그대로, 사이드카에 메모를 저장"
+  >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M20 12l-6 6H5a1 1 0 01-1-1V5a1 1 0 011-1h14a1 1 0 011 1v7z"
+        stroke="currentColor"
+        stroke-width="1.6"
+        stroke-linejoin="round"
+      />
+      <path d="M14 18v-6h6" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+    </svg>
+    <span>메모</span>
   </button>
 
   <div class="export-wrapper">
