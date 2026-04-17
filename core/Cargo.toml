@@ -34,7 +34,7 @@ encoding_rs = "0.8"
 image = { version = "0.25", optional = true }
 resvg = { version = "0.44", optional = true }
 base64 = "0.22"
-pdf-extract = { version = "0.7", optional = true }
+pdf-extract = { version = "0.10", optional = true }
 lopdf = { version = "0.34", optional = true }
 quick-xml = "0.31"
 thiserror = "2.0"
@@ -75,7 +75,10 @@ path = "src/main.rs"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+# panic = "unwind" required so catch_unwind can intercept pdf-extract's
+# CJK CID-font assertions (Identity-V, UniKS-UTF16-H) and fall back to
+# pdftotext. Binary is slightly larger vs "abort" but correctness wins.
+panic = "unwind"
 strip = true
 
 [profile.release-wasm]

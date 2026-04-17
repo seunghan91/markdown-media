@@ -1099,6 +1099,220 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
 /// Returns `Some("$$ script $$")` when a non-empty script is present,
 /// else `None`. Uses a single-line `$...$` when the script has no newline
 /// so short inline equations don't create stray paragraph breaks.
+/// Walk a `<hp:run>` body and extract inline text + nested ctrl / equation
+/// markers. This is the replacement for the linear `<hp:t>` scanner that used
+/// to live in `extract_paragraph_text_with_hyperlinks`. It handles:
+///
+///   - `<hp:t>`                → decoded text
+///   - `<hp:lineBreak/>`       → newline
+///   - `<hp:tab.../>`          → tab (width-attributed form too)
+///   - `<hp:fwSpace/>`         → fixed-width space
+///   - `<hc:img binaryItemIDRef="…"/>` → `[이미지: id]`
+///   - `<hp:ctrl>…</hp:ctrl>`  → dispatch on inner element:
+///       - `<hp:footNote>`     → `[각주: body]`
+///       - `<hp:endNote>`      → `[미주: body]`
+///       - `<hp:header>`       → `[머리말: body]`
+///       - `<hp:footer>`       → `[꼬리말: body]`
+///       - `<hp:bookmark>`     → (skip — invisible anchor)
+///       - other               → (skip — colPr, autoNum number, etc.)
+///   - `<hp:equation>…</hp:equation>` → `$…$` / `$$…$$`
+///   - nested `<hp:run>…</hp:run>` → SKIP (processed as part of the ctrl
+///     that contains it; don't leak its `<hp:t>` content into the outer run)
+fn walk_run_body(body: &str) -> String {
+    let mut out = String::new();
+    let mut pos = 0;
+    while pos < body.len() {
+        // Find earliest relevant element
+        let t1 = body[pos..].find("<hp:t>").map(|i| (pos + i, "t"));
+        let t2 = body[pos..].find("<hp:t ").map(|i| (pos + i, "t_attr"));
+        let tself = body[pos..].find("<hp:t/>").map(|i| (pos + i, "t_self"));
+        let lb1 = body[pos..].find("<hp:lineBreak/>").map(|i| (pos + i, "lb"));
+        let lb2 = body[pos..].find("<hp:lineBreak ").map(|i| (pos + i, "lb_attr"));
+        let tab = body[pos..].find("<hp:tab/>").map(|i| (pos + i, "tab"));
+        let tab2 = body[pos..].find("<hp:tab ").map(|i| (pos + i, "tab_attr"));
+        let fws = body[pos..].find("<hp:fwSpace").map(|i| (pos + i, "fws"));
+        let img = body[pos..].find("<hc:img ").map(|i| (pos + i, "img"));
+        let ctrl = body[pos..].find("<hp:ctrl>").map(|i| (pos + i, "ctrl"));
+        let ctrl2 = body[pos..].find("<hp:ctrl ").map(|i| (pos + i, "ctrl_attr"));
+        let eq1 = body[pos..].find("<hp:equation>").map(|i| (pos + i, "eq"));
+        let eq2 = body[pos..].find("<hp:equation ").map(|i| (pos + i, "eq_attr"));
+        let nested_run = body[pos..].find("<hp:run ").map(|i| (pos + i, "nested_run"));
+        let nested_run2 = body[pos..].find("<hp:run>").map(|i| (pos + i, "nested_run"));
+
+        let candidates = [
+            t1, t2, tself, lb1, lb2, tab, tab2, fws, img, ctrl, ctrl2, eq1, eq2,
+            nested_run, nested_run2,
+        ];
+        let Some((abs, kind)) = candidates.iter().filter_map(|c| *c).min_by_key(|(i, _)| *i) else {
+            break;
+        };
+
+        match kind {
+            "t" | "t_attr" => {
+                // skip to '>'
+                let after_open = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                if let Some(end_rel) = body[after_open..].find("</hp:t>") {
+                    let text = &body[after_open..after_open + end_rel];
+                    let text = text.replace("<hp:lineBreak/>", "\n");
+                    let text = text.replace("<hp:lineBreak />", "\n");
+                    let text = text.replace("<hp:tab/>", "\t");
+                    let text = replace_attributed_tab(&text);
+                    // Decode XML entities (&lt; &gt; &amp; etc) — law.go.kr
+                    // embeds literal entity refs in <hp:t> for amendment
+                    // markers like "<개정 2014. 3. 24.>".
+                    out.push_str(&decode_xml_entities(&text));
+                    pos = after_open + end_rel + 7;
+                } else {
+                    break;
+                }
+            }
+            "t_self" => {
+                pos = abs + 7; // len("<hp:t/>")
+            }
+            "lb" => {
+                out.push('\n');
+                pos = abs + 15; // len("<hp:lineBreak/>")
+            }
+            "lb_attr" => {
+                out.push('\n');
+                pos = match body[abs..].find("/>") {
+                    Some(i) => abs + i + 2,
+                    None => break,
+                };
+            }
+            "tab" => {
+                out.push('\t');
+                pos = abs + 9;
+            }
+            "tab_attr" => {
+                out.push('\t');
+                pos = match body[abs..].find("/>") {
+                    Some(i) => abs + i + 2,
+                    None => break,
+                };
+            }
+            "fws" => {
+                out.push(' ');
+                pos = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+            }
+            "img" => {
+                let after = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let tag = &body[abs..after];
+                if let Some(id) = extract_attr(tag, "binaryItemIDRef") {
+                    if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                        out.push(' ');
+                    }
+                    out.push_str(&format!("[이미지: {}]", id));
+                }
+                pos = after;
+            }
+            "ctrl" | "ctrl_attr" => {
+                // Find matching </hp:ctrl> — find_matching_close scans from
+                // `from`; callers must pass the position AFTER the opening tag.
+                let scan_from = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let close = match find_matching_close(body, scan_from, "<hp:ctrl>", "</hp:ctrl>") {
+                    Some(c) => c,
+                    None => break,
+                };
+                let body_start = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let ctrl_inner = &body[body_start..close];
+                if let Some(marker) = extract_ctrl_marker(ctrl_inner) {
+                    if !out.is_empty() && !out.ends_with(char::is_whitespace)
+                        && !marker.starts_with(' ') && !marker.starts_with('\n')
+                    {
+                        out.push(' ');
+                    }
+                    out.push_str(&marker);
+                }
+                pos = close + 10; // len("</hp:ctrl>")
+            }
+            "eq" | "eq_attr" => {
+                let close = match body[abs..].find("</hp:equation>") {
+                    Some(i) => abs + i,
+                    None => break,
+                };
+                let body_start = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let eq_inner = &body[body_start..close];
+                if let Some(block) = extract_equation_markdown(eq_inner) {
+                    out.push_str(&block);
+                }
+                pos = close + 14; // len("</hp:equation>")
+            }
+            "nested_run" => {
+                // Skip entire nested run — its content belongs to the
+                // containing ctrl (footnote/endnote subList) and has
+                // already been emitted via the ctrl marker.
+                let scan_from = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let close = match find_matching_close(body, scan_from, "<hp:run ", "</hp:run>") {
+                    Some(c) => c,
+                    None => break,
+                };
+                pos = close + 9;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Dispatch on the element inside `<hp:ctrl>` and return its markdown marker.
+/// Returns None for ctrls that don't produce visible output (bookmark, colPr,
+/// autoNum metadata, etc.).
+fn extract_ctrl_marker(ctrl_inner: &str) -> Option<String> {
+    // Order matters: check the most distinctive elements first
+    if let Some(fn_pos) = ctrl_inner.find("<hp:footNote") {
+        if let Some(close_rel) = ctrl_inner[fn_pos..].find("</hp:footNote>") {
+            let body_start = fn_pos + ctrl_inner[fn_pos..].find('>')? + 1;
+            let inner = &ctrl_inner[body_start..fn_pos + close_rel];
+            return extract_note_content(inner, "각주");
+        }
+    }
+    if let Some(en_pos) = ctrl_inner.find("<hp:endNote") {
+        if let Some(close_rel) = ctrl_inner[en_pos..].find("</hp:endNote>") {
+            let body_start = en_pos + ctrl_inner[en_pos..].find('>')? + 1;
+            let inner = &ctrl_inner[body_start..en_pos + close_rel];
+            return extract_note_content(inner, "미주");
+        }
+    }
+    if let Some(h_pos) = ctrl_inner.find("<hp:header") {
+        if let Some(close_rel) = ctrl_inner[h_pos..].find("</hp:header>") {
+            let body_start = h_pos + ctrl_inner[h_pos..].find('>')? + 1;
+            let inner = &ctrl_inner[body_start..h_pos + close_rel];
+            return extract_note_content(inner, "머리말");
+        }
+    }
+    if let Some(f_pos) = ctrl_inner.find("<hp:footer") {
+        if let Some(close_rel) = ctrl_inner[f_pos..].find("</hp:footer>") {
+            let body_start = f_pos + ctrl_inner[f_pos..].find('>')? + 1;
+            let inner = &ctrl_inner[body_start..f_pos + close_rel];
+            return extract_note_content(inner, "꼬리말");
+        }
+    }
+    // Bookmark, colPr, autoNum, fieldBegin/End, etc. — no visible marker
+    None
+}
+
 fn extract_equation_markdown(inner: &str) -> Option<String> {
     let script_start = inner.find("<hp:script")?;
     let after_open = script_start + inner[script_start..].find('>')? + 1;
@@ -1701,81 +1915,15 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
         let char_pr_id = extract_attr(run_tag, "charPrIDRef")
             .and_then(|s| s.parse::<u32>().ok());
 
-        // Find run content and end
-        if let Some(run_end) = para_xml[run_pos..].find("</hp:run>") {
-            let run_content = &para_xml[run_pos..run_pos + run_end];
+        // Find run content end (nesting-aware: footnotes/endnotes nest runs inside)
+        let body_start = run_pos + run_tag_end + 1;
+        if let Some(run_end) = find_matching_close(para_xml, body_start, "<hp:run ", "</hp:run>") {
+            // run_content is the bytes between the opening '>' of this run and the matching '</hp:run>'
+            let run_body = &para_xml[body_start..run_end];
 
-            // Extract text from <hp:t> tags and handle <hp:lineBreak/> within this run
-            let mut text_content = String::new();
-            let mut t_pos = 0;
-
-            loop {
-                let next_t = run_content[t_pos..].find("<hp:t>").map(|i| (t_pos + i, "t"));
-                let next_lb = run_content[t_pos..].find("<hp:lineBreak").map(|i| (t_pos + i, "lb"));
-
-                let next = match (next_t, next_lb) {
-                    (Some(a), Some(b)) => {
-                        if a.0 <= b.0 { Some(a) } else { Some(b) }
-                    }
-                    (Some(a), None) => Some(a),
-                    (None, Some(b)) => Some(b),
-                    (None, None) => None,
-                };
-
-                match next {
-                    Some((idx, "t")) => {
-                        let t_start_pos = idx + 6; // skip "<hp:t>"
-                        if let Some(t_end) = run_content[t_start_pos..].find("</hp:t>") {
-                            let text = &run_content[t_start_pos..t_start_pos + t_end];
-                            // <hp:lineBreak/> / <hp:tab/> can appear inside <hp:t> content
-                            let text = text.replace("<hp:lineBreak/>", "\n");
-                            let text = text.replace("<hp:lineBreak />", "\n");
-                            let text = text.replace("<hp:tab/>", "\t");
-                            // Hancom 실제 형식: <hp:tab width="..." leader="0" type="1"/>
-                            let text = replace_attributed_tab(&text);
-                            text_content.push_str(&text);
-                            t_pos = t_start_pos + t_end + 7;
-                        } else {
-                            break;
-                        }
-                    }
-                    Some((idx, _)) => {
-                        // <hp:lineBreak/> or <hp:lineBreak /> between tags
-                        text_content.push('\n');
-                        if let Some(end) = run_content[idx..].find('>') {
-                            t_pos = idx + end + 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    None => break,
-                }
-            }
-
-            // Handle <hp:fwSpace/> (fixed-width space)
-            if run_content.contains("<hp:fwSpace/>") && text_content.is_empty() {
-                text_content.push(' ');
-            }
-
-            // Image references — scan run content for <hc:img binaryItemIDRef="...">
-            // and emit `[이미지: imageN]` placeholders. kordoc emits one marker per
-            // image occurrence so RAG/embedding pipelines can locate visual content.
-            let mut img_scan = 0usize;
-            while let Some(img_rel) = run_content[img_scan..].find("<hc:img ") {
-                let img_abs = img_scan + img_rel;
-                let after = match run_content[img_abs..].find('>') {
-                    Some(i) => img_abs + i + 1,
-                    None => break,
-                };
-                let tag = &run_content[img_abs..after];
-                if let Some(id) = extract_attr(tag, "binaryItemIDRef") {
-                    if !text_content.is_empty() && !text_content.ends_with(char::is_whitespace) {
-                        text_content.push(' ');
-                    }
-                    text_content.push_str(&format!("[이미지: {}]", id));
-                }
-                img_scan = after;
-            }
+            // Walk the run body linearly, handling nested ctrl / equation / run
+            // elements BEFORE their inner <hp:t> contents would leak out.
+            let text_content = walk_run_body(run_body);
 
             // Apply formatting if we have text and a valid charPrIDRef
             if !text_content.is_empty() {
@@ -1791,7 +1939,7 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
                 result.push_str(&formatted);
             }
 
-            pos = run_pos + run_end + 9;
+            pos = run_end + 9; // advance past "</hp:run>"
         } else {
             // Self-closing run or malformed
             pos = run_pos + 1;
@@ -2416,6 +2564,92 @@ mod tests {
         let xml = r#"<hp:p styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>줄1</hp:t><hp:lineBreak/><hp:t>줄2</hp:t></hp:run></hp:p>"#;
         let result = extract_text_with_formatting(xml, &char_styles, &heading_styles);
         assert!(result.contains("줄1\n줄2"), "linebreak not handled: {:?}", result);
+    }
+
+    #[test]
+    fn test_footnote_in_run_ctrl() {
+        // Hancom HWPX nests footnote inside <hp:run><hp:ctrl>, not as a
+        // paragraph-level sibling. Previously the parser leaked the
+        // footnote body as raw text without the [각주: ...] marker.
+        let char_styles = HashMap::new();
+        let heading_styles = HashMap::new();
+        let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:footNote number="1" suffixChar="41"><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>12345</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl><hp:t/></hp:run></hp:p></hp:sec>"#;
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        assert!(
+            result.contains("[각주: 12345]"),
+            "footnote marker missing or malformed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_endnote_in_run_ctrl() {
+        let char_styles = HashMap::new();
+        let heading_styles = HashMap::new();
+        let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:endNote number="1" suffixChar="41"><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>7890</hp:t></hp:run></hp:p></hp:subList></hp:endNote></hp:ctrl><hp:t/></hp:run></hp:p></hp:sec>"#;
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        assert!(
+            result.contains("[미주: 7890]"),
+            "endnote marker missing or malformed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_equation_in_run() {
+        // Hancom emits <hp:equation> as a direct child of <hp:run>, not at
+        // paragraph level. The inner <hp:script> content should be wrapped
+        // in $...$ (inline) or $$...$$ (block for multi-line scripts).
+        let char_styles = HashMap::new();
+        let heading_styles = HashMap::new();
+        let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:equation version="Equation Version 60"><hp:script>y = x^2 + 2x + 1</hp:script></hp:equation><hp:t/></hp:run></hp:p></hp:sec>"#;
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        assert!(
+            result.contains("$y = x^2 + 2x + 1$"),
+            "equation script not extracted: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_footnote_does_not_leak_raw_text() {
+        // Verify the fix: footnote body text must NOT appear OUTSIDE the
+        // [각주: ...] marker. Before the fix, the nested subList's <hp:t>
+        // would leak into the outer run's text.
+        let char_styles = HashMap::new();
+        let heading_styles = HashMap::new();
+        let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:t>본문</hp:t></hp:run><hp:run charPrIDRef="0"><hp:ctrl><hp:footNote number="1"><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>주석내용</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl><hp:t/></hp:run></hp:p></hp:sec>"#;
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        // Body "본문" appears exactly once; footnote body "주석내용" appears
+        // only inside the marker, not as standalone text.
+        let body_count = result.matches("본문").count();
+        let note_count = result.matches("주석내용").count();
+        let marker_count = result.matches("[각주: 주석내용]").count();
+        assert_eq!(body_count, 1, "body text mismatch: {:?}", result);
+        assert_eq!(note_count, 1, "footnote body text should appear exactly once (inside marker): {:?}", result);
+        assert_eq!(marker_count, 1, "footnote marker missing: {:?}", result);
+    }
+
+    #[test]
+    fn test_nested_run_end_matching() {
+        // Outer run contains a footnote whose subList has its own <hp:run>.
+        // find_matching_close must not stop at the INNER </hp:run>.
+        let char_styles = HashMap::new();
+        let heading_styles = HashMap::new();
+        let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:footNote><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>inner</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl><hp:t>outer_after_note</hp:t></hp:run></hp:p></hp:sec>"#;
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        // After the fix, the outer run completes properly and
+        // "outer_after_note" is emitted too.
+        assert!(
+            result.contains("outer_after_note"),
+            "outer run truncated at nested </hp:run>: {:?}",
+            result
+        );
+        assert!(
+            result.contains("[각주: inner]"),
+            "footnote marker missing: {:?}",
+            result
+        );
     }
 
     #[test]

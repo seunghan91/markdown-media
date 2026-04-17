@@ -42,3 +42,6 @@ npm-debug.log*
 /reference/
 vendor/rhwp/target/
 vendor/rhwp/Cargo.lock
+
+# 수능 corpus (공공누리 4유형, 재배포 금지)
+assets/conformance/suneung/

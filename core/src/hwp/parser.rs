@@ -6,7 +6,7 @@ use super::record::{
     CharShape, ParaCharShapeMapping,
     HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE, HWPTAG_LIST_HEADER,
     HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE, HWPTAG_PARA_SHAPE, HWPTAG_CTRL_HEADER,
-    HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA,
+    HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA, HWPTAG_EQEDIT,
 };
 use crate::ir::{blocks_to_markdown, IRBlock, IRCell, IRTable};
 use std::collections::HashMap;
@@ -179,11 +179,14 @@ impl HwpParser {
             }
         }
 
-        if all_text.is_empty() {
-            Ok("No text extracted. File may be encrypted or have unsupported format.".to_string())
-        } else {
-            Ok(all_text.join("\n\n"))
-        }
+        // Empty-body documents (e.g. files consisting only of a bookmark,
+        // an empty paragraph, or just an equation that has already been
+        // emitted as a marker) are legitimate — return an empty string
+        // rather than a misleading "encrypted or unsupported" message.
+        // Encryption is detected separately via FileHeader flags before we
+        // reach this point, so empty output at this stage implies valid but
+        // text-empty.
+        Ok(all_text.join("\n\n"))
     }
 
     /// Structured block extraction.
@@ -384,6 +387,45 @@ impl HwpParser {
                                 }
                             }
                             let end = subtree_end(&records, i, 100);
+                            i = end;
+                            continue;
+                        }
+                        // Equation — CTRL_ID "eqed" (chars e,q,e,d) or reversed "deqe".
+                        // Script lives in HWPTAG_EQEDIT within the subtree.
+                        else if id == b"eqed" || id == b"deqe" {
+                            if let Some(text_data) = current_text_data.take() {
+                                let text = extract_para_text_formatted(
+                                    &text_data,
+                                    current_char_shape_mapping.as_ref(),
+                                    &self.char_shapes,
+                                );
+                                push_paragraph(&mut blocks, text);
+                                current_char_shape_mapping = None;
+                            }
+                            if let Some(script) = extract_subtree_equation_script(&records, i, 50) {
+                                let marker = if script.contains('\n') {
+                                    format!("\n\n$$\n{}\n$$\n\n", script)
+                                } else {
+                                    format!("${}$", script)
+                                };
+                                match blocks.last_mut() {
+                                    Some(IRBlock::Paragraph { text, .. }) => {
+                                        if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+                                            text.push(' ');
+                                        }
+                                        text.push_str(&marker);
+                                    }
+                                    _ => blocks.push(IRBlock::paragraph(marker)),
+                                }
+                            }
+                            let end = subtree_end(&records, i, 50);
+                            i = end;
+                            continue;
+                        }
+                        // Bookmark — CTRL_ID "bkmk"/"kmkb". No visible body;
+                        // emit nothing (match HWPX parser behavior).
+                        else if id == b"bkmk" || id == b"kmkb" {
+                            let end = subtree_end(&records, i, 20);
                             i = end;
                             continue;
                         }
@@ -647,6 +689,45 @@ impl HwpParser {
                                 }
                             }
                             let end = subtree_end(&records, i, 100);
+                            i = end;
+                            continue;
+                        }
+                        // Equation
+                        else if id == b"eqed" || id == b"deqe" {
+                            if let Some(text_data) = current_text_data.take() {
+                                let text = extract_para_text_formatted(
+                                    &text_data,
+                                    current_char_shape_mapping.as_ref(),
+                                    &self.char_shapes,
+                                );
+                                if !text.trim().is_empty() {
+                                    blocks.push(text);
+                                }
+                                current_char_shape_mapping = None;
+                            }
+                            if let Some(script) = extract_subtree_equation_script(&records, i, 50) {
+                                let marker = if script.contains('\n') {
+                                    format!("\n\n$$\n{}\n$$\n\n", script)
+                                } else {
+                                    format!("${}$", script)
+                                };
+                                match blocks.last_mut() {
+                                    Some(last) if !last.starts_with('|') => {
+                                        if !last.is_empty() && !last.ends_with(char::is_whitespace) {
+                                            last.push(' ');
+                                        }
+                                        last.push_str(&marker);
+                                    }
+                                    _ => blocks.push(marker),
+                                }
+                            }
+                            let end = subtree_end(&records, i, 50);
+                            i = end;
+                            continue;
+                        }
+                        // Bookmark — no visible output
+                        else if id == b"bkmk" || id == b"kmkb" {
+                            let end = subtree_end(&records, i, 20);
                             i = end;
                             continue;
                         }
@@ -1642,6 +1723,55 @@ fn extract_subtree_text(
 /// back to text-box extraction.
 ///
 /// Mirrors kordoc parser.ts:381-401 `extractBinDataId`.
+/// Extract the equation script from an `HWPTAG_EQEDIT` record within the
+/// subtree of an equation CTRL_HEADER.
+///
+/// HWPTAG_EQEDIT (0x58) layout per HWP5 spec:
+///   UINT32 property
+///   UINT16 len_wchars  (length in UTF-16LE code units)
+///   WCHAR[len_wchars] script
+///   ... (font/size metadata — we don't need it)
+///
+/// The script is the same near-LaTeX syntax emitted by HWPX's `<hp:script>`,
+/// so round-tripping it through `$...$` fences gives consistent output between
+/// the two format parsers.
+fn extract_subtree_equation_script(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> Option<String> {
+    if ctrl_idx >= records.len() {
+        return None;
+    }
+    let ctrl_level = records[ctrl_idx].level;
+    let end = (ctrl_idx + max_lookahead + 1).min(records.len());
+
+    for j in (ctrl_idx + 1)..end {
+        let r = &records[j];
+        if r.level <= ctrl_level {
+            break;
+        }
+        if r.tag_id == HWPTAG_EQEDIT {
+            if r.data.len() < 6 {
+                continue;
+            }
+            let len_wchars = u16::from_le_bytes([r.data[4], r.data[5]]) as usize;
+            let byte_len = len_wchars * 2;
+            let start = 6;
+            let end_byte = start + byte_len;
+            if end_byte > r.data.len() {
+                continue;
+            }
+            let mut utf16: Vec<u16> = Vec::with_capacity(len_wchars);
+            for chunk in r.data[start..end_byte].chunks_exact(2) {
+                utf16.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+            }
+            let script = String::from_utf16_lossy(&utf16);
+            let trimmed = script.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn extract_subtree_image_id(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> Option<u16> {
     if ctrl_idx >= records.len() {
         return None;
@@ -2264,6 +2394,86 @@ mod tests {
         let mut blocks: Vec<IRBlock> = Vec::new();
         push_paragraph(&mut blocks, "이것은 일반 문단이다.".to_string());
         assert!(matches!(blocks[0], IRBlock::Paragraph { .. }));
+    }
+
+    // ── EQEDIT script extraction ──
+
+    #[test]
+    fn eqedit_extracts_utf16_script() {
+        // HWPTAG_EQEDIT data layout: property u32 | len u16 | wchars...
+        // Build a record with script "y=x^2".
+        let script_str = "y=x^2";
+        let utf16: Vec<u16> = script_str.encode_utf16().collect();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // property
+        data.extend_from_slice(&(utf16.len() as u16).to_le_bytes());
+        for w in &utf16 {
+            data.extend_from_slice(&w.to_le_bytes());
+        }
+        let ctrl = HwpRecord {
+            tag_id: HWPTAG_CTRL_HEADER,
+            level: 0,
+            size: 4,
+            data: b"deqe".to_vec(),
+        };
+        let eqedit = HwpRecord {
+            tag_id: HWPTAG_EQEDIT,
+            level: 1,
+            size: data.len() as u32,
+            data,
+        };
+        let records = vec![ctrl, eqedit];
+        let script = extract_subtree_equation_script(&records, 0, 10);
+        assert_eq!(script.as_deref(), Some("y=x^2"));
+    }
+
+    #[test]
+    fn eqedit_returns_none_for_empty_script() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        let ctrl = HwpRecord {
+            tag_id: HWPTAG_CTRL_HEADER,
+            level: 0,
+            size: 4,
+            data: b"deqe".to_vec(),
+        };
+        let eqedit = HwpRecord {
+            tag_id: HWPTAG_EQEDIT,
+            level: 1,
+            size: data.len() as u32,
+            data,
+        };
+        let records = vec![ctrl, eqedit];
+        assert!(extract_subtree_equation_script(&records, 0, 10).is_none());
+    }
+
+    #[test]
+    fn eqedit_stays_within_subtree() {
+        // Ensure lookahead respects level boundary — sibling EQEDIT at the
+        // same level as CTRL_HEADER must NOT be picked up.
+        let script_str = "outside";
+        let utf16: Vec<u16> = script_str.encode_utf16().collect();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(utf16.len() as u16).to_le_bytes());
+        for w in &utf16 {
+            data.extend_from_slice(&w.to_le_bytes());
+        }
+        let ctrl = HwpRecord {
+            tag_id: HWPTAG_CTRL_HEADER,
+            level: 2,
+            size: 4,
+            data: b"deqe".to_vec(),
+        };
+        let sibling_eqedit = HwpRecord {
+            tag_id: HWPTAG_EQEDIT,
+            level: 2, // same level — not a child
+            size: data.len() as u32,
+            data,
+        };
+        let records = vec![ctrl, sibling_eqedit];
+        assert!(extract_subtree_equation_script(&records, 0, 10).is_none());
     }
 
     // ── build_ir_blocks_from_cells ──

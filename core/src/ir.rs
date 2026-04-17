@@ -210,7 +210,12 @@ pub fn blocks_to_markdown(blocks: &[IRBlock]) -> String {
                     out.push_str(&format!(" <{}>", url));
                 }
                 if let Some(note) = footnote {
-                    out.push_str(&format!(" [각주] {}", note));
+                    // `note` already includes its own label ("[각주] ..." /
+                    // "[미주] ...") — set by the parser at emit time, so
+                    // appending a second "[각주]" here would duplicate the
+                    // label and misclassify endnotes as footnotes.
+                    out.push(' ');
+                    out.push_str(note);
                 }
             }
             IRBlock::Heading { level, text } => {
@@ -679,15 +684,34 @@ mod tests {
 
     #[test]
     fn markdown_paragraph_with_footnote_and_href() {
+        // Contract: the parser stores a fully-labeled marker in `footnote`
+        // (e.g. "[각주] …" or "[미주] …"). Serializer must NOT prepend a
+        // second label — see ir.rs Paragraph serialization.
         let blocks = vec![IRBlock::Paragraph {
             text: "본문".to_string(),
-            footnote: Some("각주 내용".to_string()),
+            footnote: Some("[각주] 각주 내용".to_string()),
             href: Some("https://law.go.kr".to_string()),
         }];
         let md = blocks_to_markdown(&blocks);
         assert!(md.contains("본문"));
         assert!(md.contains("<https://law.go.kr>"));
         assert!(md.contains("[각주] 각주 내용"));
+        // Regression: must not double-label.
+        assert!(!md.contains("[각주] [각주]"), "duplicate footnote label: {:?}", md);
+    }
+
+    #[test]
+    fn markdown_paragraph_endnote_not_misclassified_as_footnote() {
+        // Before the fix the serializer always prepended "[각주]" even when
+        // the stored marker was an endnote — producing "[각주] [미주] …".
+        let blocks = vec![IRBlock::Paragraph {
+            text: "본문".to_string(),
+            footnote: Some("[미주] 미주 내용".to_string()),
+            href: None,
+        }];
+        let md = blocks_to_markdown(&blocks);
+        assert!(md.contains("[미주] 미주 내용"));
+        assert!(!md.contains("[각주]"), "endnote mislabeled: {:?}", md);
     }
 
     #[test]

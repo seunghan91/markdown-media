@@ -261,13 +261,21 @@ impl PdfParser {
     pub fn parse_from_memory(&self) -> io::Result<PdfDocument> {
         let version = self.extract_version();
 
-        let full_text = pdf_extract::extract_text_from_mem(&self.data)
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("PDF extraction failed: {}", e),
-                )
-            })?;
+        // In-memory path cannot use external `pdftotext` fallback (it needs a
+        // file path). Wrap pdf-extract in `catch_unwind` so CJK-font panics
+        // become recoverable errors instead of aborting the process. Callers
+        // that want CJK-safe extraction must use `parse()` with a file path.
+        let data = self.data.clone();
+        let full_text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            pdf_extract::extract_text_from_mem(&data)
+        }))
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "PDF extraction panicked (likely CJK CID font — use parse() for pdftotext fallback)",
+            )
+        })?
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("PDF extraction failed: {}", e)))?;
 
         let page_count = self.get_page_count().unwrap_or(1);
         let pages = self.split_into_pages(&full_text, page_count);
@@ -828,9 +836,11 @@ impl PdfParser {
     pub fn parse(&self) -> io::Result<PdfDocument> {
         let version = self.extract_version();
 
-        // Use pdf-extract for text extraction
-        let full_text = pdf_extract::extract_text(&self.path)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("PDF extraction failed: {}", e)))?;
+        // Use pdf-extract for text extraction; catch panics from CJK CID
+        // fonts (pdf-extract panics on Identity-V / UniKS-UTF16-H encodings
+        // commonly used by Korean documents) and fall back to `pdftotext`
+        // (Poppler) when available — it handles all CJK CMaps correctly.
+        let full_text = extract_text_with_fallback(&self.path, &self.data)?;
 
         // Try to get page count from lopdf
         let page_count = self.get_page_count().unwrap_or(1);
@@ -2563,6 +2573,117 @@ fn is_partial_numbering(s: &str) -> bool {
         return false;
     }
     bytes[1..].iter().all(|b| b.is_ascii_digit())
+}
+
+/// Extract PDF text with a two-tier strategy: primary parser (pdf-extract)
+/// guarded by `catch_unwind`, then `pdftotext` (Poppler) fallback on panic
+/// or empty output.
+///
+/// **Why this exists**: `pdf-extract` panics on CJK CID fonts that use
+/// encodings other than `Identity-H` (e.g. `Identity-V`, `UniKS-UTF16-H`).
+/// Korean exam PDFs and most older Korean government documents trigger this
+/// consistently. Rather than re-implementing a full PDF text extractor, we
+/// shell out to Poppler's `pdftotext`, which has been the reference CJK
+/// implementation for 20+ years.
+///
+/// Fallback is skipped silently when `pdftotext` is not on PATH — callers
+/// get the original pdf-extract error / panic conversion. The fallback path
+/// requires a file path (not in-memory bytes); in-memory callers use
+/// `parse_from_memory` which has its own panic catch.
+fn extract_text_with_fallback(
+    path: &std::path::Path,
+    _data: &[u8],
+) -> io::Result<String> {
+    // Tier 1: pdf-extract with panic guard.
+    let path_owned = path.to_path_buf();
+    let primary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        pdf_extract::extract_text(&path_owned)
+    }));
+
+    match primary {
+        Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
+        Ok(Ok(_)) => { /* empty — try fallback */ }
+        Ok(Err(e)) => {
+            // Real parser error, not panic. Try fallback before giving up.
+            if let Some(text) = pdftotext_fallback(path) {
+                return Ok(text);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("PDF extraction failed: {}", e),
+            ));
+        }
+        Err(_) => { /* panic — try fallback */ }
+    }
+
+    // Tier 2: pdftotext fallback — if it ran and produced any bytes (even
+    // just a form-feed for image-only PDFs), treat as success with empty text
+    // so downstream image extraction still runs. Only error when pdftotext
+    // is unavailable/broken.
+    if !pdftotext_available() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "PDF extraction failed: pdf-extract panicked (likely CJK CID font \
+             such as Identity-V or UniKS-UTF16-H). Install Poppler to enable \
+             the pdftotext fallback:\n  \
+             macOS:   brew install poppler\n  \
+             Ubuntu:  apt install poppler-utils\n  \
+             Windows: https://github.com/oschwartz10612/poppler-windows",
+        ));
+    }
+    match pdftotext_invoke(path) {
+        Some(text) => Ok(text), // may be empty for image-only PDFs
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "PDF extraction failed: both pdf-extract and pdftotext (Poppler) \
+             failed to read this file — may be corrupt or an unsupported variant",
+        )),
+    }
+}
+
+/// Cheap runtime check: is `pdftotext` on PATH and executable?
+/// Caches the result for the process lifetime so repeated calls don't fork.
+fn pdftotext_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("pdftotext")
+            .arg("-v")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Invoke `pdftotext -layout -enc UTF-8 <path> -` and return stdout.
+/// Returns None when the binary is missing or the invocation fails with a
+/// non-zero status. When pdftotext runs successfully but produces only a
+/// form-feed (image-only PDF), returns `Some("")` — this is semantically
+/// "successfully processed, no extractable text" rather than a failure.
+fn pdftotext_fallback(path: &std::path::Path) -> Option<String> {
+    let text = pdftotext_invoke(path)?;
+    if text.trim().is_empty() {
+        return None; // treat as failure at the tier-1 level so tier 2 doesn't re-run
+    }
+    Some(text)
+}
+
+fn pdftotext_invoke(path: &std::path::Path) -> Option<String> {
+    use std::process::Command;
+    let output = Command::new("pdftotext")
+        .arg("-layout")
+        .arg("-enc")
+        .arg("UTF-8")
+        .arg(path)
+        .arg("-")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]
