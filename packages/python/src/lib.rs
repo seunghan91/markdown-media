@@ -72,7 +72,9 @@ fn convert_bytes(data: &[u8], filename: &str) -> PyResult<String> {
         "pdf" => {
             let parser = mdm_core::pdf::PdfParser::from_bytes(data.to_vec())
                 .map_err(|e| PyValueError::new_err(format!("PDF error: {}", e)))?;
-            let doc = parser.parse()
+            // parse_from_memory avoids requiring a filesystem path (bug: parse() fails when
+            // from_bytes was used because lopdf re-reads by path).
+            let doc = parser.parse_from_memory()
                 .map_err(|e| PyValueError::new_err(format!("PDF parse error: {}", e)))?;
             Ok(doc.to_markdown_with_layout())
         }
