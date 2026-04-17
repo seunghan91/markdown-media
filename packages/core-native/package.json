@@ -1,6 +1,6 @@
 {
   "name": "@markdown-media/core",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Native Node.js bindings for mdm-core — convert HWP / HWPX / PDF / DOCX to Markdown with a unified bytes/path API",
   "main": "index.js",
   "types": "index.d.ts",
@@ -14,10 +14,10 @@
     ]
   },
   "optionalDependencies": {
-    "@markdown-media/core-darwin-arm64": "1.0.0",
-    "@markdown-media/core-darwin-x64": "1.0.0",
-    "@markdown-media/core-linux-x64-gnu": "1.0.0",
-    "@markdown-media/core-linux-arm64-gnu": "1.0.0"
+    "@markdown-media/core-darwin-arm64": "1.1.0",
+    "@markdown-media/core-darwin-x64": "1.1.0",
+    "@markdown-media/core-linux-x64-gnu": "1.1.0",
+    "@markdown-media/core-linux-arm64-gnu": "1.1.0"
   },
   "scripts": {
     "artifacts": "napi artifacts",
