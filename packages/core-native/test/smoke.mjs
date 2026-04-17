@@ -1,10 +1,16 @@
 import { strict as assert } from 'node:assert';
+import { readFileSync, existsSync } from 'node:fs';
 import {
   parseAnnexText,
   parseDate,
   parseDateWithReference,
   createChainPlan,
   aggregateChainResults,
+  getVersion,
+  detectFormat,
+  convertBytes,
+  convertFile,
+  convertToJson,
 } from '../index.js';
 
 // --- Annex Parser ---
@@ -69,6 +75,47 @@ try {
 } catch (e) {
   assert(e.message.includes('Unknown chain type'), `Expected "Unknown chain type", got: ${e.message}`);
   console.log('  Invalid chain type correctly throws');
+}
+
+// --- Unified Document API (HWP/HWPX/PDF/DOCX) ---
+console.log('Testing getVersion...');
+const v = getVersion();
+assert(typeof v === 'string' && v.length > 0, 'getVersion should return non-empty string');
+console.log(`  version = ${v}`);
+
+console.log('Testing detectFormat...');
+assert.equal(detectFormat(Buffer.from('%PDF-1.7'), 'x.pdf'), 'pdf');
+assert.equal(detectFormat(Buffer.from('%PDF-1.7'), 'no-ext'), 'pdf'); // magic-byte fallback
+assert.equal(detectFormat(Buffer.from('junk'), 'doc.hwpx'), 'hwpx'); // extension wins
+assert.equal(detectFormat(Buffer.from('junk'), 'unknown.xyz'), 'unknown');
+console.log('  format detection OK (ext + magic bytes)');
+
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const sampleHwpx = join(__dirname, '..', '..', '..', 'samples', 'input', '2026년 제1기 행정안전부 청년인턴 채용 공고(최종).hwpx');
+if (existsSync(sampleHwpx)) {
+  console.log('Testing convertBytes / convertFile / convertToJson on HWPX...');
+  const data = readFileSync(sampleHwpx);
+  const md = convertBytes(data, sampleHwpx);
+  assert(typeof md === 'string' && md.length > 100, 'convertBytes should return non-trivial markdown');
+  assert.equal(convertFile(sampleHwpx), md, 'convertFile must match convertBytes');
+  const json = JSON.parse(convertToJson(data, sampleHwpx));
+  assert.equal(json.format, 'hwpx');
+  assert(typeof json.markdown === 'string' && json.markdown.length > 0);
+  assert(json.metadata && typeof json.metadata.section_count === 'number');
+  console.log(`  HWPX: ${md.length} chars, ${json.metadata.section_count} sections, ${json.metadata.table_count} tables`);
+} else {
+  console.log('  (skipped HWPX sample — file not present)');
+}
+
+console.log('Testing convertBytes error on unknown format...');
+try {
+  convertBytes(Buffer.from('some garbage'), 'foo.xyz');
+  assert.fail('Should throw on unknown format');
+} catch (e) {
+  assert(e.message.includes('Unknown document format'), `Expected unknown-format error, got: ${e.message}`);
+  console.log('  unknown format correctly throws');
 }
 
 console.log('\n=== ALL SMOKE TESTS PASSED ===');

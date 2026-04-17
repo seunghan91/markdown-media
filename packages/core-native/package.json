@@ -1,7 +1,7 @@
 {
   "name": "@markdown-media/core",
   "version": "1.0.0",
-  "description": "Native Node.js bindings for mdm-core Rust parser (HWP, legal, dates)",
+  "description": "Native Node.js bindings for mdm-core — convert HWP / HWPX / PDF / DOCX to Markdown with a unified bytes/path API",
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
@@ -33,7 +33,8 @@
   "files": [
     "index.js",
     "index.d.ts",
-    "*.node"
+    "*.node",
+    "README.md"
   ],
   "license": "MIT",
   "repository": {

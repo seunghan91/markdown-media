@@ -3,8 +3,26 @@
 /** Aggregate chain step results into markdown */
 export declare function aggregateChainResults(chainType: string, results: Array<string>): string
 
+/** Convert a document (raw bytes) to Markdown. Format auto-detected from filename + magic bytes. */
+export declare function convertBytes(data: Buffer, filename: string): string
+
+/** Convert a document on disk to Markdown. */
+export declare function convertFile(path: string): string
+
+/** Convert a document (bytes) to a JSON string with format/version/markdown/metadata. */
+export declare function convertToJson(data: Buffer, filename: string): string
+
 /** Create a chain execution plan */
 export declare function createChainPlan(chainType: string, query: string): NapiChainPlan
+
+/**
+ * Detect document format from filename extension and/or magic bytes.
+ * Returns one of `"hwp"`, `"hwpx"`, `"pdf"`, `"docx"`, `"unknown"`.
+ */
+export declare function detectFormat(data: Buffer, filename: string): string
+
+/** Return the mdm-core crate version. */
+export declare function getVersion(): string
 
 export interface NapiAnnexInfo {
   annexType: string
