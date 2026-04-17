@@ -19,8 +19,8 @@ jobs:
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
-          with:
-            rustflags: ""
+        with:
+          rustflags: ""
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -48,8 +48,8 @@ jobs:
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
-          with:
-            rustflags: ""
+        with:
+          rustflags: ""
 
       - name: Cache cargo registry & build
         uses: actions/cache@v4
@@ -84,8 +84,8 @@ jobs:
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
-          with:
-            rustflags: ""
+        with:
+          rustflags: ""
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -105,6 +105,49 @@ jobs:
           name: python-wheel-${{ matrix.os }}
           path: packages/python/target/wheels/*.whl
           if-no-files-found: error
+
+  core-native-test:
+    name: Core-Native Smoke (Node.js napi)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/core-native/target
+          key: ${{ runner.os }}-cargo-core-native-${{ hashFiles('packages/core-native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-core-native-
+
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli
+
+      - name: Install dependencies
+        working-directory: packages/core-native
+        run: npm install
+
+      - name: Build native module (debug)
+        working-directory: packages/core-native
+        run: napi build --platform
+
+      - name: Run smoke tests
+        working-directory: packages/core-native
+        run: npm test
 
   deploy-pages:
     name: Deploy to GitHub Pages
