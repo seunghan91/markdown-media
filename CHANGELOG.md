@@ -5,6 +5,39 @@ All notable changes to MDM are documented here. The format follows
 versioning applies to `mdm-core` (Rust crate) and `mdm-desktop` (Tauri
 app); sub-packages under `packages/` version independently.
 
+## [0.3.1] — 2026-04-17
+
+### 핵심 주제
+마크다운 뷰어·내보내기에 **LaTeX 수식 렌더링** 추가. Rust 한 곳만
+수정하는 최소 의존성 경로 (`pulldown-latex` → MathML → WebView
+네이티브). JS/CSS/폰트 번들 증가 0.
+
+### 데스크톱 뷰어 (mdm-desktop)
+
+- **LaTeX 수식 지원** — `$a^2+b^2=c^2$` / `$$…$$` 를 `pulldown-latex`
+  로 MathML 변환. Tauri WebKit/WebView2 가 네이티브 렌더. KaTeX/MathJax
+  의존성 **없음**. 분수·합·적분·행렬·그리스 문자·첨자 전부 지원 (≈95%
+  KaTeX 호환).
+- `<annotation encoding="application/x-tex">` 로 원본 LaTeX 보존 —
+  마크다운 재추출·복사 시 라운드트립 가능.
+- 파싱 실패 시 `<code class="math-error">` 로 폴백해 내용 유실 방지.
+- **HTML 내보내기 자동 지원** — `<math>` 태그가 HTML 에 직접 들어 있어
+  오프라인 브라우저에서도 JS 없이 렌더됨.
+
+### 내부
+
+- `desktop/src-tauri/src/markdown.rs` — `Event::InlineMath/DisplayMath`
+  인터셉트 + `pulldown-latex::mathml::push_mathml` 위임.
+- 유닛 테스트 4건 추가 (inline/block/invalid/plain).
+
+### 알려진 한계
+
+- DOCX/PDF/HWPX 내보내기 경로는 아직 수식 미지원 (별도 RFC).
+- Fidelity 뷰(rhwp iframe)는 HWP native equation 을 자체 SVG 로 렌더 —
+  본 변경과 무관.
+
+---
+
 ## [0.3.0] — 2026-04-16
 
 ### 핵심 주제

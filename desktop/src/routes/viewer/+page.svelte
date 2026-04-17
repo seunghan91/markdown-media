@@ -370,6 +370,25 @@
     color: var(--color-label-primary);
   }
 
+  /* MathML 수식 — pulldown-latex → <math> 가 직접 삽입됨.
+     WebKit/WebView2 네이티브 렌더라 별도 JS 없음. 블록 수식만 간격·정렬 보정. */
+  .rendered-pane :global(math) {
+    font-size: 1.05em;
+  }
+  .rendered-pane :global(math[display='block']) {
+    display: block;
+    margin: var(--space-4) 0;
+    text-align: center;
+    font-size: 1.2em;
+    overflow-x: auto;
+  }
+  .rendered-pane :global(.math-error) {
+    color: var(--color-error);
+    background: var(--color-fill-quaternary);
+    padding: 0 var(--space-1);
+    border-radius: 3px;
+  }
+
   /* 테이블 렌더링 */
   .rendered-pane :global(table) {
     width: 100%;

@@ -3087,13 +3087,14 @@ dependencies = [
 
 [[package]]
 name = "mdm-desktop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
  "mdm-core",
  "printpdf",
  "pulldown-cmark",
+ "pulldown-latex",
  "quick-xml 0.31.0",
  "rhwp",
  "rusqlite",
@@ -4098,6 +4099,15 @@ name = "pulldown-cmark-escape"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
+
+[[package]]
+name = "pulldown-latex"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b8bc0583825170e3f560701d966dc2f0e3a16946da371e37d30d3ad7207fb7e"
+dependencies = [
+ "bumpalo",
+]
 
 [[package]]
 name = "pxfm"
