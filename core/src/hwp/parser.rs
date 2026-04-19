@@ -1904,6 +1904,11 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
 
     // Initialize grid with None (no cell placed yet)
     let mut grid: Vec<Vec<Option<String>>> = vec![vec![None; cols]; rows];
+    // Parallel span grid: (col_span, row_span). (1,1)=plain, (0,0)=shadow.
+    // Ported from kordoc f68e825 — preserved so `render_merged_html` can
+    // emit `<table>` with `rowspan`/`colspan` when the table has merges.
+    let mut span_grid: Vec<Vec<(u16, u16)>> = vec![vec![(1, 1); cols]; rows];
+    let mut has_merged = false;
 
     let has_addr = cells.iter().any(|(s, _)| s.has_addr);
 
@@ -1919,6 +1924,10 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
             // Shadow-fill spans with empty placeholders
             let rs = span.row_span.max(1) as usize;
             let cs = span.col_span.max(1) as usize;
+            if rs > 1 || cs > 1 {
+                has_merged = true;
+                span_grid[r][c] = (cs as u16, rs as u16);
+            }
             for dr in 0..rs {
                 for dc in 0..cs {
                     if dr == 0 && dc == 0 {
@@ -1928,6 +1937,7 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
                     let cc = c + dc;
                     if rr < rows && cc < cols && grid[rr][cc].is_none() {
                         grid[rr][cc] = Some(String::new());
+                        span_grid[rr][cc] = (0, 0);
                     }
                 }
             }
@@ -1949,6 +1959,10 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
 
                 let rs = span.row_span.max(1) as usize;
                 let cs = span.col_span.max(1) as usize;
+                if rs > 1 || cs > 1 {
+                    has_merged = true;
+                    span_grid[r][c] = (cs as u16, rs as u16);
+                }
                 for dr in 0..rs {
                     for dc in 0..cs {
                         if dr == 0 && dc == 0 {
@@ -1958,11 +1972,22 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
                         let cc = c + dc;
                         if rr < rows && cc < cols && grid[rr][cc].is_none() {
                             grid[rr][cc] = Some(String::new());
+                            span_grid[rr][cc] = (0, 0);
                         }
                     }
                 }
             }
         }
+    }
+
+    // ── Early branch: merged cells → HTML <table> ─────────────────────────
+    // GFM pipe tables cannot express rowspan/colspan. When merges exist we
+    // skip all downstream cleanup heuristics (column drop, 1-row → heading,
+    // 2-col → definition list) because they would destroy span structure.
+    // Ported from kordoc `src/table/builder.ts:tableToHtml` (2026-04-09,
+    // commit f68e825).
+    if has_merged {
+        return render_merged_html(&grid, &span_grid, rows, cols);
     }
 
     // ── Cleanup pass 1: drop fully-empty columns ───────────────────────────
@@ -2127,6 +2152,82 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
     }
 
     Some(md)
+}
+
+/// Render a merged-cell HWP table as HTML `<table>` (preserves rowspan/colspan).
+///
+/// Ported from chrisryugj/kordoc `src/table/builder.ts:tableToHtml`
+/// (2026-04-09, commit f68e825). Skips shadow span cells — cells where
+/// `spans[r][c] == (0, 0)`. First row renders as `<th>`, rest as `<td>`.
+/// Cell text is HTML-escaped and `\n` → `<br>`.
+fn render_merged_html(
+    grid: &[Vec<Option<String>>],
+    spans: &[Vec<(u16, u16)>],
+    rows: usize,
+    cols: usize,
+) -> Option<String> {
+    let mut out = String::from("<table>\n");
+    let mut any_row_emitted = false;
+    for r in 0..rows {
+        let tag = if r == 0 { "th" } else { "td" };
+        let mut row_html = String::new();
+        for c in 0..cols {
+            let (cs, rs) = spans
+                .get(r)
+                .and_then(|sr| sr.get(c))
+                .copied()
+                .unwrap_or((1, 1));
+            // Shadow cell — origin owns the content
+            if cs == 0 && rs == 0 {
+                continue;
+            }
+            let text = grid
+                .get(r)
+                .and_then(|gr| gr.get(c))
+                .and_then(|cell| cell.as_deref())
+                .unwrap_or("")
+                .trim();
+            let escaped = html_escape(text).replace('\n', "<br>");
+            row_html.push('<');
+            row_html.push_str(tag);
+            if cs > 1 {
+                row_html.push_str(&format!(" colspan=\"{}\"", cs));
+            }
+            if rs > 1 {
+                row_html.push_str(&format!(" rowspan=\"{}\"", rs));
+            }
+            row_html.push('>');
+            row_html.push_str(&escaped);
+            row_html.push_str("</");
+            row_html.push_str(tag);
+            row_html.push('>');
+        }
+        if !row_html.is_empty() {
+            out.push_str("<tr>");
+            out.push_str(&row_html);
+            out.push_str("</tr>\n");
+            any_row_emitted = true;
+        }
+    }
+    if !any_row_emitted {
+        return None;
+    }
+    out.push_str("</table>");
+    Some(out)
+}
+
+/// Minimal HTML escaper for cell text (`&`, `<`, `>`).
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// 이미지 포맷 감지
@@ -2565,6 +2666,161 @@ mod tests {
         assert!(md.contains("| Header 1 |"));
         assert!(md.contains("| --- |"));
         assert!(md.contains("| Cell 1 |"));
+    }
+
+    /// Ported from kordoc `tests/table-builder.test.ts` (2026-04-09, f68e825).
+    /// HWP 5.x merged colSpan → HTML `<table>` with `colspan="N"` (skips cleanup).
+    #[test]
+    fn test_build_gfm_table_merged_colspan_emits_html() {
+        // 2×2 grid, first row: a single cell spanning 2 cols.
+        let cells = vec![
+            (
+                crate::hwp::record::CellSpan {
+                    row: 0,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 2,
+                    col_addr: 0,
+                    row_addr: 0,
+                    has_addr: true,
+                },
+                "병합셀".to_string(),
+            ),
+            (
+                crate::hwp::record::CellSpan {
+                    row: 1,
+                    col: 0,
+                    row_span: 1,
+                    col_span: 1,
+                    col_addr: 0,
+                    row_addr: 1,
+                    has_addr: true,
+                },
+                "값1".to_string(),
+            ),
+            (
+                crate::hwp::record::CellSpan {
+                    row: 1,
+                    col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    col_addr: 1,
+                    row_addr: 1,
+                    has_addr: true,
+                },
+                "값2".to_string(),
+            ),
+        ];
+        let md = build_gfm_table(2, 2, &cells).expect("table");
+        assert!(md.contains("<table>"), "merged → HTML");
+        assert!(md.contains("colspan=\"2\""));
+        assert!(md.contains("병합셀"));
+        assert!(md.contains("값1"));
+        assert!(md.contains("값2"));
+    }
+
+    /// rowSpan merge in HWP 5.x → HTML `<table>` with `rowspan="N"`.
+    #[test]
+    fn test_build_gfm_table_merged_rowspan_emits_html() {
+        // 2×2 grid, col 0: single cell spanning 2 rows.
+        let cells = vec![
+            (
+                crate::hwp::record::CellSpan {
+                    row: 0,
+                    col: 0,
+                    row_span: 2,
+                    col_span: 1,
+                    col_addr: 0,
+                    row_addr: 0,
+                    has_addr: true,
+                },
+                "행병합".to_string(),
+            ),
+            (
+                crate::hwp::record::CellSpan {
+                    row: 0,
+                    col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    col_addr: 1,
+                    row_addr: 0,
+                    has_addr: true,
+                },
+                "값1".to_string(),
+            ),
+            (
+                crate::hwp::record::CellSpan {
+                    row: 1,
+                    col: 1,
+                    row_span: 1,
+                    col_span: 1,
+                    col_addr: 1,
+                    row_addr: 1,
+                    has_addr: true,
+                },
+                "값2".to_string(),
+            ),
+        ];
+        let md = build_gfm_table(2, 2, &cells).expect("table");
+        assert!(md.contains("<table>"));
+        assert!(md.contains("rowspan=\"2\""));
+        assert!(md.contains("행병합"));
+        assert!(md.contains("값1"));
+        assert!(md.contains("값2"));
+    }
+
+    /// No merges → classic GFM pipe table (regression: cleanup passes still run).
+    #[test]
+    fn test_build_gfm_table_no_merge_stays_markdown() {
+        let cells = vec![
+            (
+                crate::hwp::record::CellSpan {
+                    row: 0, col: 0, row_span: 1, col_span: 1,
+                    col_addr: 0, row_addr: 0, has_addr: true,
+                },
+                "A".to_string(),
+            ),
+            (
+                crate::hwp::record::CellSpan {
+                    row: 0, col: 1, row_span: 1, col_span: 1,
+                    col_addr: 1, row_addr: 0, has_addr: true,
+                },
+                "B".to_string(),
+            ),
+            (
+                crate::hwp::record::CellSpan {
+                    row: 1, col: 0, row_span: 1, col_span: 1,
+                    col_addr: 0, row_addr: 1, has_addr: true,
+                },
+                "C".to_string(),
+            ),
+            (
+                crate::hwp::record::CellSpan {
+                    row: 1, col: 1, row_span: 1, col_span: 1,
+                    col_addr: 1, row_addr: 1, has_addr: true,
+                },
+                "D".to_string(),
+            ),
+        ];
+        let md = build_gfm_table(2, 2, &cells).expect("table");
+        assert!(!md.contains("<table>"), "unmerged stays GFM");
+        assert!(md.contains("| A |"));
+        assert!(md.contains("| --- | --- |"));
+    }
+
+    /// HTML escape in merged cell text (defense against stray `<` in HWP content).
+    #[test]
+    fn test_build_gfm_table_merged_html_escape() {
+        let cells = vec![(
+            crate::hwp::record::CellSpan {
+                row: 0, col: 0, row_span: 1, col_span: 2,
+                col_addr: 0, row_addr: 0, has_addr: true,
+            },
+            "a<b&c".to_string(),
+        )];
+        let md = build_gfm_table(1, 2, &cells).expect("table");
+        assert!(md.contains("a&lt;b&amp;c"));
+        assert!(!md.contains("a<b&c"));
     }
 
     #[test]

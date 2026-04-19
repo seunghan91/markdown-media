@@ -256,6 +256,12 @@ fn render_table(table: &IRTable) -> String {
     if table.rows == 0 || table.cols == 0 {
         return String::new();
     }
+    // Merged cells → HTML <table> (ported from kordoc f68e825, 2026-04-09).
+    // GFM pipe tables cannot express rowspan/colspan; emit HTML instead so
+    // downstream markdown viewers preserve the structure verbatim.
+    if ir_has_merged_cells(table) {
+        return render_table_html(table);
+    }
     let mut out = String::new();
     for (r, row) in table.cells.iter().enumerate() {
         out.push('|');
@@ -280,6 +286,82 @@ fn render_table(table: &IRTable) -> String {
     // Trim trailing newline for consistent block joining.
     if out.ends_with('\n') {
         out.pop();
+    }
+    out
+}
+
+fn ir_has_merged_cells(table: &IRTable) -> bool {
+    table
+        .cells
+        .iter()
+        .any(|row| row.iter().any(|c| c.col_span > 1 || c.row_span > 1))
+}
+
+/// HTML `<table>` renderer for merged-cell IR tables.
+///
+/// Ported from kordoc `src/table/builder.ts:tableToHtml` (2026-04-09, f68e825).
+/// Unlike the HWPX/HWP 5.x pipelines, IRCell does not store shadow markers;
+/// shadow positions are computed on-the-fly from each origin cell's span.
+/// First row renders as `<th>` when `has_header`; otherwise `<td>`. Cell
+/// text is HTML-escaped and `\n` → `<br>`.
+fn render_table_html(table: &IRTable) -> String {
+    let mut skip: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut out = String::from("<table>\n");
+    for (r, row) in table.cells.iter().enumerate() {
+        let tag = if r == 0 && table.has_header { "th" } else if r == 0 { "th" } else { "td" };
+        let mut row_html = String::new();
+        for c in 0..table.cols {
+            if skip.contains(&(r, c)) {
+                continue;
+            }
+            let Some(cell) = row.get(c) else { continue };
+            // Mark shadow positions for this origin's span.
+            let cs = cell.col_span.max(1) as usize;
+            let rs = cell.row_span.max(1) as usize;
+            for dr in 0..rs {
+                for dc in 0..cs {
+                    if dr == 0 && dc == 0 {
+                        continue;
+                    }
+                    if r + dr < table.rows && c + dc < table.cols {
+                        skip.insert((r + dr, c + dc));
+                    }
+                }
+            }
+            let escaped = ir_html_escape(cell.text.trim()).replace('\n', "<br>");
+            row_html.push('<');
+            row_html.push_str(tag);
+            if cell.col_span > 1 {
+                row_html.push_str(&format!(" colspan=\"{}\"", cell.col_span));
+            }
+            if cell.row_span > 1 {
+                row_html.push_str(&format!(" rowspan=\"{}\"", cell.row_span));
+            }
+            row_html.push('>');
+            row_html.push_str(&escaped);
+            row_html.push_str("</");
+            row_html.push_str(tag);
+            row_html.push('>');
+        }
+        if !row_html.is_empty() {
+            out.push_str("<tr>");
+            out.push_str(&row_html);
+            out.push_str("</tr>\n");
+        }
+    }
+    out.push_str("</table>");
+    out
+}
+
+fn ir_html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
     }
     out
 }
@@ -638,6 +720,91 @@ mod tests {
             .map(|r| r.into_iter().map(IRCell::new).collect())
             .collect();
         IRBlock::Table(IRTable::new(cells))
+    }
+
+    // ── Table rendering: merged cells (kordoc f68e825, 2026-04-09) ──
+
+    /// IR table with colSpan merge → HTML `<table>` with `colspan="N"`.
+    #[test]
+    fn ir_merged_colspan_emits_html() {
+        // 2×2: row 0 = single cell spanning 2 cols; row 1 = two plain cells.
+        let cells = vec![
+            vec![IRCell {
+                text: "병합셀".into(),
+                col_span: 2,
+                row_span: 1,
+            }],
+            vec![IRCell::new("값1"), IRCell::new("값2")],
+        ];
+        let table = IRTable::new(cells);
+        // IRTable::new infers cols from max row len — adjust cols to 2.
+        let table = IRTable {
+            cols: 2,
+            ..table
+        };
+        let out = render_table(&table);
+        assert!(out.contains("<table>"));
+        assert!(out.contains("colspan=\"2\""));
+        assert!(out.contains("병합셀"));
+        assert!(out.contains("값1"));
+        assert!(out.contains("값2"));
+    }
+
+    /// IR rowSpan → HTML `<table>` with `rowspan="N"`, shadow position skipped.
+    #[test]
+    fn ir_merged_rowspan_emits_html() {
+        let cells = vec![
+            vec![
+                IRCell {
+                    text: "행병합".into(),
+                    col_span: 1,
+                    row_span: 2,
+                },
+                IRCell::new("값1"),
+            ],
+            // Dense layout: shadow placeholder at (1,0), real value at (1,1)
+            vec![IRCell::new(""), IRCell::new("값2")],
+        ];
+        let table = IRTable {
+            rows: 2,
+            cols: 2,
+            cells,
+            has_header: false,
+        };
+        let out = render_table(&table);
+        assert!(out.contains("<table>"));
+        assert!(out.contains("rowspan=\"2\""));
+        assert!(out.contains("행병합"));
+        // "값2" should appear once (in row 1); no double-render of the origin
+        assert!(out.contains("값2"));
+    }
+
+    /// No merge → classic GFM pipe table (regression).
+    #[test]
+    fn ir_no_merge_stays_markdown() {
+        let block = mk_table(vec![vec!["A", "B"], vec!["C", "D"]]);
+        let out = blocks_to_markdown(std::slice::from_ref(&block));
+        assert!(!out.contains("<table>"));
+        assert!(out.contains("| A | B |"));
+    }
+
+    /// HTML injection in cell text is escaped.
+    #[test]
+    fn ir_merged_cell_html_escape() {
+        let cells = vec![vec![IRCell {
+            text: "<script>".into(),
+            col_span: 2,
+            row_span: 1,
+        }]];
+        let table = IRTable {
+            rows: 1,
+            cols: 2,
+            cells,
+            has_header: false,
+        };
+        let out = render_table(&table);
+        assert!(out.contains("&lt;script&gt;"));
+        assert!(!out.contains("<script>"));
     }
 
     // ── Similarity ──

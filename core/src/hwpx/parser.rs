@@ -52,16 +52,33 @@ pub struct HwpxDocument {
 }
 
 /// Table structure
+///
+/// `spans` is a parallel grid to `cells`: `spans[r][c] = (col_span, row_span)`.
+/// When populated, rendering switches to HTML `<table>` so `rowspan`/`colspan`
+/// survive (GFM pipe tables cannot express merged cells). Empty = no merge
+/// info captured (markdown-only renderer).
+///
+/// Ported from chrisryugj/kordoc `src/table/builder.ts:tableToHtml` (2026-04-09,
+/// commit f68e825). Shadow span cells carry `(0, 0)` so the HTML renderer
+/// skips them — the origin cell owns the visible content and the span attrs.
 #[derive(Debug, Clone)]
 pub struct Table {
     pub rows: usize,
     pub cols: usize,
     pub cells: Vec<Vec<String>>,
     pub has_header: bool,
+    pub spans: Vec<Vec<(u16, u16)>>,
 }
 
 impl Table {
-    /// Convert table to Markdown format.
+    /// True if any cell has `colSpan > 1` or `rowSpan > 1`.
+    pub fn has_merged_cells(&self) -> bool {
+        self.spans
+            .iter()
+            .any(|row| row.iter().any(|&(cs, rs)| cs > 1 || rs > 1))
+    }
+
+    /// Convert table to Markdown, or HTML `<table>` when merged cells exist.
     ///
     /// Same rendering rules as the HWP 5.x `build_gfm_table`:
     /// - 1-column wrapper tables → unwrap to plain paragraphs
@@ -69,9 +86,18 @@ impl Table {
     /// - Newlines inside cells become `<br>`
     /// - Pipes inside cells are escaped as `\|`
     /// - Header separator width matches actual column count
+    ///
+    /// Merged cells (colspan/rowspan) cannot be expressed in GFM, so the
+    /// renderer emits HTML `<table>` instead. Markdown viewers pass HTML
+    /// through, so this is a strict upgrade for span fidelity.
     pub fn to_markdown(&self) -> String {
         if self.cells.is_empty() || self.cols == 0 {
             return String::new();
+        }
+
+        // Merged cells → HTML (markdown cannot express rowspan/colspan)
+        if self.has_merged_cells() {
+            return self.to_html();
         }
 
         // 1-column layout wrapper → unwrap to paragraphs
@@ -106,6 +132,68 @@ impl Table {
 
         md
     }
+
+    /// Emit HTML `<table>` preserving `rowspan`/`colspan`.
+    ///
+    /// Shadow span cells — where `spans[r][c] == (0, 0)` — are skipped; the
+    /// origin cell owns the visible content and the span attrs. First row is
+    /// rendered as `<th>`, subsequent rows as `<td>`. Newlines inside cells
+    /// become `<br>`. Text is HTML-escaped (`<`, `>`, `&`).
+    pub fn to_html(&self) -> String {
+        let mut out = String::from("<table>\n");
+        for (r, row) in self.cells.iter().enumerate() {
+            let tag = if r == 0 && self.has_header { "th" } else if r == 0 { "th" } else { "td" };
+            let mut row_html = String::new();
+            for (c, text) in row.iter().enumerate() {
+                // Default to (1,1) if spans grid is short (defensive)
+                let (cs, rs) = self
+                    .spans
+                    .get(r)
+                    .and_then(|sr| sr.get(c))
+                    .copied()
+                    .unwrap_or((1, 1));
+                // Shadow cell → skip
+                if cs == 0 && rs == 0 {
+                    continue;
+                }
+                let escaped = html_escape(text.trim()).replace('\n', "<br>");
+                row_html.push('<');
+                row_html.push_str(tag);
+                if cs > 1 {
+                    row_html.push_str(&format!(" colspan=\"{}\"", cs));
+                }
+                if rs > 1 {
+                    row_html.push_str(&format!(" rowspan=\"{}\"", rs));
+                }
+                row_html.push('>');
+                row_html.push_str(&escaped);
+                row_html.push_str("</");
+                row_html.push_str(tag);
+                row_html.push('>');
+            }
+            if !row_html.is_empty() {
+                out.push_str("<tr>");
+                out.push_str(&row_html);
+                out.push_str("</tr>\n");
+            }
+        }
+        out.push_str("</table>");
+        out
+    }
+}
+
+/// Minimal HTML escaper for cell text (`&`, `<`, `>`).
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 impl HwpxParser<File> {
@@ -876,6 +964,9 @@ fn parse_table_ctx(
 
     // Build grid: None = unplaced, Some("") = shadow span fill, Some("text") = cell
     let mut grid: Vec<Vec<Option<String>>> = vec![vec![None; cols]; rows];
+    // Parallel span grid: (col_span, row_span). (1,1)=normal cell, (0,0)=shadow.
+    let mut span_grid: Vec<Vec<(u16, u16)>> = vec![vec![(1, 1); cols]; rows];
+    let mut has_merged = false;
 
     let any_addr = collected.iter().any(|c| c.has_addr);
 
@@ -885,6 +976,11 @@ fn parse_table_ctx(
                 continue;
             }
             grid[cell.row_addr][cell.col_addr] = Some(cell.text.clone());
+            if cell.col_span > 1 || cell.row_span > 1 {
+                has_merged = true;
+                span_grid[cell.row_addr][cell.col_addr] =
+                    (cell.col_span as u16, cell.row_span as u16);
+            }
             for dr in 0..cell.row_span {
                 for dc in 0..cell.col_span {
                     if dr == 0 && dc == 0 {
@@ -894,6 +990,7 @@ fn parse_table_ctx(
                     let cc = cell.col_addr + dc;
                     if rr < rows && cc < cols && grid[rr][cc].is_none() {
                         grid[rr][cc] = Some(String::new());
+                        span_grid[rr][cc] = (0, 0); // shadow
                     }
                 }
             }
@@ -912,6 +1009,10 @@ fn parse_table_ctx(
                 let cell = &collected[idx];
                 idx += 1;
                 grid[r][c] = Some(cell.text.clone());
+                if cell.col_span > 1 || cell.row_span > 1 {
+                    has_merged = true;
+                    span_grid[r][c] = (cell.col_span as u16, cell.row_span as u16);
+                }
                 for dr in 0..cell.row_span {
                     for dc in 0..cell.col_span {
                         if dr == 0 && dc == 0 {
@@ -921,6 +1022,7 @@ fn parse_table_ctx(
                         let cc = c + dc;
                         if rr < rows && cc < cols && grid[rr][cc].is_none() {
                             grid[rr][cc] = Some(String::new());
+                            span_grid[rr][cc] = (0, 0); // shadow
                         }
                     }
                 }
@@ -928,16 +1030,31 @@ fn parse_table_ctx(
         }
     }
 
-    // Drop fully-empty rows (information-free shadow noise)
-    let cells: Vec<Vec<String>> = grid
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
+    // Drop fully-empty rows (information-free shadow noise) — but ONLY when
+    // no merged cells exist, otherwise span indices would drift.
+    let (cells, spans): (Vec<Vec<String>>, Vec<Vec<(u16, u16)>>) = if has_merged {
+        let cells: Vec<Vec<String>> = grid
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|cell| cell.unwrap_or_default())
+                    .collect()
+            })
+            .collect();
+        (cells, span_grid)
+    } else {
+        let mut out_cells: Vec<Vec<String>> = Vec::new();
+        for row in grid {
+            let row_str: Vec<String> = row
+                .into_iter()
                 .map(|cell| cell.unwrap_or_default())
-                .collect::<Vec<_>>()
-        })
-        .filter(|row| row.iter().any(|c| !c.trim().is_empty()))
-        .collect();
+                .collect();
+            if row_str.iter().any(|c| !c.trim().is_empty()) {
+                out_cells.push(row_str);
+            }
+        }
+        (out_cells, Vec::new())
+    };
 
     if cells.is_empty() {
         return None;
@@ -948,6 +1065,7 @@ fn parse_table_ctx(
         cols,
         cells,
         has_header,
+        spans,
     })
 }
 
@@ -2106,6 +2224,7 @@ mod tests {
                 vec!["데이터1".to_string(), "데이터2".to_string(), "데이터3".to_string()],
             ],
             has_header: true,
+            spans: Vec::new(),
         };
 
         let md = table.to_markdown();
@@ -2277,6 +2396,7 @@ mod tests {
                 vec!["C".to_string(), "D".to_string()],
             ],
             has_header: false,
+            spans: Vec::new(),
         };
         assert_eq!(flatten_table_to_text(&t), "A | B; C | D");
     }
@@ -2291,8 +2411,92 @@ mod tests {
                 vec!["".to_string(), "D".to_string()],
             ],
             has_header: false,
+            spans: Vec::new(),
         };
         assert_eq!(flatten_table_to_text(&t), "A; D");
+    }
+
+    /// Ported from kordoc `tests/table-builder.test.ts` (2026-04-09, f68e825).
+    /// colSpan merge → HTML `<table>` with `colspan="N"` attr.
+    #[test]
+    fn test_merged_colspan_emits_html() {
+        // 2×2 grid: row 0 = one cell spanning 2 cols; row 1 = two plain cells.
+        let t = Table {
+            rows: 2,
+            cols: 2,
+            cells: vec![
+                vec!["병합셀".to_string(), "".to_string()],
+                vec!["값1".to_string(), "값2".to_string()],
+            ],
+            has_header: false,
+            spans: vec![vec![(2, 1), (0, 0)], vec![(1, 1), (1, 1)]],
+        };
+        assert!(t.has_merged_cells());
+        let out = t.to_markdown();
+        assert!(out.contains("<table>"), "merged table must emit HTML");
+        assert!(out.contains("colspan=\"2\""), "colspan attr preserved");
+        assert!(out.contains("병합셀"));
+        assert!(out.contains("값1"));
+        assert!(out.contains("값2"));
+        // Shadow cell must not produce an empty <th></th>
+        assert!(!out.contains("<th></th>"));
+    }
+
+    /// rowSpan merge → HTML `<table>` with `rowspan="N"` attr.
+    #[test]
+    fn test_merged_rowspan_emits_html() {
+        // 2×2 grid: col 0 = one cell spanning 2 rows; col 1 = two plain cells.
+        let t = Table {
+            rows: 2,
+            cols: 2,
+            cells: vec![
+                vec!["행병합".to_string(), "값1".to_string()],
+                vec!["".to_string(), "값2".to_string()],
+            ],
+            has_header: false,
+            spans: vec![vec![(1, 2), (1, 1)], vec![(0, 0), (1, 1)]],
+        };
+        assert!(t.has_merged_cells());
+        let out = t.to_markdown();
+        assert!(out.contains("<table>"));
+        assert!(out.contains("rowspan=\"2\""));
+        assert!(out.contains("행병합"));
+        assert!(out.contains("값2"));
+    }
+
+    /// No merged cells → classic GFM pipe table (no HTML).
+    #[test]
+    fn test_no_merge_stays_markdown() {
+        let t = Table {
+            rows: 2,
+            cols: 2,
+            cells: vec![
+                vec!["A".to_string(), "B".to_string()],
+                vec!["C".to_string(), "D".to_string()],
+            ],
+            has_header: true,
+            spans: vec![vec![(1, 1), (1, 1)], vec![(1, 1), (1, 1)]],
+        };
+        assert!(!t.has_merged_cells());
+        let out = t.to_markdown();
+        assert!(!out.contains("<table>"), "non-merged table stays as GFM");
+        assert!(out.contains("| A |"));
+        assert!(out.contains("| --- |"));
+    }
+
+    /// HTML injection in cell text is escaped.
+    #[test]
+    fn test_merged_cell_html_escapes_text() {
+        let t = Table {
+            rows: 1,
+            cols: 2,
+            cells: vec![vec!["<script>".to_string(), "".to_string()]],
+            has_header: false,
+            spans: vec![vec![(2, 1), (0, 0)]],
+        };
+        let out = t.to_markdown();
+        assert!(out.contains("&lt;script&gt;"));
+        assert!(!out.contains("<script>"));
     }
 
     #[test]
