@@ -45,3 +45,22 @@ vendor/rhwp/Cargo.lock
 
 # 수능 corpus (공공누리 4유형, 재배포 금지)
 assets/conformance/suneung/
+
+# Rust build artifacts (any nested target/ dir)
+**/target/
+*.rlib
+*.rmeta
+*.rcgu.o
+*.dylib
+
+# Rails credentials master key (never commit)
+web/config/master.key
+
+# Test benchmark binary outputs (>50MB, not needed for repo)
+tests/benchmark/unhwp_baseline/**/*.bmp
+
+# WASM build outputs
+chrome-extension/mdm_core_bg.wasm
+chrome-extension/mdm_core_bg.wasm.d.ts
+chrome-extension/mdm_core.js
+chrome-extension/mdm_core.d.ts
