@@ -1,7 +1,7 @@
 """
 MDM 토큰을 HTML로 렌더링합니다.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from .presets import SIZE_PRESETS
 
@@ -52,7 +52,7 @@ class Renderer:
             HTML 문자열
         """
         if token['type'] == 'text':
-            return token['value']
+            return cast(str, token['value'])
         elif token['type'] == 'mdm-reference':
             return self.render_mdm_reference(token)
         return ''
@@ -123,12 +123,12 @@ class Renderer:
         # 1. 리소스별 프리셋
         resource_presets = resource.get('presets') or {}
         if preset in resource_presets:
-            return resource_presets[preset]
+            return cast(Dict[str, Any], resource_presets[preset])
 
         # 2. 전역 프리셋 (사용자 정의)
         global_presets = (self.mdm_data or {}).get('presets') or {}
         if preset in global_presets:
-            return global_presets[preset]
+            return cast(Dict[str, Any], global_presets[preset])
 
         # 3. 내장 기본 프리셋
         if preset in SIZE_PRESETS:

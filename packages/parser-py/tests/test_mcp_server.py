@@ -33,6 +33,9 @@ REAL_TOOLS = {
     "generate_document",
     "fill_form",
     "parse_form",
+    "validate_hwpx",
+    "hulk_to_latex",
+    "ocr_document",
 }
 
 STUB_TOOLS_KWARGS = {
@@ -42,9 +45,6 @@ STUB_TOOLS_KWARGS = {
     "patch_document": {"file_path": str(SAMPLE_PDF), "edited_markdown": "# x", "output_path": "/tmp/out.hwpx"},
     "render_document": {"file_path": str(SAMPLE_PDF)},
     "extract_profile": {"hwpx_path": str(SAMPLE_PDF), "output_path": "/tmp/profile.json"},
-    "validate_hwpx": {"file_path": str(SAMPLE_PDF)},
-    "hulk_to_latex": {"file_path": str(SAMPLE_PDF)},
-    "ocr_document": {"file_path": str(SAMPLE_PDF)},
 }
 
 
@@ -189,7 +189,7 @@ class TestStubTools:
 
     def test_stub_tool_via_mcp_call_tool_surfaces_tool_error(self):
         with pytest.raises(ToolError):
-            asyncio.run(server.mcp.call_tool("validate_hwpx", {"file_path": str(SAMPLE_PDF)}))
+            asyncio.run(server.mcp.call_tool("render_document", {"file_path": str(SAMPLE_PDF)}))
 
     def test_real_tool_via_mcp_call_tool_succeeds(self):
         _require_fixture()

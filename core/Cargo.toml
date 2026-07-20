@@ -25,7 +25,9 @@ epub = []
 image-processing = ["dep:image", "dep:resvg"]
 heic = ["dep:libheif-rs"]
 docx-out = ["dep:docx-rs"]
-pdf-out = ["dep:printpdf"]
+# Markdown → PDF CLI output. Delegates to the `print` module, so it pulls in
+# `print-pdf` rather than driving `printpdf` directly (see src/gen_pdf.rs).
+pdf-out = ["print-pdf"]
 full = ["hwp", "hwpx", "pdf", "docx", "xls", "rtf", "epub", "image-processing", "heic", "docx-out", "pdf-out"]
 watch = ["dep:notify", "dep:url", "dep:ureq"]
 ocr = ["dep:ort", "dep:image"]

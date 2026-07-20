@@ -3,7 +3,7 @@ MDM 내장 프리셋 정의.
 
 프리셋은 자주 사용되는 이미지/미디어 변환 설정을 미리 정의한 것입니다.
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 # 이미지 크기 프리셋
 SIZE_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -232,9 +232,9 @@ def get_preset(preset_name: str) -> Optional[Dict[str, Any]]:
         return SIZE_PRESETS[preset_name]
 
     # 모든 카테고리에서 검색
-    for category in PRESETS.values():
-        if preset_name in category:
-            return category[preset_name]
+    for preset_group in PRESETS.values():
+        if preset_name in preset_group:
+            return cast(Dict[str, Any], preset_group[preset_name])
 
     return None
 

@@ -3,10 +3,10 @@ MDM 사이드카 파일을 로드하고 파싱합니다.
 """
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 try:
-    import yaml
+    import yaml  # type: ignore[import-untyped]  # PyYAML has no bundled type stubs
     _YAML_AVAILABLE = True
 except ImportError:
     _YAML_AVAILABLE = False
@@ -77,7 +77,7 @@ class MDMLoader:
             ValueError: 지원하지 않는 확장자이거나 파싱 실패 시
         """
         if ext == '.json':
-            return json.loads(content)
+            return cast(Dict[str, Any], json.loads(content))
         elif ext in ('.yaml', '.yml', '.mdm'):
             if not _YAML_AVAILABLE:
                 raise ValueError("PyYAML is required for YAML/MDM files. Run: pip install pyyaml")
