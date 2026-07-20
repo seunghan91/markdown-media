@@ -433,3 +433,316 @@ pub fn xml_escape_text(s: &str) -> String {
     }
     out
 }
+
+// ─── source-map precise editing (public API) ────────────────────────────────
+//
+// The [`Scan`] returned by [`scan_section`] already is the "XML byte-position
+// map" — every paragraph/cell records the exact `<hp:t>` content byte ranges.
+// The primitives below turn that map into format-preserving edits: replacing an
+// arbitrary sub-range of a paragraph's text while leaving every other byte
+// (attributes, run/charPr structure, tab/br siblings, unchanged runs) intact.
+
+/// A `[start, end)` byte-range replacement into a section XML string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpliceEdit {
+    pub start: usize,
+    pub end: usize,
+    pub replacement: String,
+}
+
+/// Strip XML 1.0-invalid C0 control chars — everything below U+0020 except
+/// tab/newline/CR. `xml_escape_text` escapes `&<>` but passes these through
+/// verbatim, and a stray NUL/`\x0B` makes 한글 reject the document. Mirrors the
+/// reference filler, which sanitizes replacement text before splicing.
+fn sanitize_xml_text(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c >= ' ' || c == '\t' || c == '\n' || c == '\r')
+        .collect()
+}
+
+/// Apply splices to `xml`. Ranges are sorted and applied back-to-front so
+/// earlier offsets stay valid.
+///
+/// Defensive against untrusted / stale source maps: any splice that is reversed
+/// (`start > end`), out of bounds (`end > xml.len()`), or does not land on UTF-8
+/// `char` boundaries is **dropped** rather than passed to `replace_range` (which
+/// would panic). Overlapping ranges are also dropped, earlier wins. The builders
+/// below never emit such splices, so dropping only guards against caller error —
+/// the behavior is documented so it is not a silent surprise.
+pub fn apply_splices(xml: &str, mut splices: Vec<SpliceEdit>) -> String {
+    let len = xml.len();
+    splices.retain(|s| {
+        s.start <= s.end
+            && s.end <= len
+            && xml.is_char_boundary(s.start)
+            && xml.is_char_boundary(s.end)
+    });
+    splices.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+    let mut merged: Vec<SpliceEdit> = Vec::new();
+    for s in splices {
+        if let Some(prev) = merged.last() {
+            if s.start < prev.end {
+                continue;
+            }
+        }
+        merged.push(s);
+    }
+    let mut out = xml.to_string();
+    for s in merged.into_iter().rev() {
+        out.replace_range(s.start..s.end, &s.replacement);
+    }
+    out
+}
+
+/// True when a stored run range still indexes `xml` safely: ordered, in bounds,
+/// and on UTF-8 `char` boundaries. Guards against stale (post-edit) or
+/// externally-constructed `TextRun` coordinates that would otherwise panic when
+/// used to slice `xml`.
+fn run_range_valid(r: &TextRun, xml: &str) -> bool {
+    r.start <= r.end
+        && r.end <= xml.len()
+        && xml.is_char_boundary(r.start)
+        && xml.is_char_boundary(r.end)
+}
+
+/// Raw, undecoded concatenation of a paragraph's `<hp:t>` content — the
+/// coordinate system used by [`build_range_splices`]. Returns `None` when a run
+/// coordinate is stale/out of bounds (would panic on slice) or when any run's
+/// raw content carries an entity/markup char (`<`/`&`), because then a byte
+/// offset in this string would not map cleanly onto the XML.
+pub fn para_t_text(para: &Para, xml: &str) -> Option<String> {
+    let mut out = String::new();
+    for r in &para.runs {
+        if !run_range_valid(r, xml) {
+            return None;
+        }
+        let raw = &xml[r.start..r.end];
+        if raw.contains('<') || raw.contains('&') {
+            return None;
+        }
+        out.push_str(raw);
+    }
+    Some(out)
+}
+
+/// Precise sub-range edit: replace the `[start, end)` byte range of a
+/// paragraph's t-domain text (see [`para_t_text`]) with `replacement`, emitting
+/// splices that touch only `<hp:t>` content and preserve run/tab/br structure.
+///
+/// `start == end` inserts at that offset. Returns `None` when the range is out
+/// of bounds, when `start`/`end` are not `char` boundaries of the t-domain
+/// string (splicing mid-codepoint would corrupt the XML and panic on apply),
+/// when a contributing run holds an entity/markup char (offsets would be
+/// ambiguous), or when the range covers no `<hp:t>` content. Offsets are byte
+/// offsets into the t-domain string. `replacement` is stripped of XML-invalid
+/// C0 control chars before escaping.
+pub fn build_range_splices(
+    para: &Para,
+    xml: &str,
+    start: usize,
+    end: usize,
+    replacement: &str,
+) -> Option<Vec<SpliceEdit>> {
+    if end < start {
+        return None;
+    }
+    // Align t-runs to the t-domain offset, bailing on entity/markup content.
+    // `t_text` mirrors the concatenated raw content so offsets can be validated
+    // against real codepoint boundaries.
+    struct Seg {
+        content_start: usize,
+        from: usize,
+        to: usize,
+    }
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut t_text = String::new();
+    let mut offset = 0usize;
+    for r in &para.runs {
+        // Validate the stored run range *before* slicing — a stale/non-boundary
+        // coordinate must yield None, not panic in the slice below.
+        if !run_range_valid(r, xml) {
+            return None;
+        }
+        let raw = &xml[r.start..r.end];
+        if raw.contains('<') || raw.contains('&') {
+            return None;
+        }
+        let len = raw.len();
+        segs.push(Seg { content_start: r.start, from: offset, to: offset + len });
+        t_text.push_str(raw);
+        offset += len;
+    }
+    if segs.is_empty() || end > offset {
+        return None;
+    }
+    // Reject offsets that split a multi-byte codepoint — otherwise the emitted
+    // splice would land mid-char and panic in `apply_splices::replace_range`.
+    if !t_text.is_char_boundary(start) || !t_text.is_char_boundary(end) {
+        return None;
+    }
+
+    let escaped = xml_escape_text(&sanitize_xml_text(replacement));
+
+    // Insertion — into the first segment containing `start`.
+    if start == end {
+        for seg in &segs {
+            if start >= seg.from && start <= seg.to {
+                let at = seg.content_start + (start - seg.from);
+                return Some(vec![SpliceEdit { start: at, end: at, replacement: escaped }]);
+            }
+        }
+        return None;
+    }
+
+    // Replacement — new text into the first overlapping segment, other overlaps emptied.
+    let mut splices = Vec::new();
+    let mut placed = false;
+    for seg in &segs {
+        if seg.to <= start || seg.from >= end {
+            continue;
+        }
+        let local_start = start.max(seg.from) - seg.from;
+        let local_end = end.min(seg.to) - seg.from;
+        splices.push(SpliceEdit {
+            start: seg.content_start + local_start,
+            end: seg.content_start + local_end,
+            replacement: if placed { String::new() } else { escaped.clone() },
+        });
+        placed = true;
+    }
+    if placed {
+        Some(splices)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod sourcemap_tests {
+    use super::*;
+
+    fn body_para(xml: &str) -> Para {
+        let scan = scan_section(xml);
+        scan.body_paras.into_iter().next().expect("one body paragraph")
+    }
+
+    #[test]
+    fn range_replace_within_single_run() {
+        let xml = r#"<hp:p><hp:run><hp:t>Hello world</hp:t></hp:run></hp:p>"#;
+        let para = body_para(xml);
+        assert_eq!(para_t_text(&para, xml).as_deref(), Some("Hello world"));
+        // replace "world" (offset 6..11) with "there"
+        let splices = build_range_splices(&para, xml, 6, 11, "there").unwrap();
+        let out = apply_splices(xml, splices);
+        assert!(out.contains("<hp:t>Hello there</hp:t>"), "{out}");
+    }
+
+    #[test]
+    fn range_insert_is_zero_width() {
+        let xml = r#"<hp:p><hp:run><hp:t>AB</hp:t></hp:run></hp:p>"#;
+        let para = body_para(xml);
+        let splices = build_range_splices(&para, xml, 1, 1, "X").unwrap();
+        assert_eq!(splices.len(), 1);
+        assert_eq!(splices[0].start, splices[0].end);
+        let out = apply_splices(xml, splices);
+        assert!(out.contains("<hp:t>AXB</hp:t>"), "{out}");
+    }
+
+    #[test]
+    fn range_spans_two_runs_preserving_structure() {
+        // Two runs (distinct charPr) with a tab-like sibling between them.
+        let xml = r#"<hp:p><hp:run charPrIDRef="0"><hp:t>abc</hp:t></hp:run><hp:run charPrIDRef="1"><hp:t>def</hp:t></hp:run></hp:p>"#;
+        let para = body_para(xml);
+        assert_eq!(para_t_text(&para, xml).as_deref(), Some("abcdef"));
+        // replace "cd" (offset 2..4) across the run boundary
+        let splices = build_range_splices(&para, xml, 2, 4, "X").unwrap();
+        let out = apply_splices(xml, splices);
+        // second run's charPr and tag survive; text becomes ab|X + ef
+        assert!(out.contains(r#"charPrIDRef="1""#), "second run kept: {out}");
+        assert!(out.contains("<hp:t>abX</hp:t>"), "{out}");
+        assert!(out.contains("<hp:t>ef</hp:t>"), "{out}");
+    }
+
+    #[test]
+    fn entity_content_bails() {
+        let xml = r#"<hp:p><hp:run><hp:t>a&amp;b</hp:t></hp:run></hp:p>"#;
+        let para = body_para(xml);
+        assert!(para_t_text(&para, xml).is_none());
+        assert!(build_range_splices(&para, xml, 0, 1, "z").is_none());
+    }
+
+    #[test]
+    fn out_of_bounds_bails() {
+        let xml = r#"<hp:p><hp:run><hp:t>ab</hp:t></hp:run></hp:p>"#;
+        let para = body_para(xml);
+        assert!(build_range_splices(&para, xml, 0, 99, "z").is_none());
+    }
+
+    #[test]
+    fn multibyte_non_char_boundary_bails() {
+        // "가나다" — each char is 3 UTF-8 bytes, so offset 1 splits 가.
+        let xml = r#"<hp:p><hp:run><hp:t>가나다</hp:t></hp:run></hp:p>"#;
+        let para = body_para(xml);
+        assert_eq!(para_t_text(&para, xml).as_deref(), Some("가나다"));
+        // start mid-codepoint
+        assert!(build_range_splices(&para, xml, 1, 3, "X").is_none());
+        // end mid-codepoint
+        assert!(build_range_splices(&para, xml, 0, 2, "X").is_none());
+        // whole valid boundary still works (replace first char)
+        let splices = build_range_splices(&para, xml, 0, 3, "X").unwrap();
+        let out = apply_splices(xml, splices);
+        assert!(out.contains("<hp:t>X나다</hp:t>"), "{out}");
+    }
+
+    #[test]
+    fn apply_splices_drops_invalid_ranges_without_panic() {
+        // multibyte content so a mid-byte offset is reachable
+        let xml = "가나";
+        let len = xml.len(); // 6
+        // reversed, out-of-bounds, and mid-codepoint splices must be dropped
+        let bad = vec![
+            SpliceEdit { start: 3, end: 1, replacement: "z".into() }, // reversed
+            SpliceEdit { start: len + 1, end: len + 1, replacement: "z".into() }, // OOB
+            SpliceEdit { start: 1, end: 4, replacement: "z".into() }, // mid-codepoint
+        ];
+        // no panic; every invalid splice dropped → xml unchanged
+        assert_eq!(apply_splices(xml, bad), xml);
+        // a valid splice still applies alongside dropped ones
+        let mixed = vec![
+            SpliceEdit { start: 1, end: 2, replacement: "!".into() }, // mid-codepoint, dropped
+            SpliceEdit { start: 0, end: 3, replacement: "X".into() }, // valid: replace 가
+        ];
+        assert_eq!(apply_splices(xml, mixed), "X나");
+    }
+
+    #[test]
+    fn stale_run_coords_bail_without_panic() {
+        let xml = r#"<hp:p><hp:run><hp:t>가나</hp:t></hp:run></hp:p>"#;
+        let mut para = body_para(xml);
+        // simulate a source map gone stale against a shorter/edited xml, plus a
+        // run range landing mid-codepoint — both must bail, not panic.
+        let short_xml = "가";
+        assert!(build_range_splices(&para, short_xml, 0, 1, "X").is_none());
+        assert!(para_t_text(&para, short_xml).is_none());
+        // externally-mutated TextRun with a mid-codepoint boundary
+        para.runs = vec![TextRun { start: 0, end: 1 }]; // splits 가 (3 bytes)
+        let g = "가";
+        assert!(build_range_splices(&para, g, 0, 1, "X").is_none());
+        assert!(para_t_text(&para, g).is_none());
+    }
+
+    #[test]
+    fn c0_control_chars_stripped() {
+        let xml = r#"<hp:p><hp:run><hp:t>ab</hp:t></hp:run></hp:p>"#;
+        let para = body_para(xml);
+        // NUL and vertical-tab are XML-invalid; tab/newline are kept
+        let splices = build_range_splices(&para, xml, 0, 2, "x\u{0}y\u{0B}\tz\n").unwrap();
+        assert_eq!(splices.len(), 1);
+        let rep = &splices[0].replacement;
+        assert!(!rep.contains('\u{0}'), "NUL stripped: {rep:?}");
+        assert!(!rep.contains('\u{0B}'), "VT stripped: {rep:?}");
+        assert!(rep.contains('\t') && rep.contains('\n'), "tab/newline kept: {rep:?}");
+        let out = apply_splices(xml, splices);
+        assert!(!out.contains('\u{0}') && !out.contains('\u{0B}'), "{out:?}");
+    }
+}
