@@ -39,7 +39,7 @@ class NotYetAvailableError(RuntimeError):
 
 def _try_import_mdm_core() -> Any:
     try:
-        import mdm_core  # type: ignore[import-not-found]
+        import mdm_core  # type: ignore[import-untyped]  # PyO3 extension has no py.typed marker
     except ImportError:
         return None
     return mdm_core
@@ -104,7 +104,7 @@ def safe_path(file_path: str, allowed_exts: set[str] | None = None) -> Path:
     return resolved
 
 
-def _run_cli(args: list[str], input_bytes: bytes | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
+def _run_cli(args: list[str], input_bytes: bytes | None = None, timeout: int = 120) -> subprocess.CompletedProcess[bytes]:
     if _CORE_BIN is None:
         raise BackendUnavailableError(
             "mdm-core 네이티브 모듈과 hwp2mdm CLI 바이너리를 모두 찾을 수 없습니다. "

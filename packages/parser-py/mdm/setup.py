@@ -25,6 +25,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 SERVER_NAME = "mdm"
 
@@ -111,7 +112,7 @@ def build_zed_entry(system: str | None = None) -> dict:
 def read_json_file(path: Path) -> dict:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return cast(dict, json.loads(path.read_text(encoding="utf-8")))
 
 
 def backup_path_for(path: Path) -> Path:
