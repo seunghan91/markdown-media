@@ -1441,10 +1441,19 @@ fn extract_equation_markdown(inner: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.contains('\n') {
-        Some(format!("\n\n$$\n{}\n$$\n\n", trimmed))
+    // Normalize HWP's HULK equation script to LaTeX so both the HWP and HWPX
+    // parsers emit identical math. Block vs inline is decided from the source
+    // script structure (multi-line HULK => display block).
+    let block = trimmed.contains('\n');
+    let latex = crate::equation::hulk_to_latex(trimmed);
+    let latex = latex.trim();
+    if latex.is_empty() {
+        return None;
+    }
+    if block {
+        Some(format!("\n\n$$\n{}\n$$\n\n", latex))
     } else {
-        Some(format!(" ${}$ ", trimmed))
+        Some(format!(" ${}$ ", latex))
     }
 }
 

@@ -192,12 +192,12 @@ mod docx_tests {
         let table = DocxTable {
             rows: vec![
                 vec![
-                    TableCell { content: "A".to_string(), col_span: 1, row_span: 1 },
-                    TableCell { content: "B".to_string(), col_span: 1, row_span: 1 },
+                    TableCell { content: "A".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
+                    TableCell { content: "B".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
                 ],
                 vec![
-                    TableCell { content: "1".to_string(), col_span: 1, row_span: 1 },
-                    TableCell { content: "2".to_string(), col_span: 1, row_span: 1 },
+                    TableCell { content: "1".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
+                    TableCell { content: "2".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
                 ],
             ],
             has_header: true,
@@ -300,6 +300,8 @@ mod pdf_tests {
                 vec!["Alice".to_string(), "30".to_string()],
             ],
             column_count: 2,
+            y_top: 100.0,
+            y_bottom: 80.0,
         };
 
         let md = table.to_markdown();
@@ -316,22 +318,22 @@ mod pdf_tests {
         fn detect_style(name: &str) -> FontStyle {
             let name_lower = name.to_lowercase();
             FontStyle {
-                bold: name_lower.contains("bold"),
-                italic: name_lower.contains("italic") || name_lower.contains("oblique"),
+                is_bold: name_lower.contains("bold"),
+                is_italic: name_lower.contains("italic") || name_lower.contains("oblique"),
             }
         }
 
         let bold = detect_style("Arial-Bold");
-        assert!(bold.bold);
-        assert!(!bold.italic);
+        assert!(bold.is_bold);
+        assert!(!bold.is_italic);
 
         let italic = detect_style("Arial-Italic");
-        assert!(!italic.bold);
-        assert!(italic.italic);
+        assert!(!italic.is_bold);
+        assert!(italic.is_italic);
 
         let bold_italic = detect_style("Arial-BoldItalic");
-        assert!(bold_italic.bold);
-        assert!(bold_italic.italic);
+        assert!(bold_italic.is_bold);
+        assert!(bold_italic.is_italic);
     }
 
     #[test]

@@ -1,0 +1,31 @@
+# PDF page triage thresholds
+# Tuned against bench/fixtures + bench/ground_truth; do not hardcode in Rust.
+# See plan/pdf-triage.md for rationale.
+
+[stage1]
+text_native_min_text_cov = 0.20
+text_native_max_image_cov = 0.10
+scanned_max_text_cov = 0.05
+scanned_min_image_cov = 0.60
+# n_pages == n_images → single-image-per-page scan (strong signal)
+scanned_page_image_ratio = 1.0
+
+[stage2]
+font_reliability_good = 0.90
+font_reliability_bad = 0.50
+# Text rendering mode 3 = invisible (often OCR underlay on scanned pages)
+invisible_text_threshold = 0.50
+
+[stage3]
+ocr_iou_good = 0.70
+ocr_iou_fair = 0.50
+# Text-layer garble ratio: fraction of decoded chars that are replacement
+# (U+FFFD) / control / Private-Use-Area. Above this → route to OCR even
+# when the text layer is structurally complete.
+garbled_threshold = 0.30
+
+[confidence]
+high = 0.85
+medium = 0.65
+# Below this → escalate to next stage
+low = 0.50
