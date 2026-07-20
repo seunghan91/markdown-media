@@ -12,11 +12,13 @@ mod fill;
 mod matcher;
 mod recognize;
 mod scan;
+mod seal;
 mod zip_patch;
 
 pub use fill::{fill_hwpx, patch_hwpx, FillResult, PatchResult};
 pub use matcher::{format_fill_value, normalize_label, FillValue, RawFillInput};
 pub use recognize::{infer_field_type, is_label_cell, FormFieldType};
+pub use seal::{place_seal_hwpx, SealAnchor, SealOptions};
 pub use zip_patch::{patch_zip_entries, read_zip_entries};
 
 use std::collections::HashMap;

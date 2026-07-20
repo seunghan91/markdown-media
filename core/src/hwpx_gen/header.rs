@@ -25,8 +25,11 @@ pub fn generate_container_xml() -> String {
     )
 }
 
-/// content.hpf manifest. `image_items` are pre-built `<opf:item .../>` strings.
-pub fn generate_manifest(image_items: &[String], layout: &str) -> String {
+/// content.hpf manifest. `chart_items`/`image_items` are pre-built
+/// `<opf:item .../>` strings (charts listed first, matching part registration
+/// order).
+pub fn generate_manifest(chart_items: &[String], image_items: &[String], layout: &str) -> String {
+    let charts: String = chart_items.iter().map(|x| format!("\n    {x}")).collect();
     let imgs: String = image_items.iter().map(|x| format!("\n    {x}")).collect();
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>\n\
@@ -37,7 +40,7 @@ pub fn generate_manifest(image_items: &[String], layout: &str) -> String {
 \x20 </opf:metadata>\n\
 \x20 <opf:manifest>\n\
 \x20   <opf:item id=\"header\" href=\"Contents/header.xml\" media-type=\"application/xml\"/>\n\
-\x20   <opf:item id=\"section0\" href=\"Contents/section0.xml\" media-type=\"application/xml\"/>{imgs}\n\
+\x20   <opf:item id=\"section0\" href=\"Contents/section0.xml\" media-type=\"application/xml\"/>{charts}{imgs}\n\
 \x20 </opf:manifest>\n\
 \x20 <opf:spine>\n\
 \x20   <opf:itemref idref=\"header\" linear=\"no\"/>\n\
@@ -48,6 +51,7 @@ pub fn generate_manifest(image_items: &[String], layout: &str) -> String {
         hpf = NS_HPF,
         head = NS_HEAD,
         layout = escape_xml(layout),
+        charts = charts,
         imgs = imgs
     )
 }
@@ -91,7 +95,9 @@ fn build_font_faces(body_face: &str) -> String {
     )
 }
 
-fn build_char_properties(theme: &ResolvedTheme, preset: Option<&ResolvedPreset>) -> String {
+/// Static charPr id count (0..=10, 11 entries) — the base id
+/// [`super::profile::profile_char_pr_base`] assumes for profile-appended charPrs.
+fn build_char_properties(theme: &ResolvedTheme, preset: Option<&ResolvedPreset>, extra: &[String]) -> String {
     let (body, code, h1, h2, h3, h4) = match preset {
         None => (1000u32, 900u32, 1800u32, 1400u32, 1200u32, 1100u32),
         Some(p) => {
@@ -123,11 +129,13 @@ fn build_char_properties(theme: &ResolvedTheme, preset: Option<&ResolvedPreset>)
         char_pr(CHAR_TABLE_HEADER, body, theme.table_header_bold, false, 0, &theme.table_header, 100),
         char_pr(CHAR_QUOTE, body, false, true, 0, &theme.quote, 100),
     ];
-    format!(
-        "<hh:charProperties itemCnt=\"{}\">\n{}\n    </hh:charProperties>",
-        rows.len(),
-        rows.join("\n")
-    )
+    let item_cnt = rows.len() + extra.len();
+    let mut body_xml = rows.join("\n");
+    if !extra.is_empty() {
+        body_xml.push('\n');
+        body_xml.push_str(&extra.join("\n"));
+    }
+    format!("<hh:charProperties itemCnt=\"{item_cnt}\">\n{body_xml}\n    </hh:charProperties>")
 }
 
 fn build_para_properties(preset: Option<&ResolvedPreset>) -> String {
@@ -189,22 +197,35 @@ fn build_numberings() -> String {
     )
 }
 
-fn build_border_fills(preset: Option<&ResolvedPreset>) -> (String, u32) {
+/// The static header-shading borderFill id — 2 (general mode) or 3 (preset,
+/// which adds an extra shaded entry). Pure function of `preset`, computable
+/// before the header XML itself so [`super::profile::build_profile_remap`]'s
+/// `border_fill_base` (`header_border_fill_id + 1`) can be derived up front.
+pub fn header_border_fill_id(preset: Option<&ResolvedPreset>) -> u32 {
+    if preset.is_some() {
+        3
+    } else {
+        2
+    }
+}
+
+fn build_border_fills(preset: Option<&ResolvedPreset>, extra: &[String]) -> (String, u32) {
     let thin = Some(("0.12 mm", "#000000", None));
     let mut items = vec![
         border_fill_entry(1, None, None, None, None, None),
         border_fill_entry(2, thin, thin, thin, thin, None),
     ];
-    let mut header_bf = 2;
+    let header_bf = header_border_fill_id(preset);
     if preset.is_some() {
-        header_bf = 3;
         items.push(border_fill_entry(3, thin, thin, thin, thin, Some("#E6E6E6")));
     }
-    let xml = format!(
-        "<hh:borderFills itemCnt=\"{}\">\n{}\n    </hh:borderFills>",
-        items.len(),
-        items.join("\n")
-    );
+    let item_cnt = items.len() + extra.len();
+    let mut body_xml = items.join("\n");
+    if !extra.is_empty() {
+        body_xml.push('\n');
+        body_xml.push_str(&extra.join("\n"));
+    }
+    let xml = format!("<hh:borderFills itemCnt=\"{item_cnt}\">\n{body_xml}\n    </hh:borderFills>");
     (xml, header_bf)
 }
 
@@ -229,11 +250,19 @@ fn build_styles(preset: Option<&ResolvedPreset>) -> String {
 }
 
 /// Build Contents/header.xml. Returns (xml, header_border_fill_id).
-pub fn generate_header_xml(theme: &ResolvedTheme, preset: Option<&ResolvedPreset>) -> (String, u32) {
+/// `extra_border_fills`/`extra_char_prs` are pre-built `<hh:borderFill>`/
+/// `<hh:charPr>` fragments appended after the static entries (format profile
+/// remap — see [`super::profile`]); empty when no profile is in play.
+pub fn generate_header_xml(
+    theme: &ResolvedTheme,
+    preset: Option<&ResolvedPreset>,
+    extra_border_fills: &[String],
+    extra_char_prs: &[String],
+) -> (String, u32) {
     let body_face = "함초롬바탕";
-    let char_props = build_char_properties(theme, preset);
+    let char_props = build_char_properties(theme, preset, extra_char_prs);
     let para_props = build_para_properties(preset);
-    let (border_fills, header_bf) = build_border_fills(preset);
+    let (border_fills, header_bf) = build_border_fills(preset, extra_border_fills);
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\" ?>\n\
 <hh:head xmlns:hh=\"{head}\" xmlns:hp=\"{para}\" xmlns:hc=\"{core}\" version=\"1.4\" secCnt=\"1\">\n\

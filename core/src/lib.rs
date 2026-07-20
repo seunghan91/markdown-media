@@ -12,8 +12,11 @@
 
 pub mod hwp;
 pub mod hwp3;
+pub mod hwpml;
 pub mod hwpx;
 pub mod hwpx_gen;
+#[cfg(feature = "hwpx-render")]
+pub mod hwpx_render;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod docx;
@@ -39,6 +42,7 @@ pub mod csv_parser;
 pub mod txt_parser;
 pub mod plugin;
 pub mod ir;
+pub mod print;
 pub mod chunker;
 pub mod ocr;
 #[cfg(feature = "image-processing")]

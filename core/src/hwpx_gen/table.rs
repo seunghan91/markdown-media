@@ -6,10 +6,12 @@
 //! government table grammar (border hierarchy, header shading, label columns)
 //! is reduced to a single shared border + optional header shade — see mod.rs.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::blocks::generate_runs;
 use super::ids::{escape_xml, ResolvedTheme, CHAR_BOLD, CHAR_NORMAL, CHAR_TABLE_HEADER, PARA_NORMAL};
+use super::profile::{normalize_anchor, normalize_row_anchor, take_profile, ProfileRemap};
 
 const TABLE_ID_BASE: u32 = 1000;
 static TABLE_ID: AtomicU32 = AtomicU32::new(TABLE_ID_BASE);
@@ -123,6 +125,44 @@ pub fn compute_col_widths(col_max: &[f64], total_width: i32) -> Vec<i32> {
     widths
 }
 
+/// Minimum usable column width (HWPUNIT) — mirrors [`compute_col_widths`]'s
+/// absolute floor (`min_w = max(total * 0.06, 2000)`). A column narrower than
+/// this can't hold even minimal content/margins, so a zero or near-zero
+/// `width_hwpunit` profile value is treated as unusable rather than emitted
+/// as a broken `<hp:cellSz width="0".../>`.
+const MIN_COL_WIDTH: i32 = 2000;
+
+/// Fallback column widths from a matched profile's total table width when it
+/// has no (or a length-mismatched) per-column breakdown — evenly split,
+/// remainder to the leading columns. Still preferable to the generic
+/// content-based [`compute_col_widths`], which would use the *generated*
+/// document's total width rather than the source table's actual width.
+///
+/// Returns `None` (caller falls back to [`compute_col_widths`]) when the
+/// table width can't be split into at least [`MIN_COL_WIDTH`] per column —
+/// e.g. a missing/zero `width_hwpunit`, or more columns than the width
+/// reasonably supports.
+fn even_col_widths(total_width: i32, col_cnt: usize) -> Option<Vec<i32>> {
+    let col_cnt = col_cnt.max(1);
+    if total_width <= 0 {
+        return None;
+    }
+    let base = total_width / col_cnt as i32;
+    if base < MIN_COL_WIDTH {
+        return None;
+    }
+    let mut rem = total_width - base * col_cnt as i32;
+    let mut widths = vec![base; col_cnt];
+    for w in widths.iter_mut() {
+        if rem <= 0 {
+            break;
+        }
+        *w += 1;
+        rem -= 1;
+    }
+    Some(widths)
+}
+
 fn row_height(cells: &[String], widths: &[i32], char_height: u32, preset: bool) -> i32 {
     if !preset {
         return 1500;
@@ -202,8 +242,16 @@ fn tbl_wrapper(id: u32, row_cnt: usize, col_cnt: usize, tbl_w: i32, tbl_h: i32, 
     )
 }
 
-/// GFM grid table → a `<hp:p>` hosting the `<hp:tbl>`.
-pub fn generate_table(rows: &[Vec<String>], theme: &ResolvedTheme, style: Option<&TableStyle>) -> String {
+/// GFM grid table → a `<hp:p>` hosting the `<hp:tbl>`. `profile`/`table_seq`
+/// optionally reproduce a source document's borders/shading/column widths/
+/// cell fonts (issue #41) — see [`super::profile`].
+pub fn generate_table(
+    rows: &[Vec<String>],
+    theme: &ResolvedTheme,
+    style: Option<&TableStyle>,
+    profile: Option<&ProfileRemap>,
+    table_seq: usize,
+) -> String {
     let row_cnt = rows.len();
     let col_cnt = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
     let total_w = style.map(|s| s.total_width).unwrap_or(44000);
@@ -218,7 +266,17 @@ pub fn generate_table(rows: &[Vec<String>], theme: &ResolvedTheme, style: Option
             }
         }
     }
-    let col_widths = compute_col_widths(&col_max, total_w);
+
+    let anchor = rows.first().and_then(|r| r.first()).map(|c| normalize_anchor(c)).unwrap_or_default();
+    let row_anchor = rows.first().map(|r| normalize_row_anchor(r)).unwrap_or_default();
+    let matched = profile
+        .and_then(|p| take_profile(p, row_cnt as u32, col_cnt as u32, &anchor, table_seq as u32, &row_anchor));
+
+    let col_widths = matched
+        .and_then(|m| m.col_widths.clone())
+        .filter(|w| w.len() == col_cnt)
+        .or_else(|| matched.and_then(|m| m.width).and_then(|w| even_col_widths(w, col_cnt)))
+        .unwrap_or_else(|| compute_col_widths(&col_max, total_w));
     let use_header_style = style.is_none() && (theme.table_header != theme.body || theme.table_header_bold);
     let tbl_id = next_table_id();
 
@@ -234,20 +292,33 @@ pub fn generate_table(rows: &[Vec<String>], theme: &ResolvedTheme, style: Option
         }
         let mut tds = String::new();
         for (col_idx, cell) in cells.iter().enumerate() {
-            let char_pr = if is_header && use_header_style {
+            let mut char_pr = if is_header && use_header_style {
                 CHAR_TABLE_HEADER
             } else if is_header && style.is_some() {
                 CHAR_BOLD
             } else {
                 CHAR_NORMAL
             };
-            let bf = if is_header {
+            let mut bf = if is_header {
                 style.map(|s| s.header_bf).unwrap_or(2)
             } else {
                 2
             };
+            let mut height = cell_h;
+            if let Some(m) = matched {
+                let k = (row_idx as u32, col_idx as u32);
+                if let Some(&gid) = m.cell_bf.get(&k) {
+                    bf = gid;
+                }
+                if let Some(&gid) = m.cell_char.get(&k) {
+                    char_pr = gid;
+                }
+                if let Some(&h) = m.cell_h.get(&k) {
+                    height = h;
+                }
+            }
             tds.push_str(&tc_xml(
-                cell, col_idx, row_idx, 1, 1, col_widths[col_idx], cell_h, char_pr, bf, is_header, None,
+                cell, col_idx, row_idx, 1, 1, col_widths[col_idx], height, char_pr, bf, is_header, None,
             ));
         }
         tr_elems.push_str(&format!("<hp:tr>{tds}</hp:tr>"));
@@ -507,12 +578,16 @@ fn layout_html_rows(rows: &[Vec<HtmlCell>]) -> (Vec<PlacedCell>, usize, usize) {
     (placed, row_cnt, col_cnt)
 }
 
-/// Merged HTML table → `<hp:tbl>` XML, or None if unparseable.
+/// Merged HTML table → `<hp:tbl>` XML, or None if unparseable. `profile`/
+/// `table_seq` optionally reproduce a source document's borders/shading/
+/// column widths/cell fonts (issue #41) — see [`super::profile`].
 pub fn generate_html_table_xml(
     raw_html: &str,
     theme: &ResolvedTheme,
     total_width: i32,
     style: Option<&TableStyle>,
+    profile: Option<&ProfileRemap>,
+    table_seq: usize,
 ) -> Option<String> {
     let rows = parse_html_rows(raw_html);
     if rows.is_empty() {
@@ -540,7 +615,29 @@ pub fn generate_html_table_xml(
             }
         }
     }
-    let col_widths = compute_col_widths(&col_max, total_width);
+
+    // Anchor/row-anchor fingerprints (only a cell's own starting column
+    // carries text — columns only covered by a colSpan stay blank, matching
+    // the extractor's row0Texts semantics).
+    let anchor_idx = placed.iter().position(|p| p.r == 0 && p.c == 0);
+    let anchor = anchor_idx.map(|i| normalize_anchor(&cell_lines[i].join(" "))).unwrap_or_default();
+    let row0: HashMap<usize, &Vec<String>> = placed
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.r == 0)
+        .map(|(i, p)| (p.c, &cell_lines[i]))
+        .collect();
+    let row_anchor_cells: Vec<String> =
+        (0..col_cnt).map(|c| row0.get(&c).map(|l| l.join(" ")).unwrap_or_default()).collect();
+    let row_anchor = normalize_row_anchor(&row_anchor_cells);
+    let matched = profile
+        .and_then(|p| take_profile(p, row_cnt as u32, col_cnt as u32, &anchor, table_seq as u32, &row_anchor));
+
+    let col_widths = matched
+        .and_then(|m| m.col_widths.clone())
+        .filter(|w| w.len() == col_cnt)
+        .or_else(|| matched.and_then(|m| m.width).and_then(|w| even_col_widths(w, col_cnt)))
+        .unwrap_or_else(|| compute_col_widths(&col_max, total_width));
     let use_header_style = style.is_none() && (theme.table_header != theme.body || theme.table_header_bold);
     let tbl_id = next_table_id();
 
@@ -571,19 +668,31 @@ pub fn generate_html_table_xml(
     let mut tc_by_row: Vec<Vec<String>> = vec![Vec::new(); row_cnt];
     for (i, cell) in placed.iter().enumerate() {
         let is_header = cell.is_header;
-        let char_pr = if is_header && use_header_style {
+        let mut char_pr = if is_header && use_header_style {
             CHAR_TABLE_HEADER
         } else if is_header && style.is_some() {
             CHAR_BOLD
         } else {
             CHAR_NORMAL
         };
-        let bf = if is_header {
+        let mut bf = if is_header {
             style.map(|s| s.header_bf).unwrap_or(2)
         } else {
             2
         };
-        let cell_height: i32 = row_heights[cell.r..(cell.r + cell.row_span).min(row_cnt)].iter().sum();
+        let mut cell_height: i32 = row_heights[cell.r..(cell.r + cell.row_span).min(row_cnt)].iter().sum();
+        if let Some(m) = matched {
+            let k = (cell.r as u32, cell.c as u32);
+            if let Some(&gid) = m.cell_bf.get(&k) {
+                bf = gid;
+            }
+            if let Some(&gid) = m.cell_char.get(&k) {
+                char_pr = gid;
+            }
+            if let Some(&h) = m.cell_h.get(&k) {
+                cell_height = h;
+            }
+        }
         let text = if cell_lines[i].is_empty() {
             String::new()
         } else {

@@ -30,6 +30,14 @@ full = ["hwp", "hwpx", "pdf", "docx", "xls", "rtf", "epub", "image-processing", 
 watch = ["dep:notify", "dep:url", "dep:ureq"]
 ocr = ["dep:ort", "dep:image"]
 url-fetch = ["dep:ureq", "dep:htmd"]
+# HWPX layout-preserving SVG renderer (port of kkdoc src/render). roxmltree =
+# read-only DOM for section/header XML. PNG rasterization reuses the existing
+# resvg dep (feature `hwpx-render-png`).
+hwpx-render = ["dep:roxmltree"]
+hwpx-render-png = ["hwpx-render", "dep:resvg"]
+# print module (IRBlock[] -> print HTML, always on) + optional printpdf-based
+# best-effort PDF path (port of kkdoc src/print, see core/src/print/mod.rs).
+print-pdf = ["dep:printpdf"]
 
 [dependencies]
 cfb = "0.12.1"
@@ -53,6 +61,7 @@ lopdf = { version = "0.34", optional = true }
 # prebuilt onnxruntime binary at build time (download-binaries is on by default).
 ort = { version = "2.0.0-rc.10", optional = true }
 quick-xml = "0.31"
+roxmltree = { version = "0.20", optional = true }
 thiserror = "2.0"
 regex = "1.10"
 fancy-regex = "0.18"

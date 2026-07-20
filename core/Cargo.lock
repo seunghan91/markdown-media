@@ -2146,6 +2146,7 @@ dependencies = [
  "rayon",
  "regex",
  "resvg",
+ "roxmltree 0.20.0",
  "rtf-parser",
  "serde",
  "serde_json",

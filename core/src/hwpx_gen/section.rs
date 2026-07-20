@@ -6,6 +6,7 @@
 //! pipeline: headings, paragraphs, lists, tables, code, quotes, images, rules.
 
 use super::blocks::{generate_paragraph, generate_runs, BlockKind, MdBlock};
+use super::chart::ChartRegistry;
 use super::ids::{
     escape_xml, heading_char_pr_id, heading_para_pr_id, page_num_ctrl, ResolvedTheme, CHAR_CODE,
     CHAR_NORMAL, CHAR_QUOTE, GONGMUN_LIST_BASE, PARA_CODE, PARA_LIST, PARA_NORMAL, PARA_QUOTE,
@@ -13,6 +14,7 @@ use super::ids::{
 };
 use super::image::{split_image_refs, ImageRegistry};
 use super::preset::{mm_to_hwpunit, Numberer, ResolvedPreset, A4_H_HU, A4_W_HU, H2Marker, Numbering};
+use super::profile::ProfileRemap;
 use super::table::{generate_html_table_xml, generate_table, TableStyle};
 
 /// Build `<hp:secPr>` + colPr (+ page number ctrl for presets).
@@ -57,6 +59,8 @@ struct SectionCtx<'a> {
     preset: Option<&'a ResolvedPreset>,
     table_style: Option<TableStyle>,
     images: &'a mut ImageRegistry,
+    charts: &'a mut ChartRegistry,
+    profile: Option<&'a ProfileRemap>,
     para_xmls: Vec<String>,
     opener_pending: bool,
     // list state (non-preset running counters)
@@ -66,6 +70,8 @@ struct SectionCtx<'a> {
     h2_seq: usize,
     // equation zOrder counter (distinct <hp:equation> ids)
     eq_seq: usize,
+    // emitted-table sequence counter — format profile matching key (table_index fallback)
+    table_seq: usize,
     numberer: Option<Numberer>,
 }
 
@@ -164,9 +170,18 @@ fn render_paragraph(block: &MdBlock, ctx: &mut SectionCtx) -> String {
     generate_paragraph(&block.text, PARA_NORMAL, CHAR_NORMAL, None, 0)
 }
 
-fn render_code_block(block: &MdBlock) -> String {
-    // Chart fences are not yet supported — rendered as a plain code block.
-    // TODO(chart): emit OOXML chartSpace for ```chart fences.
+fn render_code_block(block: &MdBlock, ctx: &mut SectionCtx) -> String {
+    // ```chart fence → chart part + <hp:chart> (falls back to a plain code
+    // block when the fence has no parseable numeric series).
+    if block.lang.eq_ignore_ascii_case("chart") {
+        if let Some(fence) = super::chart::parse_chart_fence(&block.text) {
+            ctx.emit_carrier();
+            let chart_el = ctx.charts.register(&fence);
+            return format!(
+                "<hp:p paraPrIDRef=\"{PARA_NORMAL}\" styleIDRef=\"0\"><hp:run charPrIDRef=\"{CHAR_NORMAL}\">{chart_el}</hp:run></hp:p>"
+            );
+        }
+    }
     block
         .text
         .split('\n')
@@ -291,12 +306,16 @@ fn render_hr(ctx: &SectionCtx) -> String {
 
 fn render_table(block: &MdBlock, ctx: &mut SectionCtx) -> String {
     ctx.emit_carrier();
-    generate_table(&block.rows, ctx.theme, ctx.table_style.as_ref())
+    let seq = ctx.table_seq;
+    ctx.table_seq += 1;
+    generate_table(&block.rows, ctx.theme, ctx.table_style.as_ref(), ctx.profile, seq)
 }
 
 fn render_html_table(block: &MdBlock, ctx: &mut SectionCtx) -> String {
     let total_w = ctx.table_style.as_ref().map(|s| s.total_width).unwrap_or(44000);
-    match generate_html_table_xml(&block.text, ctx.theme, total_w, ctx.table_style.as_ref()) {
+    let seq = ctx.table_seq;
+    ctx.table_seq += 1;
+    match generate_html_table_xml(&block.text, ctx.theme, total_w, ctx.table_style.as_ref(), ctx.profile, seq) {
         Some(tbl) => {
             ctx.emit_carrier();
             format!("<hp:p paraPrIDRef=\"0\" styleIDRef=\"0\"><hp:run charPrIDRef=\"0\">{tbl}</hp:run></hp:p>")
@@ -327,12 +346,15 @@ fn strip_tags_ws(s: &str) -> String {
 }
 
 /// Assemble section0.xml from blocks.
+#[allow(clippy::too_many_arguments)]
 pub fn blocks_to_section_xml(
     blocks: &[MdBlock],
     theme: &ResolvedTheme,
     preset: Option<&ResolvedPreset>,
     header_bf: u32,
     images: &mut ImageRegistry,
+    charts: &mut ChartRegistry,
+    profile: Option<&ProfileRemap>,
 ) -> String {
     let table_style = preset.map(|p| TableStyle {
         total_width: mm_to_hwpunit(210.0 - p.margins.left - p.margins.right),
@@ -345,12 +367,15 @@ pub fn blocks_to_section_xml(
         preset,
         table_style,
         images,
+        charts,
+        profile,
         para_xmls: Vec::new(),
         opener_pending: true,
         ordered_counters: std::collections::HashMap::new(),
         prev_was_ordered: false,
         h2_seq: 0,
         eq_seq: 0,
+        table_seq: 0,
         numberer,
     };
 
@@ -366,7 +391,7 @@ pub fn blocks_to_section_xml(
         let mut xml = match block.kind {
             BlockKind::Heading => render_heading(block, &mut ctx),
             BlockKind::Paragraph => render_paragraph(block, &mut ctx),
-            BlockKind::CodeBlock => render_code_block(block),
+            BlockKind::CodeBlock => render_code_block(block, &mut ctx),
             BlockKind::Equation => render_equation(block, &mut ctx),
             BlockKind::Blockquote => render_blockquote(block, &mut ctx),
             BlockKind::ListItem => render_list_item(block, &mut ctx),
