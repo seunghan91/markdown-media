@@ -2,7 +2,7 @@
 MDM Python Parser Package
 Provides OCR processing, PDF handling, and document conversion utilities.
 """
-__version__ = '0.1.0'
+__version__ = '0.1.2'
 
 try:
     from .ocr_processor import OcrProcessor

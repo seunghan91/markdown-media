@@ -76,13 +76,13 @@ class PdfProcessor:
         
         return metadata
 
-if __name__ == "__main__":
+def main():
     if len(sys.argv) < 2:
-        print("Usage: python pdf_processor.py <input.pdf> [--extract-images output_dir]")
+        print("Usage: mdm-pdf <input.pdf> [--extract-images output_dir]")
         sys.exit(1)
-    
+
     processor = PdfProcessor(sys.argv[1])
-    
+
     if len(sys.argv) >= 4 and sys.argv[2] == '--extract-images':
         images = processor.extract_images(sys.argv[3])
         print(f"Extracted {len(images)} images to {sys.argv[3]}")
@@ -92,3 +92,7 @@ if __name__ == "__main__":
         print("\n=== Metadata ===")
         import json
         print(json.dumps(processor.extract_metadata(), indent=2))
+
+
+if __name__ == "__main__":
+    main()

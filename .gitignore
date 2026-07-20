@@ -64,3 +64,8 @@ chrome-extension/mdm_core_bg.wasm
 chrome-extension/mdm_core_bg.wasm.d.ts
 chrome-extension/mdm_core.js
 chrome-extension/mdm_core.d.ts
+core/target/
+target/
+packages/parser-py/build/
+packages/parser-py/dist/
+**/*.egg-info/
