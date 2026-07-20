@@ -14,19 +14,32 @@ readme = "README.md"
 rust-version = "1.70"
 
 [features]
-default = ["hwp", "hwpx", "pdf", "docx", "image-processing"]
+default = ["hwp", "hwpx", "pdf", "docx", "xls", "rtf", "epub", "image-processing"]
 hwp = []
 hwpx = []
 pdf = ["dep:pdf-extract", "dep:lopdf"]
 docx = []
+xls = []
+rtf = ["dep:rtf-parser"]
+epub = []
 image-processing = ["dep:image", "dep:resvg"]
-full = ["hwp", "hwpx", "pdf", "docx", "image-processing"]
+heic = ["dep:libheif-rs"]
+docx-out = ["dep:docx-rs"]
+pdf-out = ["dep:printpdf"]
+full = ["hwp", "hwpx", "pdf", "docx", "xls", "rtf", "epub", "image-processing", "heic", "docx-out", "pdf-out"]
+watch = ["dep:notify", "dep:url", "dep:ureq"]
+ocr = ["dep:ort", "dep:image"]
+url-fetch = ["dep:ureq", "dep:htmd"]
 
 [dependencies]
 cfb = "0.12.1"
 flate2 = "1.0"
 miniz_oxide = "0.8"
-zip = { version = "2.2", default-features = false, features = ["deflate", "aes-crypto", "time"] }
+# zip 2.3+ added `impl Drop for ZipFile`, extending the `by_index` borrow to
+# scope-end. main.rs::detect_zip_format holds only one live ZipFile per loop
+# iteration (no second by_index while one is alive), so it builds cleanly on
+# 2.4.x — the earlier force-pin to the (yanked) 2.2.2 is no longer required.
+zip = { version = "2.4", default-features = false, features = ["deflate", "aes-crypto", "time"] }
 clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -36,18 +49,31 @@ resvg = { version = "0.44", optional = true }
 base64 = "0.22"
 pdf-extract = { version = "0.10", optional = true }
 lopdf = { version = "0.34", optional = true }
+# ONNX Runtime for the built-in OCR engine (feature = "ocr"). Downloads a
+# prebuilt onnxruntime binary at build time (download-binaries is on by default).
+ort = { version = "2.0.0-rc.10", optional = true }
 quick-xml = "0.31"
 thiserror = "2.0"
 regex = "1.10"
+fancy-regex = "0.18"
 lazy_static = "1.4"
 sha2 = "0.10"
 chrono = "0.4"
 aes = "0.8"
 rayon = "1.10"
 num_cpus = "1.16"
-calamine = "0.26"
+calamine = "0.36"
 csv = "1.3"
+rtf-parser = { version = "0.4", optional = true }
 tempfile = "3.10"
+similar = "3.1"
+docx-rs = { version = "0.4", optional = true }
+printpdf = { version = "0.11", optional = true }
+libheif-rs = { version = "2", optional = true, features = ["image"] }
+htmd = { version = "0.5", optional = true }
+notify = { version = "6", optional = true }
+url = { version = "2", optional = true }
+ureq = { version = "2", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -61,6 +87,7 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 tempfile = "3.10"
+criterion = "0.5"
 
 [lib]
 name = "mdm_core"
@@ -70,6 +97,16 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "hwp2mdm"
 path = "src/main.rs"
+
+[[example]]
+name = "watch"
+path = "examples/watch.rs"
+required-features = ["watch"]
+
+[[bench]]
+name = "parser_bench"
+path = "benches/parser_bench.rs"
+harness = false
 
 [profile.release]
 opt-level = "z"

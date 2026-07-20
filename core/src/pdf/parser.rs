@@ -48,7 +48,8 @@ pub struct EncryptionInfo {
 }
 
 /// Layout element types for position-aware content
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LayoutElementType {
     /// Text content
     Text,
@@ -71,7 +72,7 @@ pub enum LayoutElementType {
 }
 
 /// A layout element with position and styling information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct LayoutElement {
     /// Type of layout element
     pub element_type: LayoutElementType,
@@ -106,7 +107,8 @@ pub struct LayoutElement {
 }
 
 /// Text alignment options
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TextAlignment {
     #[default]
     Left,
@@ -200,6 +202,11 @@ pub struct PdfTable {
     pub page: usize,
     pub rows: Vec<Vec<String>>,
     pub column_count: usize,
+    /// Top Y coordinate (highest Y in PDF space) of the detected table region.
+    /// Used by the renderer to deduplicate inline text vs. trailing `## Tables`.
+    pub y_top: f64,
+    /// Bottom Y coordinate (lowest Y in PDF space) of the detected table region.
+    pub y_bottom: f64,
 }
 
 /// Content of a single PDF page
@@ -298,6 +305,26 @@ impl PdfParser {
     }
 
     /// Check if the PDF is encrypted
+    /// Per-page triage: classify each page as TextNative / Scanned / Mixed
+    /// before deciding whether to route to the external OCR bridge.
+    ///
+    /// Stage 1 only (see `plan/pdf-triage.md`). Returns an empty Vec if the
+    /// document cannot be parsed as PDF.
+    pub fn triage(&self) -> Vec<super::triage::PageTriage> {
+        self.triage_with_config(&super::triage::TriageConfig::default())
+    }
+
+    /// Triage with a custom threshold configuration.
+    pub fn triage_with_config(
+        &self,
+        cfg: &super::triage::TriageConfig,
+    ) -> Vec<super::triage::PageTriage> {
+        match lopdf::Document::load_mem(&self.data) {
+            Ok(doc) => super::triage::classify_document(&doc, cfg),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn is_encrypted(&self) -> bool {
         if let Ok(doc) = lopdf::Document::load_mem(&self.data) {
             // Check for Encrypt dictionary in trailer
@@ -535,21 +562,11 @@ impl PdfParser {
             })
             .collect();
 
-        // Sort elements by page and Y position (top to bottom)
-        all_elements.sort_by(|a, b| {
-            match a.page.cmp(&b.page) {
-                std::cmp::Ordering::Equal => {
-                    // Within same page, sort by Y (descending for PDF coords) then X
-                    match b.y.partial_cmp(&a.y).unwrap_or(std::cmp::Ordering::Equal) {
-                        std::cmp::Ordering::Equal => {
-                            a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal)
-                        }
-                        other => other,
-                    }
-                }
-                other => other,
-            }
-        });
+        // Stable sort by page only — the per-page extractor already emits
+        // elements in correct reading order (column-by-column for 2-column
+        // layouts). Re-sorting by Y here would flatten columns back into
+        // an interleaved mess and defeat `detect_column_split`.
+        all_elements.sort_by(|a, b| a.page.cmp(&b.page));
 
         all_elements
     }
@@ -711,16 +728,52 @@ impl PdfParser {
             return Vec::new();
         }
 
-        // 2-column layout probe. When a split is detected, process each
-        // column independently and concatenate — otherwise fall through to
-        // the single-column walker below.
+        // 2-column layout probe. When a split is detected, segment the page
+        // by Y: any full-width content above or below the column region is
+        // handled as a separate single-column block so titles / "After
+        // Columns" trailers land at their natural position.
         if let Some(split_x) = detect_column_split(texts) {
-            let (left, right): (Vec<PositionedText>, Vec<PositionedText>) = texts
-                .iter()
-                .cloned()
-                .partition(|t| approx_right_edge(t) / 2.0 + t.x / 2.0 < split_x);
-            let mut blocks = self.group_text_single_column(&left, page_height);
+            // Find the Y range where BOTH columns have runs — that's the
+            // region where the 2-column layout is active. Outside that range,
+            // runs are treated as full-width content.
+            let is_left = |t: &PositionedText| t.x < split_x;
+            let left_ys: Vec<f64> = texts.iter().filter(|t| is_left(t)).map(|t| t.y).collect();
+            let right_ys: Vec<f64> = texts.iter().filter(|t| !is_left(t)).map(|t| t.y).collect();
+            if left_ys.is_empty() || right_ys.is_empty() {
+                // One side empty → not a real 2-column layout; fall through.
+                return self.group_text_single_column(texts, page_height);
+            }
+            let col_y_max = left_ys.iter().chain(&right_ys).cloned().fold(f64::NEG_INFINITY, f64::max)
+                .min(left_ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                .min(right_ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+            let col_y_min = left_ys.iter().cloned().fold(f64::INFINITY, f64::min)
+                .max(right_ys.iter().cloned().fold(f64::INFINITY, f64::min));
+
+            // Partition into 4 regions in reading order:
+            //   pre_column (above col_y_max) — full-width
+            //   left column (within [col_y_min, col_y_max])
+            //   right column (within [col_y_min, col_y_max])
+            //   post_column (below col_y_min) — full-width
+            let mut pre: Vec<PositionedText> = Vec::new();
+            let mut left: Vec<PositionedText> = Vec::new();
+            let mut right: Vec<PositionedText> = Vec::new();
+            let mut post: Vec<PositionedText> = Vec::new();
+            for t in texts.iter().cloned() {
+                if t.y > col_y_max + 2.0 {
+                    pre.push(t);
+                } else if t.y < col_y_min - 2.0 {
+                    post.push(t);
+                } else if is_left(&t) {
+                    left.push(t);
+                } else {
+                    right.push(t);
+                }
+            }
+
+            let mut blocks = self.group_text_single_column(&pre, page_height);
+            blocks.extend(self.group_text_single_column(&left, page_height));
             blocks.extend(self.group_text_single_column(&right, page_height));
+            blocks.extend(self.group_text_single_column(&post, page_height));
             return blocks;
         }
 
@@ -745,10 +798,23 @@ impl PdfParser {
         const Y_TOLERANCE: f64 = 12.0; // About 1 line height
         let mut current_block: Option<TextBlock> = None;
 
-        let mut sorted_texts = texts.to_vec();
+        // Sort by Y (descending) with X tiebreaker, clustering nearby Y
+        // values into the same bucket so two runs within a few points of
+        // each other — e.g. a list marker "1" at y=415.9 and its sibling
+        // text "First item" at y=416.9 — are treated as one visual line
+        // and ordered by X.
+        //
+        // Pre-bucket Y by `floor(y / Y_CLUSTER_TOL)` so the comparison
+        // is transitive and satisfies the total-order contract that
+        // Rust's sort now panics on. A direct `abs(a.y - b.y) < tol`
+        // check is NOT transitive and triggers that panic on dense
+        // documents (IRS W-9 forms — hundreds of close-Y runs).
+        const Y_CLUSTER_TOL: f64 = 2.0;
+        let mut sorted_texts: Vec<PositionedText> = texts.to_vec();
         sorted_texts.sort_by(|a, b| {
-            b.y.partial_cmp(&a.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let ba = (a.y / Y_CLUSTER_TOL).floor() as i64;
+            let bb = (b.y / Y_CLUSTER_TOL).floor() as i64;
+            bb.cmp(&ba)
                 .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
         });
 
@@ -1024,7 +1090,9 @@ impl PdfParser {
             Err(_) => return tables,
         };
 
-        // Extract positioned text from each page
+        // Dual-strategy detection per page: line-based (ruling-line grid) first,
+        // then the text-cluster heuristic as the line-less fallback, merged so
+        // line geometry wins where the two overlap.
         for (page_num, page_id) in doc.get_pages() {
             let positioned_texts = self.extract_positioned_text(&doc, page_id);
 
@@ -1032,8 +1100,13 @@ impl PdfParser {
                 continue;
             }
 
-            // Detect tables from positioned text (multiple tables per page)
-            tables.extend(detect_tables_from_positions(&positioned_texts, page_num as usize));
+            let line_tables: Vec<PdfTable> =
+                super::table_detect::detect_line_tables(&doc, page_id, &positioned_texts, page_num as usize)
+                    .into_iter()
+                    .map(|d| d.pdf)
+                    .collect();
+            let cluster_tables = detect_tables_from_positions(&positioned_texts, page_num as usize);
+            tables.extend(super::table_detect::merge_line_and_cluster(line_tables, cluster_tables));
         }
 
         tables
@@ -1911,78 +1984,120 @@ fn approx_right_edge(t: &PositionedText) -> f64 {
     t.x + (t.text.chars().count() as f64) * PT_PER_CHAR
 }
 
-/// Detect a 2-column page layout and return the split X coordinate if
-/// present. Ported from kordoc pdf/parser.ts:676-711 `hasMultiColumnLayout`
-/// but returns the split itself so callers can partition text.
+/// Detect a 2-column page layout from positioned text and return the split X.
 ///
-/// Heuristics:
-/// 1. At least 30 text runs (pages with less are headers/covers)
-/// 2. Page content width ≥ 200 pt
-/// 3. Biggest X-gap between consecutive runs (sorted by start X) ≥ 20 pt
-/// 4. Gap center lies in the 35%–65% band of the page width
-/// 5. Both sides have ≥ 15 runs
-/// 6. Item-count ratio min/max ≥ 0.35 (balanced columns)
+/// Algorithm: bin run start-X coordinates into a histogram, find the two
+/// tallest bins, and require them to (a) sit in the left/right halves of
+/// the content span, (b) be separated by an empty trough, and (c) each
+/// anchor at least `min_runs_per_side` runs.
 ///
-/// Returns `None` when any check fails.
+/// This replaces an earlier "right-edge gap" heuristic that failed on
+/// short pages (<30 runs) and on dense columns where the approximate
+/// right edge of each run overshot the true column boundary. The
+/// histogram version only uses each run's start-X — a robust signal
+/// regardless of per-run text length.
 pub(crate) fn detect_column_split(texts: &[PositionedText]) -> Option<f64> {
-    if texts.len() < 30 {
+    const MIN_TOTAL_RUNS: usize = 10;
+    const MIN_RUNS_PER_SIDE: usize = 3;
+    const BIN_WIDTH_PT: f64 = 10.0;
+
+    if texts.len() < MIN_TOTAL_RUNS {
         return None;
     }
 
-    // Sort by start X so we can scan consecutive gaps.
-    let mut sorted: Vec<&PositionedText> = texts.iter().collect();
-    sorted.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-
-    let min_x = sorted[0].x;
-    let max_x = sorted
-        .iter()
-        .map(|t| approx_right_edge(t))
-        .fold(f64::NEG_INFINITY, f64::max);
-    let page_width = max_x - min_x;
-    if page_width < 200.0 {
+    let min_x = texts.iter().map(|t| t.x).fold(f64::INFINITY, f64::min);
+    let max_x = texts.iter().map(|t| t.x).fold(f64::NEG_INFINITY, f64::max);
+    let span = max_x - min_x;
+    if span < 150.0 {
         return None;
     }
 
-    // Biggest X gap = largest (next.x) - (prev.x + prev_width_approx)
-    let mut best_gap = 0.0_f64;
-    let mut best_split = 0.0_f64;
-    for j in 1..sorted.len() {
-        let prev_right = approx_right_edge(sorted[j - 1]);
-        let gap = sorted[j].x - prev_right;
-        if gap > best_gap {
-            best_gap = gap;
-            best_split = (prev_right + sorted[j].x) / 2.0;
+    // Histogram over start-X.
+    let bin_count = (span / BIN_WIDTH_PT).ceil() as usize + 1;
+    let mut hist = vec![0usize; bin_count];
+    for t in texts {
+        let b = ((t.x - min_x) / BIN_WIDTH_PT) as usize;
+        if b < bin_count {
+            hist[b] += 1;
         }
     }
-    if best_gap < 20.0 {
-        return None;
-    }
 
-    // Gap center must be near page center (35–65%).
-    let split_ratio = (best_split - min_x) / page_width;
-    if !(0.35..=0.65).contains(&split_ratio) {
-        return None;
-    }
-
-    // Both sides need enough items and balanced counts.
-    let left_count = texts
+    // Find the two most populated bins.
+    let (i1, c1) = hist
         .iter()
-        .filter(|t| (t.x + approx_right_edge(t)) / 2.0 < best_split)
-        .count();
-    let right_count = texts.len() - left_count;
-    if left_count < 15 || right_count < 15 {
+        .enumerate()
+        .max_by_key(|(_, c)| **c)
+        .map(|(i, c)| (i, *c))?;
+    let (i2, c2) = hist
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i.abs_diff(i1) >= 3) // must be separated
+        .max_by_key(|(_, c)| **c)
+        .map(|(i, c)| (i, *c))?;
+
+    if c1 < MIN_RUNS_PER_SIDE || c2 < MIN_RUNS_PER_SIDE {
         return None;
     }
-    let (lo, hi) = if left_count < right_count {
-        (left_count, right_count)
+
+    // Order bins: left = smaller index, right = larger.
+    let (left_bin, right_bin, _left_count, _right_count) = if i1 < i2 {
+        (i1, i2, c1, c2)
     } else {
-        (right_count, left_count)
+        (i2, i1, c2, c1)
+    };
+    let left_x = min_x + (left_bin as f64) * BIN_WIDTH_PT;
+    let right_x = min_x + (right_bin as f64) * BIN_WIDTH_PT;
+
+    // Left peak must sit in the left half, right peak in the right half.
+    let center = min_x + span / 2.0;
+    if left_x > center - 20.0 || right_x < center + 20.0 {
+        return None;
+    }
+
+    // Trough check: the narrow band around the geometric gutter (middle
+    // 40% of the span) should be nearly empty. Checking the full range
+    // between peaks would reject pages with titles or centered headings
+    // that happen to start at x-positions between the columns' anchors
+    // but are actually full-width content, not column-gutter content.
+    let gutter_lo = min_x + span * 0.3;
+    let gutter_hi = min_x + span * 0.7;
+    let lo_bin = ((gutter_lo - min_x) / BIN_WIDTH_PT).max(0.0) as usize;
+    let hi_bin = (((gutter_hi - min_x) / BIN_WIDTH_PT) as usize).min(bin_count);
+    let trough_max = ((c1.min(c2) as f64) * 0.25).round().max(1.0) as usize;
+    for b in lo_bin..hi_bin {
+        if hist[b] > trough_max {
+            return None;
+        }
+    }
+
+    // Count runs whose start-X anchors are on each side, using the midpoint
+    // between the two peak bins as the divider. Runs well outside both
+    // peaks (e.g. centered full-width headings) are excluded from the
+    // per-side balance check to avoid counting them against the layout.
+    let split = (left_x + right_x) / 2.0;
+    let anchor_tol = (right_x - left_x) * 0.35; // allow some drift per column
+    let left_runs = texts
+        .iter()
+        .filter(|t| (t.x - left_x).abs() <= anchor_tol)
+        .count();
+    let right_runs = texts
+        .iter()
+        .filter(|t| (t.x - right_x).abs() <= anchor_tol)
+        .count();
+    if left_runs < MIN_RUNS_PER_SIDE || right_runs < MIN_RUNS_PER_SIDE {
+        return None;
+    }
+    // Balance: the lighter column must have ≥ 35% of the heavier.
+    let (lo, hi) = if left_runs < right_runs {
+        (left_runs, right_runs)
+    } else {
+        (right_runs, left_runs)
     };
     if (lo as f64) / (hi as f64) < 0.35 {
         return None;
     }
 
-    Some(best_split)
+    Some(split)
 }
 
 fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<PdfTable> {
@@ -2109,8 +2224,11 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
         };
 
         // Project every row onto anchor columns (merged cells absorbed into
-        // the nearest anchor)
+        // the nearest anchor). Track Y positions of rows that end up in
+        // the table so the renderer can map the table back to its page
+        // region precisely (no leaking into surrounding prose).
         let mut table_rows: Vec<Vec<String>> = Vec::new();
+        let mut row_ys: Vec<f64> = Vec::new();
         for r in seg.iter() {
             let mut cells: Vec<String> = vec![String::new(); mode_cols];
             for t in r.iter() {
@@ -2133,7 +2251,9 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
             }
             // Keep row only if ≥2 non-empty cells (filter single-line headers/noise)
             if cells.iter().filter(|c| !c.is_empty()).count() >= 2 {
+                let row_y = r.first().map(|t| t.y).unwrap_or(0.0);
                 table_rows.push(cells);
+                row_ys.push(row_y);
             }
         }
 
@@ -2147,7 +2267,8 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
         // Prose-vs-table discriminator: real table cells are typically short
         // (labels, numbers, keywords). If the median non-empty cell is long,
         // we're almost certainly looking at paragraph text that happens to
-        // align on column boundaries (common in legal/guide PDFs).
+        // align on column boundaries (common in legal/guide PDFs and any
+        // multi-column page layout).
         let mut cell_lens: Vec<usize> = table_rows
             .iter()
             .flat_map(|r| r.iter().filter(|c| !c.is_empty()).map(|c| c.chars().count()))
@@ -2155,15 +2276,40 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
         if cell_lens.len() >= 4 {
             cell_lens.sort_unstable();
             let median = cell_lens[cell_lens.len() / 2];
-            if median > 100 {
+            // Tightened from 100 → 50. Real-world tables hold labels, numbers,
+            // or short phrases; a median cell >50 chars across the table is a
+            // strong signal that we're seeing prose aligned on a column grid.
+            if median > 50 {
                 continue;
             }
         }
+
+        // Column-width discriminator: genuine tables use narrow columns.
+        // If column anchors are spaced >180pt apart (wider than most table
+        // cells on letter-size pages), it's almost certainly a page-level
+        // 2-column layout being mistaken for a table.
+        if anchor_xs.len() >= 2 {
+            let max_col_spacing = anchor_xs
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0_f64, f64::max);
+            if max_col_spacing > 180.0 {
+                continue;
+            }
+        }
+
+        let (y_top, y_bottom) = row_ys
+            .iter()
+            .fold((f64::NEG_INFINITY, f64::INFINITY), |(top, bot), y| {
+                (top.max(*y), bot.min(*y))
+            });
 
         out.push(PdfTable {
             page,
             rows: table_rows,
             column_count: mode_cols,
+            y_top,
+            y_bottom,
         });
     }
 
@@ -2244,6 +2390,21 @@ fn is_list_item(content: &str) -> bool {
                 // Must be followed by space or be end of string
                 return i + 1 >= bytes.len() || bytes[i + 1] == b' ';
             }
+            // Bare digit followed by a space and a letter is also treated
+            // as a numbered list item. This handles PDFs where the
+            // trailing "." was drawn as a separate graphic rather than a
+            // glyph (common in Office-style numbered lists) and so the
+            // extracted text is just "1 First item" instead of "1. First".
+            if b == b' ' && i >= 1 {
+                // Require the first non-digit char after the space to be
+                // alphabetic to avoid treating things like "2024 year" as
+                // a list. Also cap digit count ≤ 3 so years don't qualify.
+                if i > 3 {
+                    return false;
+                }
+                let rest = &bytes[i + 1..];
+                return rest.first().map_or(false, |c| c.is_ascii_alphabetic());
+            }
             if !b.is_ascii_digit() {
                 return false;
             }
@@ -2266,6 +2427,20 @@ fn normalize_list_item(content: &str) -> String {
     if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
         return trimmed.to_string();
     }
+    // Numbered list with just a space: "1 First item" → "1. First item".
+    // Same digit-cap heuristic as is_list_item so years aren't touched.
+    if let Some(space_pos) = trimmed.find(' ') {
+        let prefix = &trimmed[..space_pos];
+        if !prefix.is_empty()
+            && prefix.len() <= 3
+            && prefix.bytes().all(|b| b.is_ascii_digit())
+        {
+            let rest = trimmed[space_pos + 1..].trim_start();
+            if rest.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+                return format!("{}. {}", prefix, rest);
+            }
+        }
+    }
     // Numbered list: keep as-is but normalize "1) " → "1. "
     if let Some(paren_pos) = trimmed.find(')') {
         let prefix = &trimmed[..paren_pos];
@@ -2275,6 +2450,75 @@ fn normalize_list_item(content: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+/// Collapse punctuation-adjacent whitespace that positioned-text joining
+/// introduces for Korean / CJK documents. PDF text extractors emit each
+/// glyph run as a separate `Tj` and the block-joiner puts a space between
+/// them, so "(온라인)" becomes "( 온라인 )" and "4.12." becomes "4. 12.".
+///
+/// Rules applied in order:
+///   1. No space inside paired brackets/parens: `( x )` → `(x)`
+///   2. No space before closing punctuation: `x .` → `x.`
+///   3. No space after opening punctuation: `. x` stays (needs context)
+///      — handled via rule 1 for brackets; other leading punct kept as-is
+///   4. Collapse runs of 2+ internal spaces to one
+fn normalize_cjk_spacing(s: &str) -> String {
+    // Fast path: pure-ASCII prose is unchanged. Korean / punctuation
+    // cleanup only matters when there's some CJK or bracket noise.
+    let needs_work = s.chars().any(|c| {
+        let cp = c as u32;
+        // CJK Unified Ideographs, Hangul, Hiragana, Katakana, full-width brackets
+        (0x3000..=0x303F).contains(&cp)
+            || (0x3040..=0x30FF).contains(&cp)
+            || (0x4E00..=0x9FFF).contains(&cp)
+            || (0xAC00..=0xD7AF).contains(&cp)
+            || matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '「' | '」' | '『' | '』')
+    });
+    if !needs_work {
+        return s.to_string();
+    }
+
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let is_open = |c: char| matches!(c, '(' | '[' | '{' | '「' | '『' | '【' | '〔' | '（' | '［');
+    let is_close = |c: char| matches!(c, ')' | ']' | '}' | '」' | '』' | '】' | '〕' | '）' | '］');
+    let is_trailing_punct =
+        |c: char| matches!(c, ',' | '.' | ';' | ':' | '?' | '!' | '、' | '。' | '，' | '．');
+
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if c == ' ' {
+            // Skip space directly after an opener
+            if out.chars().last().map_or(false, |p| is_open(p)) {
+                continue;
+            }
+            // Skip space directly before a closer or trailing punctuation
+            if let Some(&next) = chars.get(i + 1) {
+                if is_close(next) || is_trailing_punct(next) {
+                    continue;
+                }
+            }
+            // Collapse consecutive spaces
+            if out.ends_with(' ') {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Korean / CJK outline markers that begin a fresh bullet or paragraph.
+/// Common in government documents and technical reports: `□` (L1),
+/// `○` (L2), `●` (L3 emphasized), `▪`/`■`/`·` for subordinate bullets.
+/// ASCII `-` is already recognized elsewhere via `is_list_item`.
+fn starts_new_cjk_item(c: char) -> bool {
+    matches!(
+        c,
+        '□' | '○' | '●' | '▪' | '■' | '▫' | '◦' | '◎' | '·'
+          | '⦁' | '☐' | '☑' | '❑' | '❏' | '❒' | '➢'
+    )
 }
 
 /// Apply bold/italic markdown formatting to inline text.
@@ -2311,11 +2555,105 @@ impl PdfDocument {
         // Step 1: Compute median body font size from Text elements
         let median_font_size = self.compute_median_font_size();
 
+        // Step 1b: Compute body-baseline X. Paragraphs sit at this X; list
+        // items are indented further right. We use the minimum X among
+        // Text/Heading blocks with body-ish font size — that's the left
+        // margin of prose. Anything ≥ threshold pt right of it is a
+        // candidate list item.
+        let body_x = {
+            let mut xs: Vec<f64> = self.layout.iter()
+                .filter(|e| matches!(e.element_type,
+                                     LayoutElementType::Text | LayoutElementType::ListItem))
+                .filter(|e| e.font_size.map_or(true, |s| (s - median_font_size).abs() < 2.0))
+                .map(|e| e.x)
+                .collect();
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            if xs.is_empty() { 0.0 } else { xs[0] }
+        };
+        const LIST_INDENT_MIN_PT: f64 = 12.0;
+
+        // Pre-pass: detect runs of ≥3 consecutive indented blocks with uniform
+        // X, stable font size, and short content → a bullet list the PDF
+        // drew without an explicit bullet glyph (common in style-sheet-
+        // generated test PDFs). We require:
+        //   - run length ≥ 3 (so genuine prose paragraphs don't get listed)
+        //   - each item ≤ 120 chars (genuine list items are short)
+        //   - consistent Y-spacing within the run (< 2.5 × font_size)
+        //   - no enormous prose block on the same indent (protects column
+        //     layouts where columns get flagged as "indented prose")
+        let mut list_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        const LIST_ITEM_MAX_CHARS: usize = 120;
+        {
+            // Walk in the layout order the renderer will visit. Group into
+            // candidate runs then post-filter by content-length + spacing.
+            let mut i = 0;
+            while i < self.layout.len() {
+                let start = i;
+                let anchor = &self.layout[i];
+                if !matches!(anchor.element_type,
+                    LayoutElementType::Text | LayoutElementType::ListItem)
+                    || anchor.x < body_x + LIST_INDENT_MIN_PT
+                    || anchor.content.trim().is_empty()
+                {
+                    i += 1;
+                    continue;
+                }
+                let mut run_end = i + 1;
+                while run_end < self.layout.len() {
+                    let e = &self.layout[run_end];
+                    let matches = matches!(e.element_type,
+                        LayoutElementType::Text | LayoutElementType::ListItem)
+                        && (e.x - anchor.x).abs() < 2.0
+                        && e.font_size == anchor.font_size
+                        && e.page == anchor.page;
+                    if !matches {
+                        break;
+                    }
+                    run_end += 1;
+                }
+                if run_end - start >= 3 {
+                    // Validate content length + spacing uniformity. The
+                    // average-length gate is the key prose-vs-list signal:
+                    // bullet lists average ~10-30 chars per item; prose
+                    // paragraphs broken across lines average 40+. Gates
+                    // intentionally conservative to avoid rewriting
+                    // multi-column body text as a list.
+                    let items: Vec<&LayoutElement> = (start..run_end)
+                        .map(|k| &self.layout[k]).collect();
+                    let short_enough = items.iter()
+                        .all(|e| e.content.chars().count() <= LIST_ITEM_MAX_CHARS);
+                    let avg_len: f64 = items.iter()
+                        .map(|e| e.content.chars().count() as f64)
+                        .sum::<f64>() / items.len() as f64;
+                    let fs = anchor.font_size.unwrap_or(median_font_size).max(1.0);
+                    let spacing_ok = items.windows(2).all(|w| {
+                        let dy = (w[0].y - w[1].y).abs();
+                        dy > fs * 0.5 && dy < fs * 3.0
+                    });
+                    if short_enough && spacing_ok && avg_len <= 35.0 {
+                        for k in start..run_end {
+                            list_indices.insert(k);
+                        }
+                    }
+                }
+                i = run_end.max(start + 1);
+            }
+        }
+
         let mut output = String::new();
         let mut last_page: usize = 0;
         let mut last_y: f64 = f64::MAX; // Track Y position for inline segments
+        // Set after emitting a heading / list item so the NEXT text block
+        // starts a new paragraph even when it's on the same Y (style split).
+        // Further blocks on that same Y can then be soft-joined normally.
+        let mut force_new_paragraph = false;
+        // Which detected tables have already been emitted inline — renderer
+        // emits each table exactly once, at the Y position of its top row,
+        // and suppresses the raw text blocks that live inside the region.
+        let mut emitted_tables: Vec<bool> = vec![false; self.tables.len()];
 
-        for elem in &self.layout {
+        for (elem_idx, elem) in self.layout.iter().enumerate() {
             // Skip header/footer regions
             if elem.element_type == LayoutElementType::Header
                 || elem.element_type == LayoutElementType::Footer
@@ -2339,6 +2677,38 @@ impl PdfDocument {
                 last_page = elem.page;
             }
 
+            // Suppress inline text blocks that fall inside any detected
+            // table's Y-region — they'd be a flat duplicate of the table
+            // rendered later. Also emit the table markdown once when we
+            // first cross into its region.
+            let mut covered_by_table: Option<usize> = None;
+            if matches!(elem.element_type, LayoutElementType::Text | LayoutElementType::ListItem) {
+                for (i, t) in self.tables.iter().enumerate() {
+                    if t.page != elem.page {
+                        continue;
+                    }
+                    // Allow a small tolerance so the first row of the table
+                    // (whose Y exactly equals y_top) is counted as inside.
+                    if elem.y <= t.y_top + 0.5 && elem.y >= t.y_bottom - 0.5 {
+                        covered_by_table = Some(i);
+                        break;
+                    }
+                }
+            }
+            if let Some(ti) = covered_by_table {
+                if !emitted_tables[ti] {
+                    if !output.is_empty() && !output.ends_with("\n\n") {
+                        output.push_str("\n\n");
+                    }
+                    output.push_str(&self.tables[ti].to_markdown());
+                    output.push_str("\n\n");
+                    emitted_tables[ti] = true;
+                    force_new_paragraph = true;
+                    last_y = self.tables[ti].y_bottom;
+                }
+                continue;
+            }
+
             // Image elements
             if elem.element_type == LayoutElementType::Image {
                 if let Some(ref id) = elem.ref_id {
@@ -2347,7 +2717,8 @@ impl PdfDocument {
                 continue;
             }
 
-            let content = elem.content.trim();
+            let normalized = normalize_cjk_spacing(elem.content.trim());
+            let content = normalized.as_str();
             if content.is_empty() {
                 continue;
             }
@@ -2391,32 +2762,92 @@ impl PdfDocument {
                 }
                 let prefix = "#".repeat(level);
                 output.push_str(&format!("{} {}\n\n", prefix, content));
+                force_new_paragraph = true;
+                last_y = elem.y;
+                continue;
             } else if elem.element_type == LayoutElementType::ListItem
                 || is_list_item(content)
             {
                 // Normalize list items
                 let normalized = normalize_list_item(content);
                 output.push_str(&format!("{}\n", normalized));
+                force_new_paragraph = true;
+                last_y = elem.y;
+                continue;
+            } else if list_indices.contains(&elem_idx) {
+                // Heuristically detected list: bulletless indented block
+                // that appears in a run of ≥2 siblings at the same indent.
+                // Emit as "- ..." so the markdown reader renders a list.
+                output.push_str(&format!("- {}\n", content));
+                force_new_paragraph = true;
+                last_y = elem.y;
+                continue;
             } else {
                 // Regular text with bold/italic formatting
                 let formatted = apply_inline_formatting(content, elem.is_bold, elem.is_italic);
 
-                // If this block is on the same line as the previous one (same Y),
-                // append inline without paragraph break
-                let same_line = (last_y - elem.y).abs() < 12.0 && last_y != f64::MAX;
+                // Three-tier Y-delta classification for line spacing.
+                //   same_line     : two blocks stacked at the same baseline
+                //                   (style split on one visual line)
+                //   same_paragraph: the normal PDF line pitch (≈font_size × 1.2);
+                //                   in MDM terms these are soft-wrapped lines
+                //                   inside one paragraph → join with a space
+                //   new_paragraph : everything above ~1.8× the font size
+                let y_delta = (last_y - elem.y).abs();
+                let fs = elem.font_size.unwrap_or(median_font_size).max(1.0);
+                let first_block = last_y == f64::MAX;
+                // Korean gov-doc bullet markers (□ ○ ● ▪ ■ ·) start new
+                // outline items — never soft-join onto a preceding line
+                // even when Y-delta is within the normal line pitch.
+                // Without this, multi-level Korean bullet lists get
+                // concatenated into one long paragraph.
+                let starts_with_cjk_bullet = content
+                    .chars()
+                    .next()
+                    .map_or(false, starts_new_cjk_item);
+                // `force_new_paragraph` makes this block start a fresh
+                // paragraph even if Y-wise it would have been soft-joined
+                // (e.g., the text right after a heading that shares the
+                // heading's baseline due to a style split).
+                let same_line = !first_block && !force_new_paragraph
+                    && !starts_with_cjk_bullet
+                    && y_delta < fs * 0.5;
+                let same_paragraph = !first_block && !force_new_paragraph
+                    && !starts_with_cjk_bullet
+                    && !same_line && y_delta < fs * 1.8;
+
                 if same_line {
-                    // Add space before inline segment if needed
-                    if !output.ends_with(' ') && !output.ends_with('\n') {
+                    // Strip any trailing paragraph break the previous
+                    // `force_new_paragraph` pass may have emitted — this
+                    // block shares the baseline, so it's still part of
+                    // the same visual line.
+                    while output.ends_with('\n') {
+                        output.pop();
+                    }
+                    if !output.ends_with(' ') {
+                        output.push(' ');
+                    }
+                    output.push_str(&formatted);
+                } else if same_paragraph {
+                    // Soft-wrap within the same paragraph: strip trailing
+                    // paragraph break if one was just emitted, join with space.
+                    while output.ends_with('\n') {
+                        output.pop();
+                    }
+                    if !output.ends_with(' ') {
                         output.push(' ');
                     }
                     output.push_str(&formatted);
                 } else {
+                    if !output.is_empty() && !output.ends_with("\n\n") {
+                        output.push_str("\n\n");
+                    }
                     output.push_str(&formatted);
                     output.push_str("\n\n");
                 }
+                last_y = elem.y;
+                force_new_paragraph = false;
             }
-
-            last_y = elem.y;
         }
 
         output.trim_end().to_string()
@@ -2504,11 +2935,20 @@ impl PdfDocument {
             mdx.push('\n');
         }
 
-        // Tables (if any detected)
-        if !self.tables.is_empty() {
+        // Tables: rendered inline by `to_markdown_with_layout` at their
+        // natural position in the document. A trailing `## Tables` section
+        // is appended only for tables that have no usable Y coordinates
+        // (e.g., hand-constructed in tests) so inline emission can't place
+        // them.
+        let orphan_tables: Vec<&PdfTable> = self.tables
+            .iter()
+            .filter(|t| !(t.y_top.is_finite() && t.y_bottom.is_finite()
+                          && t.y_top > t.y_bottom))
+            .collect();
+        if !orphan_tables.is_empty() {
             mdx.push_str("## Tables\n\n");
-            for (i, table) in self.tables.iter().enumerate() {
-                if self.tables.len() > 1 {
+            for (i, table) in orphan_tables.iter().enumerate() {
+                if orphan_tables.len() > 1 {
                     mdx.push_str(&format!("### Table {} (Page {})\n\n", i + 1, table.page));
                 }
                 mdx.push_str(&table.to_markdown());
@@ -2861,6 +3301,8 @@ mod tests {
                 vec!["Bob".to_string(), "25".to_string(), "LA".to_string()],
             ],
             column_count: 3,
+            y_top: 0.0,
+            y_bottom: 0.0,
         };
 
         let md = table.to_markdown();
@@ -2955,8 +3397,9 @@ mod tests {
 
     #[test]
     fn too_few_items_returns_no_split() {
-        // Below the 30-item floor — never a column candidate.
-        let texts: Vec<PositionedText> = (0..10)
+        // Below the 10-item floor (new histogram-based detector) — never a
+        // column candidate. Two runs per side × 2 sides = 4 total < 10.
+        let texts: Vec<PositionedText> = (0..2)
             .flat_map(|i| {
                 vec![
                     PositionedText {
@@ -2975,6 +3418,76 @@ mod tests {
             })
             .collect();
         assert!(detect_column_split(&texts).is_none());
+    }
+
+    #[test]
+    fn short_two_column_page_is_detected() {
+        // Regression: MDM failed test_twocolumn.pdf because it has only
+        // ~15 positioned-text runs. The new detector should succeed at
+        // this scale so 2-column reading order is preserved.
+        let mut texts = Vec::new();
+        // title, centered
+        texts.push(PositionedText {
+            text: "Title".to_string(),
+            x: 250.0, y: 742.0, page: 1, font_size: None, font_name: None,
+        });
+        // 6 left-column runs at x=56
+        for i in 0..6 {
+            texts.push(PositionedText {
+                text: "Left text content".to_string(),
+                x: 56.0,
+                y: 700.0 - (i as f64) * 14.0,
+                page: 1, font_size: None, font_name: None,
+            });
+        }
+        // 6 right-column runs at x=306
+        for i in 0..6 {
+            texts.push(PositionedText {
+                text: "Right text content".to_string(),
+                x: 306.0,
+                y: 700.0 - (i as f64) * 14.0,
+                page: 1, font_size: None, font_name: None,
+            });
+        }
+        let split = detect_column_split(&texts).expect("expected a column split");
+        assert!(
+            (150.0..=230.0).contains(&split),
+            "split {} should land between the two columns", split
+        );
+    }
+
+    #[test]
+    fn cjk_spacing_collapses_paren_whitespace() {
+        assert_eq!(normalize_cjk_spacing("보도자료 ( 온라인 )"), "보도자료 (온라인)");
+        assert_eq!(normalize_cjk_spacing("[ 한국 ]"), "[한국]");
+    }
+
+    #[test]
+    fn cjk_spacing_collapses_trailing_punct() {
+        assert_eq!(normalize_cjk_spacing("말했다 ."), "말했다.");
+        assert_eq!(normalize_cjk_spacing("한 , 두 , 세"), "한, 두, 세");
+    }
+
+    #[test]
+    fn cjk_spacing_collapses_runs_of_spaces() {
+        assert_eq!(normalize_cjk_spacing("한국   교육"), "한국 교육");
+    }
+
+    #[test]
+    fn cjk_spacing_fast_path_for_plain_ascii() {
+        // Fast path: no brackets, no CJK → untouched.
+        let original = "Hello world this is plain prose.";
+        assert_eq!(normalize_cjk_spacing(original), original);
+    }
+
+    #[test]
+    fn cjk_spacing_cleans_ascii_with_brackets() {
+        // Brackets trigger the slow path even for ASCII, which is desired:
+        // same whitespace noise happens in Latin documents too.
+        assert_eq!(
+            normalize_cjk_spacing("Hello (world) , three"),
+            "Hello (world), three"
+        );
     }
 
     #[test]
@@ -3009,6 +3522,8 @@ mod tests {
                     vec!["1".to_string(), "2".to_string()],
                 ],
                 column_count: 2,
+                y_top: 0.0,
+                y_bottom: 0.0,
             }],
             layout: vec![],
         };
