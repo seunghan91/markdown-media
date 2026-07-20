@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 595.28 841.88" width="595.28pt" height="841.88pt" font-family="'HCR Batang','함초롬바탕','Hancom Batang',AppleMyungjo,'Noto Serif CJK KR',serif" xml:space="preserve">
+<defs><clipPath id="pgclip"><rect x="0" y="0" width="595.28" height="841.88"/></clipPath></defs>
+<rect width="595.28" height="841.88" fill="white" stroke="#c9c7c4" stroke-width="0.75"/>
+<g clip-path="url(#pgclip)">
+<text x="85.04" y="65.18" font-size="10" font-family="'HCR Batang','함초롬바탕','한컴바탕','HCR Batang','Batang','Noto Serif KR',serif" textLength="107" lengthAdjust="spacing">안녕하세요 렌더 테스트</text>
+<text x="86.45" y="86.59" font-size="10" font-family="'HCR Batang','함초롬바탕','한컴바탕','HCR Batang','Batang','Noto Serif KR',serif" textLength="12.56" lengthAdjust="spacing">A1</text>
+<text x="186.45" y="86.59" font-size="10" font-family="'HCR Batang','함초롬바탕','한컴바탕','HCR Batang','Batang','Noto Serif KR',serif" textLength="11.55" lengthAdjust="spacing">B1</text>
+<text x="86.45" y="106.59" font-size="10" font-family="'HCR Batang','함초롬바탕','한컴바탕','HCR Batang','Batang','Noto Serif KR',serif" textLength="12.56" lengthAdjust="spacing">A2</text>
+<text x="186.45" y="106.59" font-size="10" font-family="'HCR Batang','함초롬바탕','한컴바탕','HCR Batang','Batang','Noto Serif KR',serif" textLength="11.55" lengthAdjust="spacing">B2</text>
+<line x1="85.04" y1="76.68" x2="185.04" y2="76.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="85.04" y1="96.68" x2="185.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="85.04" y1="76.68" x2="85.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="76.68" x2="185.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="76.68" x2="285.04" y2="76.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="96.68" x2="285.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="76.68" x2="185.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="285.04" y1="76.68" x2="285.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="85.04" y1="96.68" x2="185.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="85.04" y1="116.68" x2="185.04" y2="116.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="85.04" y1="96.68" x2="85.04" y2="116.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="96.68" x2="185.04" y2="116.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="96.68" x2="285.04" y2="96.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="116.68" x2="285.04" y2="116.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="185.04" y1="96.68" x2="185.04" y2="116.68" stroke="#000000" stroke-width="0.34"/>
+<line x1="285.04" y1="96.68" x2="285.04" y2="116.68" stroke="#000000" stroke-width="0.34"/>
+</g>
+</svg>

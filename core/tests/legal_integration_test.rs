@@ -16,6 +16,13 @@ fn test_parse_real_legal_markdown_files() {
         "/Users/seunghan/krx_listing/krx_law/markdown_v2/210015705__분쟁조정규정.md",
     ];
 
+    // These are developer-local sample paths; on CI (and any other machine)
+    // they are absent, so skip gracefully rather than failing the assertion.
+    if !test_files.iter().any(|f| Path::new(f).exists()) {
+        println!("⚠️ 로컬 법률 샘플 파일 없음, 스킵");
+        return;
+    }
+
     let mut chunker = KoreanLegalChunker::new();
     let mut total_chunks = 0;
     let mut total_tokens = 0;

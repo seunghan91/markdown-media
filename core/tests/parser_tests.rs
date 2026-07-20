@@ -28,6 +28,7 @@ fn get_sample_path(filename: &str) -> PathBuf {
 }
 
 /// 테스트 유틸리티 - 출력 디렉토리 생성
+#[allow(dead_code)]
 fn create_test_output_dir(test_name: &str) -> PathBuf {
     let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("test_output")
@@ -126,7 +127,7 @@ mod hwp_tests {
 
     #[test]
     fn test_hwp_table_markdown_output() {
-        use mdm_core::hwp::record::{HwpTable, TableCell};
+        use mdm_core::hwp::record::HwpTable;
 
         let mut table = HwpTable::new(2, 2);
         table.cells[0][0].content = "A".to_string();
@@ -147,7 +148,6 @@ mod hwp_tests {
 
 #[cfg(test)]
 mod docx_tests {
-    use super::*;
 
     #[test]
     fn test_docx_text_run_markdown() {
@@ -192,12 +192,12 @@ mod docx_tests {
         let table = DocxTable {
             rows: vec![
                 vec![
-                    TableCell { content: "A".to_string(), col_span: 1, row_span: 1 },
-                    TableCell { content: "B".to_string(), col_span: 1, row_span: 1 },
+                    TableCell { content: "A".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
+                    TableCell { content: "B".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
                 ],
                 vec![
-                    TableCell { content: "1".to_string(), col_span: 1, row_span: 1 },
-                    TableCell { content: "2".to_string(), col_span: 1, row_span: 1 },
+                    TableCell { content: "1".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
+                    TableCell { content: "2".to_string(), col_span: 1, row_span: 1, v_merge_continue: false },
                 ],
             ],
             has_header: true,
@@ -259,8 +259,6 @@ mod pdf_tests {
 
     #[test]
     fn test_pdf_version_detection() {
-        use mdm_core::pdf::parser::PdfParser;
-
         // 직접 PdfParser 생성 테스트는 실제 파일이 필요하므로 스킵
         // 대신 버전 파싱 로직만 테스트
         let header = b"%PDF-1.7\n";
@@ -300,6 +298,8 @@ mod pdf_tests {
                 vec!["Alice".to_string(), "30".to_string()],
             ],
             column_count: 2,
+            y_top: 100.0,
+            y_bottom: 80.0,
         };
 
         let md = table.to_markdown();
@@ -316,22 +316,22 @@ mod pdf_tests {
         fn detect_style(name: &str) -> FontStyle {
             let name_lower = name.to_lowercase();
             FontStyle {
-                bold: name_lower.contains("bold"),
-                italic: name_lower.contains("italic") || name_lower.contains("oblique"),
+                is_bold: name_lower.contains("bold"),
+                is_italic: name_lower.contains("italic") || name_lower.contains("oblique"),
             }
         }
 
         let bold = detect_style("Arial-Bold");
-        assert!(bold.bold);
-        assert!(!bold.italic);
+        assert!(bold.is_bold);
+        assert!(!bold.is_italic);
 
         let italic = detect_style("Arial-Italic");
-        assert!(!italic.bold);
-        assert!(italic.italic);
+        assert!(!italic.is_bold);
+        assert!(italic.is_italic);
 
         let bold_italic = detect_style("Arial-BoldItalic");
-        assert!(bold_italic.bold);
-        assert!(bold_italic.italic);
+        assert!(bold_italic.is_bold);
+        assert!(bold_italic.is_italic);
     }
 
     #[test]
@@ -357,7 +357,6 @@ mod pdf_tests {
 
 #[cfg(test)]
 mod integration_tests {
-    use super::*;
 
     #[test]
     #[ignore = "Requires sample files from all formats for consistency testing"]

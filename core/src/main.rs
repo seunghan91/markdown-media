@@ -5,17 +5,44 @@
 mod docx;
 mod hwp;
 mod hwpx;
+mod hwpx_gen;
+mod hwp3;
 mod ir;
+mod equation;
+mod pii;
+mod form;
+mod lint;
+mod chunker;
+mod legal;
+#[cfg(feature = "watch")]
+mod watch;
+#[cfg(feature = "ocr")]
+mod ocr;
 mod manifest;
 mod pdf;
 mod xlsx;
+#[cfg(feature = "xls")]
+mod xls;
+#[cfg(feature = "rtf")]
+mod rtf;
+#[cfg(feature = "epub")]
+mod epub;
 mod pptx;
+#[cfg(feature = "url-fetch")]
+mod url_fetch;
+mod doc97;
+mod heic;
+#[cfg(feature = "docx-out")]
+mod gen_docx;
+#[cfg(feature = "pdf-out")]
+mod gen_pdf;
 mod html;
 mod csv_parser;
 mod txt_parser;
 mod utils;
 
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::io::Read as _;
 use std::io::Write as _;
 use docx::DocxParser;
@@ -67,6 +94,10 @@ struct Cli {
     /// Number of threads for parallel PDF processing (0 = auto-detect CPU cores)
     #[arg(short = 'j', long, default_value = "0")]
     threads: usize,
+
+    /// Enable OCR for scanned/image-based PDF pages
+    #[arg(long)]
+    ocr: bool,
 }
 
 #[derive(Subcommand)]
@@ -87,6 +118,10 @@ enum Commands {
         /// Extract images
         #[arg(long)]
         extract_images: bool,
+
+        /// Enable OCR for scanned/image-based pages
+        #[arg(long)]
+        ocr: bool,
     },
     
     /// Analyze HWP file structure
@@ -148,6 +183,54 @@ enum Commands {
         format: String,
     },
 
+    /// Dump per-element layout as JSON (y, type, content, font, position).
+    ///
+    /// This is the structured output the Python triage router uses to
+    /// position-merge OCR results on Mixed pages — the manifest gives
+    /// it WHERE the image regions are, and this gives it WHERE the
+    /// existing text blocks are, so figure captions can be inserted
+    /// at the correct Y position in the reading order instead of
+    /// appended to the end of the page.
+    ///
+    /// Example:
+    ///   hwp2mdm layout report.pdf -o layout.json
+    Layout {
+        /// Input PDF file.
+        input: PathBuf,
+
+        /// Write layout JSON to this path instead of stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Restrict to a single 1-indexed page (omit for all pages).
+        #[arg(long)]
+        page: Option<usize>,
+    },
+
+    /// Classify PDF pages before extraction — emit an OCR routing manifest.
+    ///
+    /// For every page decides: text-native (extract directly), scanned
+    /// (full-page OCR), or mixed (extract text + OCR the image regions).
+    /// The Python bridge consumes the manifest JSON to route pages to the
+    /// appropriate engine (Tesseract / EasyOCR / OpenRouter VLM).
+    ///
+    /// Example:
+    ///   hwp2mdm triage report.pdf                    # pretty text
+    ///   hwp2mdm triage report.pdf --format json      # manifest JSON
+    ///   hwp2mdm triage report.pdf -o manifest.json   # write to file
+    Triage {
+        /// Input PDF file.
+        input: PathBuf,
+
+        /// Output format: `text` (human-readable table) or `json` (manifest).
+        #[arg(short, long, default_value = "text")]
+        format: String,
+
+        /// Write output to this path instead of stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
     /// Read a document from stdin and emit Markdown to stdout.
     ///
     /// Designed for MCP/subprocess integration: pipe bytes in, get clean
@@ -158,7 +241,7 @@ enum Commands {
     /// Example:
     ///   cat contract.hwp | hwp2mdm stream --ext hwp > out.md
     Stream {
-        /// File extension hint (hwp, hwpx, pdf, docx, pptx, xlsx, html, csv, tsv, txt).
+        /// File extension hint (hwp, hwpx, pdf, docx, pptx, xlsx, xls, rtf, epub, html, csv, tsv, txt).
         /// Required because stdin has no filename for auto-detection.
         #[arg(long)]
         ext: String,
@@ -168,9 +251,222 @@ enum Commands {
         #[arg(long, default_value = "mdx")]
         mode: String,
     },
+
+    /// Generate HWPX from Markdown — Korean government document presets included.
+    ///
+    /// Converts Markdown text to a .hwpx file with proper formatting.
+    /// Supports 7 Korean government document presets:
+    /// 기안문, 보고서, 계획서, 통지, 회의록, 개조식, 보도자료.
+    ///
+    /// Example:
+    ///   hwp2mdm generate report.md -o report.hwpx
+    ///   hwp2mdm generate - --preset 기안문 < draft.md > memo.hwpx
+    Generate {
+        /// Input Markdown file (use '-' for stdin)
+        input: PathBuf,
+
+        /// Output file path (auto-detects format from extension)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Output format: hwpx (default), docx, pdf — auto-detected from output extension
+        #[arg(short = 'F', long, default_value = "hwpx")]
+        format: String,
+
+        /// Government document preset (기안문, 보고서, 계획서, 통지, 회의록, 개조식, 보도자료)
+        #[arg(short, long)]
+        preset: Option<String>,
+    },
+
+    /// Detect and mask PII (personal info) in documents.
+    ///
+    /// Masks resident registration numbers, phone numbers, emails,
+    /// credit card numbers, bank account numbers, and more.
+    /// Outputs clean text with format-preserving masking (●●●).
+    ///
+    /// Example:
+    ///   hwp2mdm redact document.md
+    ///   hwp2mdm redact contract.hwp --rules rrn,phone,email
+    Redact {
+        /// Input file
+        input: PathBuf,
+
+        /// Comma-separated rules: rrn,phone,email,card,account,passport,driver
+        /// Default: rrn,phone,email,card,account
+        #[arg(short, long, default_value = "rrn,phone,email,card,account")]
+        rules: String,
+
+        /// Write output to file instead of stdout
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Compare two documents — cross-format diff.
+    ///
+    /// Produces a structured diff (added, removed, modified, unchanged blocks)
+    /// with similarity scores and cell-level table deltas.
+    ///
+    /// Example:
+    ///   hwp2mdm diff draft_v1.hwp draft_v2.hwp
+    ///   hwp2mdm diff original.pdf revised.docx
+    Diff {
+        /// First document (original)
+        input_a: PathBuf,
+
+        /// Second document (revised)
+        input_b: PathBuf,
+
+        /// Output format: text (human-readable) or json (structured)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Fill form fields in a template document.
+    ///
+    /// Reads a HWPX template, extracts form fields, and fills them
+    /// with values from a JSON file. Preserves original formatting 100%.
+    ///
+    /// Example:
+    ///   hwp2mdm fill template.hwpx -j values.json -o filled.hwpx
+    Fill {
+        /// Input HWPX template file
+        input: PathBuf,
+
+        /// JSON file with field values (not required with --dry-run)
+        #[arg(short = 'j', long)]
+        values: Option<PathBuf>,
+
+        /// Output file path (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Dry-run: show detected form fields (JSON) without filling
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Lint Korean government document notation.
+    ///
+    /// Checks 13 notation rules based on Korean administrative manuals:
+    /// date formats, time formats, currency notation, attachment markers, etc.
+    ///
+    /// Example:
+    ///   hwp2mdm lint report.hwpx
+    Lint {
+        /// Input file
+        input: PathBuf,
+    },
+
+    /// Split document into RAG-friendly chunks with breadcrumb hierarchy.
+    ///
+    /// Structural chunking that preserves heading context, list depth,
+    /// and table structure. Outputs JSON with breadcrumb-annotated chunks.
+    ///
+    /// Example:
+    ///   hwp2mdm chunks document.hwp
+    ///   hwp2mdm chunks document.hwp --granularity block --max-chars 2000
+    Chunks {
+        /// Input file
+        input: PathBuf,
+
+        /// Granularity: section (merge under same heading) or block (1:1)
+        #[arg(short, long, default_value = "section")]
+        granularity: String,
+
+        /// Max characters per chunk (0 = disabled)
+        #[arg(long, default_value = "0")]
+        max_chars: usize,
+
+        /// Overlap characters between chunks
+        #[arg(long, default_value = "100")]
+        overlap: usize,
+    },
+
+    /// Watch a directory and auto-convert documents on change.
+    ///
+    /// Monitors a directory for new/modified documents and converts them
+    /// automatically. Optional webhook notification on each conversion.
+    ///
+    /// Example:
+    ///   hwp2mdm watch ./incoming -o ./output
+    ///   hwp2mdm watch ./incoming --webhook https://hooks.example/convert
+    #[cfg(feature = "watch")]
+    Watch {
+        /// Directory to watch
+        dir: PathBuf,
+
+        /// Output directory for converted files
+        #[arg(short, long, default_value = "./output")]
+        output: PathBuf,
+
+        /// Webhook URL for conversion notifications
+        #[arg(long)]
+        webhook: Option<String>,
+    },
+
+    /// Parse Korean legal documents with hierarchy detection.
+    ///
+    /// Detects the full hierarchy: 편(Part) > 장(Chapter) > 절(Section) >
+    /// 관(SubSection) > 조(Article) > 항(Paragraph) > 호(Subparagraph) > 목(Item).
+    /// Outputs structured JSON chunks with breadcrumb metadata.
+    ///
+    /// Example:
+    ///   hwp2mdm legal law.md
+    ///   hwp2mdm legal law.md --format json
+    Legal {
+        /// Input markdown file
+        input: PathBuf,
+
+        /// Output format: text (human-readable) or json (structured)
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// Fetch and convert a web page to Markdown.
+    ///
+    /// Downloads a URL, extracts the main content body (stripping navigation,
+    /// ads, sidebars), and outputs clean Markdown. Supports multiple URLs.
+    ///
+    /// Example:
+    ///   hwp2mdm url https://example.com/article
+    ///   hwp2mdm url https://a.com https://b.com -o ./output
+    #[cfg(feature = "url-fetch")]
+    Url {
+        /// URLs to fetch
+        urls: Vec<String>,
+
+        /// Output directory (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Validate HWPX file structure (ZIP integrity, manifest, XML well-formedness).
+    ///
+    /// Example:
+    ///   hwp2mdm validate document.hwpx
+    Validate {
+        /// Input HWPX file
+        input: PathBuf,
+    },
+
+    /// Convert between HULK (HWP equation script) and LaTeX.
+    ///
+    /// Reads a file containing HULK equation script and outputs LaTeX.
+    ///
+    /// Example:
+    ///   hwp2mdm equation input.hulk
+    Equation {
+        /// Input file with HULK script or LaTeX
+        input: PathBuf,
+
+        /// Direction: hulk2latex (default) or latex2hulk
+        #[arg(short, long, default_value = "hulk2latex")]
+        direction: String,
+    },
 }
 
 fn main() {
+    heic::register();
     let cli = Cli::parse();
 
     // Configure Rayon global thread pool for parallel PDF processing
@@ -181,8 +477,8 @@ fn main() {
         .ok(); // Ignore if already initialized
 
     match cli.command {
-        Some(Commands::Convert { input, output, format, extract_images }) => {
-            convert_file(&input, &output, &format, extract_images, true);
+        Some(Commands::Convert { input, output, format, extract_images, ocr }) => {
+            convert_file(&input, &output, &format, extract_images, true, ocr);
         }
         Some(Commands::Analyze { input }) => {
             analyze_file(&input);
@@ -202,16 +498,63 @@ fn main() {
         Some(Commands::Inspect { input, format }) => {
             inspect_file(&input, &format);
         }
+        Some(Commands::Layout { input, output, page }) => {
+            if let Err(e) = dump_layout(&input, output.as_deref(), page) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Triage { input, format, output }) => {
+            if let Err(e) = triage_pdf(&input, &format, output.as_deref()) {
+                eprintln!("error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Stream { ext, mode }) => {
             if let Err(e) = stream_convert(&ext, &mode) {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
             }
         }
+        Some(Commands::Generate { input, output, format, preset }) => {
+            cmd_generate(&input, output.as_deref(), &format, preset.as_deref());
+        }
+        Some(Commands::Redact { input, rules, output }) => {
+            cmd_redact(&input, output.as_deref(), &rules);
+        }
+        Some(Commands::Diff { input_a, input_b, format }) => {
+            cmd_diff(&input_a, &input_b, &format);
+        }
+        Some(Commands::Fill { input, values, output, dry_run }) => {
+            cmd_fill(&input, values.as_deref(), output.as_deref(), dry_run);
+        }
+        Some(Commands::Lint { input }) => {
+            cmd_lint(&input);
+        }
+        Some(Commands::Chunks { input, granularity, max_chars, overlap }) => {
+            cmd_chunks(&input, &granularity, max_chars, overlap);
+        }
+        #[cfg(feature = "watch")]
+        Some(Commands::Watch { dir, output, webhook }) => {
+            cmd_watch(&dir, &output, webhook.as_deref());
+        }
+        Some(Commands::Legal { input, format }) => {
+            cmd_legal(&input, &format);
+        }
+        #[cfg(feature = "url-fetch")]
+        Some(Commands::Url { urls, output }) => {
+            cmd_url(&urls, output.as_deref());
+        }
+        Some(Commands::Validate { input }) => {
+            cmd_validate(&input);
+        }
+        Some(Commands::Equation { input, direction }) => {
+            cmd_equation(&input, &direction);
+        }
         None => {
             // Quick conversion mode
             if let Some(input) = cli.input {
-                convert_file(&input, &cli.output, &cli.format, cli.extract_images, cli.verbose);
+                convert_file(&input, &cli.output, &cli.format, cli.extract_images, cli.verbose, cli.ocr);
             } else {
                 // Show help
                 println!("hwp2mdm - HWP to MDM Converter");
@@ -251,7 +594,7 @@ fn detect_zip_format(path: &Path) -> String {
         Err(_) => return "unknown".to_string(),
     };
     for i in 0..archive.len().min(30) {
-        if let Ok(f) = archive.by_index(i) {
+        if let Ok(mut f) = archive.by_index(i) {
             let name = f.name().to_string();
             if name.starts_with("word/") {
                 return "docx".to_string();
@@ -264,6 +607,18 @@ fn detect_zip_format(path: &Path) -> String {
             }
             if name.starts_with("Contents/") || name.starts_with("META-INF/") {
                 return "hwpx".to_string();
+            }
+            if name == "mimetype" {
+                let mut buf = Vec::new();
+                if f.read_to_end(&mut buf).is_ok() {
+                    let mt = String::from_utf8_lossy(&buf);
+                    if mt.contains("application/epub+zip") {
+                        return "epub".to_string();
+                    }
+                }
+            }
+            if name.starts_with("META-INF/container.xml") || name.ends_with(".opf") {
+                return "epub".to_string();
             }
         }
     }
@@ -368,7 +723,7 @@ fn stream_convert(ext: &str, mode: &str) -> io::Result<()> {
     // 3. Run the existing converter with stdout redirected to /dev/null.
     {
         let _silencer = StdoutSilencer::new()?;
-        convert_file(&in_path, &out_dir, "mdx", false, false);
+        convert_file(&in_path, &out_dir, "mdx", false, false, false);
     } // stdout restored here
 
     // 4. Pick up the produced .mdx.
@@ -405,7 +760,7 @@ fn strip_frontmatter(s: &str) -> String {
     s.to_string()
 }
 
-fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool) {
+fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool, verbose: bool, ocr: bool) {
     println!("📄 Converting: {}", input.display());
 
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -432,11 +787,11 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
 
     // PDF magic takes priority — some files have wrong extensions (e.g. .hwpx but actually PDF)
     if is_pdf {
-        convert_pdf(input, output, format, verbose);
+        convert_pdf(input, output, format, verbose, ocr);
         return;
     }
 
-    // ZIP-based formats: peek inside to distinguish DOCX vs HWPX
+    // ZIP-based formats: peek inside to distinguish DOCX vs HWPX vs EPUB
     if is_zip {
         // Check internal structure to determine actual format
         let actual = detect_zip_format(input);
@@ -445,14 +800,21 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
             "hwpx" => { convert_hwpx(input, output, format, extract_images, verbose); return; }
             "pptx" => { convert_pptx(input, output, format, verbose); return; }
             "xlsx" => { convert_xlsx(input, output, format, verbose); return; }
+            "epub" => { convert_epub(input, output, format, verbose); return; }
             _ => {
                 // Fallback to extension for ZIP-based formats
-                if ext.eq_ignore_ascii_case("docx") {
+    if ext.eq_ignore_ascii_case("doc") {
+        convert_doc97(input, output, format, verbose);
+        return;
+    }
+    if ext.eq_ignore_ascii_case("docx") {
                     convert_docx(input, output, format, verbose);
                 } else if ext.eq_ignore_ascii_case("pptx") {
                     convert_pptx(input, output, format, verbose);
                 } else if ext.eq_ignore_ascii_case("xlsx") || ext.eq_ignore_ascii_case("xls") {
                     convert_xlsx(input, output, format, verbose);
+                } else if ext.eq_ignore_ascii_case("epub") {
+                    convert_epub(input, output, format, verbose);
                 } else {
                     convert_hwpx(input, output, format, extract_images, verbose);
                 }
@@ -462,6 +824,10 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
     }
 
     // Extension-based fallback for non-magic-detected files
+    if ext.eq_ignore_ascii_case("rtf") || magic.starts_with(b"{\\rtf") {
+        convert_rtf(input, output, format, verbose);
+        return;
+    }
     if ext.eq_ignore_ascii_case("docx") {
         convert_docx(input, output, format, verbose);
         return;
@@ -471,7 +837,7 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         return;
     }
     if ext.eq_ignore_ascii_case("pdf") {
-        convert_pdf(input, output, format, verbose);
+        convert_pdf(input, output, format, verbose, ocr);
         return;
     }
     if ext.eq_ignore_ascii_case("xlsx") || ext.eq_ignore_ascii_case("xls") {
@@ -480,6 +846,10 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
     }
     if ext.eq_ignore_ascii_case("pptx") {
         convert_pptx(input, output, format, verbose);
+        return;
+    }
+    if ext.eq_ignore_ascii_case("epub") {
+        convert_epub(input, output, format, verbose);
         return;
     }
     if ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm") || ext.eq_ignore_ascii_case("mhtml") {
@@ -498,7 +868,29 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
     // Neither ZIP nor PDF nor CFB → unknown
     // Detect known unsupported formats with friendly messages BEFORE the
     // confusing 'invalid CFB magic' error fires.
-    let _ = is_cfb;
+    if is_cfb {
+        #[cfg(feature = "xls")]
+        {
+            if let Ok(data) = std::fs::read(input) {
+                if xls::looks_like_xls(&data) {
+                    convert_xls(input, output, format, verbose);
+                    return;
+                }
+            }
+        }
+        // HWP3 detection: same CFB magic, but different internal structure.
+        // Check after XLS (which also uses CFB) to avoid false positives.
+        if let Ok(data) = std::fs::read(input) {
+            if hwp3::is_hwp3(&data) {
+                convert_hwp3(input, output, format, verbose);
+                return;
+            }
+            if doc97::looks_like_doc(&data) {
+                convert_doc97(input, output, format, verbose);
+                return;
+            }
+        }
+    }
 
     // Fasoo DRMONE enterprise DRM-encrypted documents start with the literal
     // "0x9B 0x20 D R M O N E   This Document is encrypted ...". These files
@@ -919,7 +1311,12 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
     }
 }
 
-fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
+fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bool) {
+    if ocr && !ocr_available() {
+        eprintln!("  \u{26a0}\u{fe0f}  OCR requested but OCR engine not available. Build with `--features ocr`.");
+        eprintln!("  \u{26a0}\u{fe0f}  Continuing with text-only extraction.");
+    }
+
     match PdfParser::open(input) {
         Ok(parser) => {
             fs::create_dir_all(output).expect("Failed to create output directory");
@@ -1015,6 +1412,52 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
                         eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
                     }
 
+                    // OCR: if enabled and available, run OCR on image-heavy pages
+                    let ocr_text = if ocr && ocr_available() {
+                        let ocr_parts: Vec<String> = Vec::new();
+                        for img in &doc.images {
+                            let empty = String::new();
+                            let page_text = doc.pages.iter()
+                                .find(|p| p.page_number == img.page.unwrap_or(0))
+                                .map(|p| &p.text)
+                                .unwrap_or(&empty);
+                            if page_text.len() > 200 {
+                                continue;
+                            }
+                            #[cfg(feature = "ocr")]
+                            match ocr::ocr_image(&img.data) {
+                                Ok(lines) => {
+                                    let text: String = lines.iter()
+                                        .map(|l| l.text.clone())
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    if !text.trim().is_empty() {
+                                        let pn = img.page.unwrap_or(0);
+                                        ocr_parts.push(format!("## Page {} (OCR)\n\n{}\n", pn, text));
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                            #[cfg(not(feature = "ocr"))]
+                            let _ = img;
+                        }
+                        if ocr_parts.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n\n---\n\n{}", ocr_parts.join("\n"))
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    // Rebuild output with OCR text if needed
+                    if !ocr_text.is_empty() {
+                        let enriched = doc.to_mdx() + &ocr_text;
+                        let mdx_path = output.join(format!("{}.mdx", stem));
+                        fs::write(&mdx_path, &enriched).expect("Failed to write MDX");
+                        println!("  \u{2713} Created (with OCR): {}", mdx_path.display());
+                    }
+
                     if verbose {
                         println!("\n\u{1f4ca} Summary:");
                         println!("  - Format: PDF");
@@ -1024,6 +1467,9 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool) {
                             println!("  - Title: {}", doc.metadata.title);
                         }
                         println!("  - Images: {}", doc.images.len());
+                        if !ocr_text.is_empty() {
+                            println!("  - OCR: enabled, pages processed");
+                        }
                         println!("  - Text length: {} chars", doc.full_text().len());
                         println!("  - Using {} threads", rayon::current_num_threads());
                     }
@@ -1613,7 +2059,7 @@ fn batch_convert(pattern: &str, output: &Path) {
                     println!("\n  Processing: {}", path.display());
                     
                     if let Err(_) = std::panic::catch_unwind(|| {
-                        convert_file(&path, output, "mdx", true, false);
+                        convert_file(&path, output, "mdx", true, false, false);
                     }) {
                         errors += 1;
                     } else {
@@ -1943,4 +2389,1038 @@ fn inspect_hwp(input: &Path, format: &str) {
 
     println!("\n{}", "=".repeat(60));
     println!("Use --format json for machine-readable output");
+}
+
+/// Dump per-element layout as JSON — consumed by `pdf_triage_router.py`
+/// to place Mixed-page OCR results at their correct Y position.
+fn dump_layout(input: &Path, output: Option<&Path>, page: Option<usize>) -> std::io::Result<()> {
+    use mdm_core::pdf::PdfParser;
+
+    let parser = PdfParser::open(input)?;
+    let elements = parser.extract_layout();
+    let filtered: Vec<_> = match page {
+        Some(p) => elements.into_iter().filter(|e| e.page == p).collect(),
+        None => elements,
+    };
+    let json = serde_json::to_string_pretty(&filtered)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    match output {
+        Some(p) => std::fs::write(p, json)?,
+        None => println!("{}", json),
+    }
+    Ok(())
+}
+
+/// Run PDF page triage and emit either a human-readable table or an
+/// OCR-routing manifest (JSON). See `plan/pdf-triage.md`.
+fn triage_pdf(input: &Path, format: &str, output: Option<&Path>) -> std::io::Result<()> {
+    use mdm_core::pdf::{PdfParser, PdfCategory};
+    use mdm_core::pdf::triage::build_manifest;
+
+    let parser = PdfParser::open(input)?;
+    let results = parser.triage();
+
+    let payload = match format {
+        "json" => {
+            let doc_str = input.to_string_lossy().into_owned();
+            let manifest = build_manifest(&doc_str, &results);
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        }
+        _ => {
+            let mut buf = String::new();
+            buf.push_str(&format!("{:<60}\n", input.display()));
+            buf.push_str(&format!(
+                "{:<4} {:<12} {:<5} {:<7} {:<7} {:<5} {:<7} {:<7} {:<5} {:<5}\n",
+                "pg", "category", "conf", "text%", "image%", "#img",
+                "fontR", "underL", "invis", "cjk"
+            ));
+            for t in &results {
+                let f_opt = |v: Option<f32>| {
+                    v.map(|x| format!("{:.2}", x)).unwrap_or_else(|| "-".into())
+                };
+                let b_opt = |v: Option<bool>| match v {
+                    Some(true) => "yes".to_string(),
+                    Some(false) => "no".to_string(),
+                    None => "-".to_string(),
+                };
+                buf.push_str(&format!(
+                    "{:<4} {:<12?} {:<5.2} {:<7.3} {:<7.3} {:<5} {:<7} {:<7} {:<5} {:<5}\n",
+                    t.page,
+                    t.category,
+                    t.confidence,
+                    t.text_coverage,
+                    t.image_coverage,
+                    t.image_count,
+                    f_opt(t.font_reliability),
+                    f_opt(t.ocr_underlay_ratio),
+                    b_opt(t.has_invisible_text),
+                    b_opt(t.contains_cjk),
+                ));
+            }
+            let (scanned, mixed, text_native, unknown) = results.iter().fold(
+                (0, 0, 0, 0),
+                |(s, m, t, u), r| match r.category {
+                    PdfCategory::Scanned => (s + 1, m, t, u),
+                    PdfCategory::Mixed => (s, m + 1, t, u),
+                    PdfCategory::TextNative => (s, m, t + 1, u),
+                    PdfCategory::Unknown => (s, m, t, u + 1),
+                },
+            );
+            buf.push_str(&format!(
+                "\nSummary: {} pages — {} text-native, {} scanned, {} mixed, {} unknown\n",
+                results.len(), text_native, scanned, mixed, unknown
+            ));
+            buf
+        }
+    };
+
+    match output {
+        Some(p) => std::fs::write(p, payload)?,
+        None => print!("{}", payload),
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rtf")]
+fn convert_rtf(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match rtf::RtfParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "document.rtf".to_string());
+
+                    let mut mv2 = ManifestV2::new(input, "rtf");
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "rtf",
+                                "content": doc.to_markdown(),
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  \u{2713} Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  \u{2713} Created: {}", mdx_path.display());
+                        }
+                    }
+
+                    let md = doc.to_markdown();
+                    mv2.stats.markdown_lines = md.lines().count();
+                    mv2.stats.markdown_chars = md.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
+                    if verbose {
+                        println!("\n\u{1f4ca} Summary:");
+                        println!("  - Format: RTF");
+                        println!("  - Text length: {} chars", md.len());
+                    }
+
+                    println!("\u{2705} Conversion complete!");
+                }
+                Err(e) => eprintln!("\u{274c} Error parsing RTF: {}", e),
+            }
+        }
+        Err(e) => eprintln!("\u{274c} Error opening RTF file: {}", e),
+    }
+}
+
+#[cfg(not(feature = "rtf"))]
+fn convert_rtf(_input: &Path, _output: &Path, _format: &str, _verbose: bool) {
+    eprintln!("\u{274c} RTF support disabled. Enable the 'rtf' feature in Cargo.toml.");
+}
+
+#[cfg(feature = "epub")]
+fn convert_epub(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match epub::EpubParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "book.epub".to_string());
+
+                    let mut mv2 = ManifestV2::new(input, "epub");
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "epub",
+                                "metadata": {
+                                    "title": doc.metadata.title,
+                                    "author": doc.metadata.author,
+                                    "language": doc.metadata.language,
+                                    "chapters": doc.metadata.chapters.len(),
+                                },
+                                "content": doc.to_markdown(),
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  \u{2713} Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  \u{2713} Created: {}", mdx_path.display());
+                        }
+                    }
+
+                    let md = doc.to_markdown();
+                    mv2.stats.markdown_lines = md.lines().count();
+                    mv2.stats.markdown_chars = md.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
+                    if verbose {
+                        println!("\n\u{1f4ca} Summary:");
+                        println!("  - Format: EPUB");
+                        if let Some(ref title) = doc.metadata.title {
+                            println!("  - Title: {}", title);
+                        }
+                        if let Some(ref author) = doc.metadata.author {
+                            println!("  - Author: {}", author);
+                        }
+                        println!("  - Chapters: {}", doc.metadata.chapters.len());
+                        for ch in &doc.metadata.chapters {
+                            println!("    - {} ({})", ch.title, ch.path);
+                        }
+                    }
+
+                    println!("\u{2705} Conversion complete!");
+                }
+                Err(e) => eprintln!("\u{274c} Error parsing EPUB: {}", e),
+            }
+        }
+        Err(e) => eprintln!("\u{274c} Error opening EPUB file: {}", e),
+    }
+}
+
+#[cfg(not(feature = "epub"))]
+fn convert_epub(_input: &Path, _output: &Path, _format: &str, _verbose: bool) {
+    eprintln!("\u{274c} EPUB support disabled. Enable the 'epub' feature in Cargo.toml.");
+}
+
+#[cfg(feature = "xls")]
+fn convert_xls(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match xls::XlsParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "spreadsheet.xls".to_string());
+
+                    let mut mv2 = ManifestV2::new(input, "xls");
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "xls",
+                                "metadata": {
+                                    "sheets": doc.metadata.sheet_count,
+                                },
+                                "content": doc.to_markdown(),
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  \u{2713} Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  \u{2713} Created: {}", mdx_path.display());
+                        }
+                    }
+
+                    let md = doc.to_markdown();
+                    mv2.stats.markdown_lines = md.lines().count();
+                    mv2.stats.markdown_chars = md.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
+                    if verbose {
+                        println!("\n\u{1f4ca} Summary:");
+                        println!("  - Format: XLS (BIFF8)");
+                        println!("  - Sheets: {}", doc.metadata.sheet_count);
+                        for sheet in &doc.sheets {
+                            println!("    - {} ({} rows)", sheet.name, sheet.rows.len());
+                        }
+                    }
+
+                    println!("\u{2705} Conversion complete!");
+                }
+                Err(e) => eprintln!("\u{274c} Error parsing XLS: {}", e),
+            }
+        }
+        Err(e) => eprintln!("\u{274c} Error opening XLS file: {}", e),
+    }
+}
+
+#[cfg(not(feature = "xls"))]
+fn convert_xls(_input: &Path, _output: &Path, _format: &str, _verbose: bool) {
+    eprintln!("\u{274c} XLS support disabled. Enable the 'xls' feature in Cargo.toml.");
+}
+
+// ── New CLI subcommand handlers ────────────────────────────────────────────
+
+fn cmd_generate(input: &Path, output: Option<&Path>, fmt: &str, preset: Option<&str>) {
+    let markdown = if input == Path::new("-") {
+        let mut s = String::new();
+        if io::stdin().read_to_string(&mut s).is_err() {
+            eprintln!("\u{274c} Failed to read stdin");
+            return;
+        }
+        s
+    } else {
+        match fs::read_to_string(input) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", input.display(), e); return; }
+        }
+    };
+
+    let out_fmt = fmt.to_lowercase();
+
+    match out_fmt.as_str() {
+        "docx" => {
+            #[cfg(feature = "docx-out")]
+            match gen_docx::markdown_to_docx(&markdown) {
+                Ok(doc) => write_output(output, &doc.bytes, "docx"),
+                Err(e) => eprintln!("\u{274c} DOCX generation failed: {}", e),
+            }
+            #[cfg(not(feature = "docx-out"))]
+            eprintln!("\u{274c} DOCX output disabled. Build with `--features docx-out`.");
+        }
+        "pdf" => {
+            #[cfg(feature = "pdf-out")]
+            match gen_pdf::markdown_to_pdf(&markdown) {
+                Ok(doc) => write_output(output, &doc.bytes, "pdf"),
+                Err(e) => eprintln!("\u{274c} PDF generation failed: {}", e),
+            }
+            #[cfg(not(feature = "pdf-out"))]
+            eprintln!("\u{274c} PDF output disabled. Build with `--features pdf-out`.");
+        }
+        _ => {
+            // Default: HWPX
+            let opts = match preset {
+                Some(p) => hwpx_gen::GenOptions::with_preset(p),
+                None => hwpx_gen::GenOptions::default(),
+            };
+
+            match hwpx_gen::markdown_to_hwpx(&markdown, &opts) {
+                Ok(data) => write_output(output, &data, "hwpx"),
+                Err(e) => eprintln!("\u{274c} HWPX generation failed: {}", e),
+            }
+        }
+    }
+}
+
+fn write_output(output: Option<&Path>, data: &[u8], ext: &str) {
+    if let Some(out_path) = output {
+        if let Err(e) = fs::write(out_path, data) {
+            eprintln!("\u{274c} Failed to write {}: {}", out_path.display(), e);
+        } else {
+            println!("\u{2705} Generated: {} ({} bytes)", out_path.display(), data.len());
+        }
+    } else {
+        io::stdout().write_all(data).ok();
+    }
+}
+
+/// Read an input as text for the text-oriented tools (redact / lint / chunks /
+/// diff). Text files (.md/.markdown/.txt/.text and unknown/extension-less) are
+/// read verbatim; binary document formats are converted to Markdown first so
+/// masking / linting / chunking operate on real content instead of raw bytes.
+///
+/// NB: format-preserving in-place masking of HWPX (keeping the original
+/// layout) is a follow-up — this path yields Markdown, not a re-serialized doc.
+fn input_to_text(path: &Path) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "hwp" => {
+            let mut p = HwpParser::open(path).ok()?;
+            p.to_mdm().ok().map(|d| d.to_mdx())
+        }
+        "hwpx" => convert_to_markdown_inline(path),
+        "pdf" => {
+            let p = PdfParser::open(path).ok()?;
+            p.parse().ok().map(|d| d.to_mdx())
+        }
+        "docx" => {
+            let mut p = DocxParser::open(path).ok()?;
+            p.parse().ok().map(|d| d.to_markdown())
+        }
+        // calamine's auto reader handles both .xls and .xlsx.
+        "xls" | "xlsx" => {
+            let p = XlsxParser::open(path).ok()?;
+            p.parse().ok().map(|d| d.to_markdown())
+        }
+        // .md / .markdown / .txt / .text / .html / .csv / no-ext → read as text.
+        _ => fs::read_to_string(path).ok(),
+    }
+}
+
+/// Minimal Markdown → IR block parser used by `diff` and `chunks` so both
+/// operate on real structure instead of raw lines. Not a full CommonMark
+/// parser — it recognizes the block kinds the IR models: ATX headings, GFM
+/// pipe tables, ordered/unordered lists, thematic breaks, and paragraphs.
+fn markdown_to_ir_blocks(md: &str) -> Vec<ir::IRBlock> {
+    fn flush_para(para: &mut Vec<String>, blocks: &mut Vec<ir::IRBlock>) {
+        if !para.is_empty() {
+            let text = para.join(" ").trim().to_string();
+            if !text.is_empty() {
+                blocks.push(ir::IRBlock::paragraph(text));
+            }
+            para.clear();
+        }
+    }
+    fn is_thematic_break(line: &str) -> bool {
+        let s: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        s.len() >= 3
+            && (s.chars().all(|c| c == '-') || s.chars().all(|c| c == '*') || s.chars().all(|c| c == '_'))
+    }
+    fn split_table_row(row: &str) -> Vec<String> {
+        row.trim()
+            .trim_start_matches('|')
+            .trim_end_matches('|')
+            .split('|')
+            .map(|c| c.trim().to_string())
+            .collect()
+    }
+    fn is_table_separator_row(row: &str) -> bool {
+        let cells = split_table_row(row);
+        !cells.is_empty()
+            && cells.iter().all(|c| {
+                let t = c.trim();
+                !t.is_empty() && t.chars().all(|ch| ch == '-' || ch == ':')
+            })
+    }
+    // Some(true)=ordered, Some(false)=unordered, None=not a list item.
+    fn list_marker(line: &str) -> Option<bool> {
+        if let Some(rest) = line.strip_prefix(|c| c == '-' || c == '*' || c == '+') {
+            if rest.starts_with(' ') {
+                return Some(false);
+            }
+        }
+        let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            let after = &line[digits.len()..];
+            if (after.starts_with('.') || after.starts_with(')')) && after[1..].starts_with(' ') {
+                return Some(true);
+            }
+        }
+        None
+    }
+    fn strip_list_marker(line: &str) -> String {
+        if let Some(rest) = line.strip_prefix(|c| c == '-' || c == '*' || c == '+') {
+            return rest.trim_start().to_string();
+        }
+        let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() {
+            let after = &line[digits.len()..];
+            if after.starts_with('.') || after.starts_with(')') {
+                return after[1..].trim_start().to_string();
+            }
+        }
+        line.to_string()
+    }
+
+    let lines: Vec<&str> = md.lines().collect();
+    let mut blocks: Vec<ir::IRBlock> = Vec::new();
+    let mut para: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+
+        if line.is_empty() {
+            flush_para(&mut para, &mut blocks);
+            i += 1;
+            continue;
+        }
+
+        // ATX heading.
+        if line.starts_with('#') {
+            let hashes = line.chars().take_while(|c| *c == '#').count();
+            let rest = &line[hashes..];
+            if (1..=6).contains(&hashes) && (rest.is_empty() || rest.starts_with(' ')) {
+                flush_para(&mut para, &mut blocks);
+                blocks.push(ir::IRBlock::heading(hashes as u8, rest.trim().to_string()));
+                i += 1;
+                continue;
+            }
+        }
+
+        // Thematic break.
+        if is_thematic_break(line) {
+            flush_para(&mut para, &mut blocks);
+            blocks.push(ir::IRBlock::Separator);
+            i += 1;
+            continue;
+        }
+
+        // GFM pipe table: a run of lines starting with '|', or the outer-pipe-less
+        // form (`Name | Amount` + `--- | ---`) where the next line is a separator
+        // row with a matching column count.
+        let pipeless_table = !line.starts_with('|')
+            && line.contains('|')
+            && i + 1 < lines.len()
+            && {
+                let next = lines[i + 1].trim();
+                next.contains('|')
+                    && is_table_separator_row(next)
+                    && split_table_row(next).len() == split_table_row(line).len()
+            };
+        if line.starts_with('|') || pipeless_table {
+            flush_para(&mut para, &mut blocks);
+            let mut rows: Vec<Vec<ir::IRCell>> = Vec::new();
+            while i < lines.len() {
+                let row = lines[i].trim();
+                let is_row = if pipeless_table {
+                    row.contains('|')
+                } else {
+                    row.starts_with('|')
+                };
+                if !is_row {
+                    break;
+                }
+                if !is_table_separator_row(row) {
+                    let cells = split_table_row(row).into_iter().map(ir::IRCell::new).collect();
+                    rows.push(cells);
+                }
+                i += 1;
+            }
+            if !rows.is_empty() {
+                blocks.push(ir::IRBlock::Table(ir::IRTable::new(rows)));
+            }
+            continue;
+        }
+
+        // Ordered / unordered list.
+        if let Some(ordered) = list_marker(line) {
+            flush_para(&mut para, &mut blocks);
+            let mut items: Vec<String> = Vec::new();
+            while i < lines.len() {
+                let l = lines[i].trim();
+                match list_marker(l) {
+                    Some(o) if o == ordered => {
+                        items.push(strip_list_marker(l));
+                        i += 1;
+                    }
+                    _ => break,
+                }
+            }
+            blocks.push(ir::IRBlock::List { ordered, items });
+            continue;
+        }
+
+        para.push(line.to_string());
+        i += 1;
+    }
+    flush_para(&mut para, &mut blocks);
+    blocks
+}
+
+fn cmd_redact(input: &Path, output: Option<&Path>, rules_str: &str) {
+    // Documents (HWP/HWPX/PDF/DOCX/XLS(X)) are converted to Markdown first;
+    // .md/.txt pass through unchanged. Format-preserving HWPX masking is a
+    // follow-up (see input_to_text).
+    let text = match input_to_text(input) {
+        Some(t) => t,
+        None => {
+            eprintln!("\u{274c} Failed to read {} (unsupported or unreadable)", input.display());
+            std::process::exit(1);
+        }
+    };
+
+    let rules: Vec<pii::PiiRule> = rules_str.split(',')
+        .filter_map(|s| match s.trim() {
+            "rrn" => Some(pii::PiiRule::Rrn),
+            "phone" => Some(pii::PiiRule::Phone),
+            "email" => Some(pii::PiiRule::Email),
+            "card" => Some(pii::PiiRule::Card),
+            "account" => Some(pii::PiiRule::Account),
+            "passport" => Some(pii::PiiRule::Passport),
+            "driver" => Some(pii::PiiRule::Driver),
+            _ => None,
+        })
+        .collect();
+
+    let opts = pii::RedactOptions { rules, ..Default::default() };
+    match pii::redact_markdown(&text, &opts) {
+        Ok(result) => {
+            if let Some(out_path) = output {
+                if let Err(e) = fs::write(out_path, &result.text) {
+                    eprintln!("\u{274c} Failed to write {}: {}", out_path.display(), e);
+                    std::process::exit(1);
+                }
+                println!("\u{2705} Redacted output written to {} ({} hit(s))", out_path.display(), result.hits.len());
+            } else {
+                print!("{}", result.text);
+            }
+        }
+        Err(e) => {
+            eprintln!("\u{274c} Redaction failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_diff(input_a: &Path, input_b: &Path, format: &str) {
+    // Convert each input to Markdown, parse to IR blocks, then run the
+    // structural block diff (added/removed/modified/moved + cell-level table
+    // deltas). Default output is a human-readable Markdown report; --format
+    // json emits the serde `DiffResult`.
+    let read_blocks = |path: &Path| -> Option<Vec<ir::IRBlock>> {
+        input_to_text(path).map(|t| markdown_to_ir_blocks(&t))
+    };
+
+    let blocks_a = match read_blocks(input_a) {
+        Some(b) => b,
+        None => { eprintln!("\u{274c} Failed to read {}", input_a.display()); std::process::exit(1); }
+    };
+    let blocks_b = match read_blocks(input_b) {
+        Some(b) => b,
+        None => { eprintln!("\u{274c} Failed to read {}", input_b.display()); std::process::exit(1); }
+    };
+
+    let result = ir::diff_blocks(&blocks_a, &blocks_b);
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default()),
+        _ => print!("{}", ir::render_diff_markdown(&result)),
+    }
+}
+
+fn convert_to_markdown_inline(path: &Path) -> Option<String> {
+    let mut parser = HwpxParser::open(path).ok()?;
+    let doc = parser.parse().ok()?;
+    Some(doc.sections.join("\n\n"))
+}
+
+fn cmd_fill(input: &Path, values_path: Option<&Path>, output: Option<&Path>, dry_run: bool) {
+    let template_bytes = match fs::read(input) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", input.display(), e); return; }
+    };
+
+    if dry_run {
+        match form::extract_form_schema(&template_bytes) {
+            Ok(schema) => {
+                println!("{}", serde_json::to_string_pretty(&schema).unwrap_or_default());
+            }
+            Err(e) => eprintln!("\u{274c} Form extraction failed: {}", e),
+        }
+        return;
+    }
+
+    let values_path = match values_path {
+        Some(p) => p,
+        None => {
+            eprintln!("\u{274c} fill requires --values/-j <FILE> (or use --dry-run to show the form schema)");
+            std::process::exit(1);
+        }
+    };
+
+    let values_json: serde_json::Value = match fs::read_to_string(values_path) {
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(v) => v,
+            Err(e) => { eprintln!("\u{274c} Invalid JSON: {}", e); return; }
+        },
+        Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", values_path.display(), e); return; }
+    };
+
+    let values: HashMap<String, form::RawFillInput> = values_json
+        .as_object()
+        .map(|obj| obj.iter().filter_map(|(k, v)| {
+            let s = v.as_str()?.to_string();
+            Some((k.clone(), form::RawFillInput { value: form::FillValue::Scalar(s), format: None }))
+        }).collect())
+        .unwrap_or_default();
+
+    if values.is_empty() {
+        eprintln!("\u{274c} No key-value pairs found in JSON");
+        return;
+    }
+
+    match form::fill_hwpx(&template_bytes, &values) {
+        Ok(result) => {
+            if let Some(out_path) = output {
+                fs::write(out_path, &result.buffer).ok();
+                println!("\u{2705} Filled: {} ({} bytes)", out_path.display(), result.buffer.len());
+            } else {
+                io::stdout().write_all(&result.buffer).ok();
+            }
+        }
+        Err(e) => eprintln!("\u{274c} Fill failed: {}", e),
+    }
+}
+
+fn cmd_lint(input: &Path) {
+    let text = match input_to_text(input) {
+        Some(t) => t,
+        None => { eprintln!("\u{274c} Failed to read {}", input.display()); std::process::exit(1); }
+    };
+
+    let issues = lint::lint_document(&text);
+    if issues.is_empty() {
+        println!("\u{2705} No issues found.");
+    } else {
+        for issue in &issues {
+            let severity = match issue.severity {
+                lint::LintSeverity::Error => "ERROR",
+                lint::LintSeverity::Warning => "WARN",
+            };
+            println!("  {} line {}: {} — {}", severity, issue.line, issue.rule, issue.matched);
+        }
+        println!("  Found {} issue(s).", issues.len());
+    }
+}
+
+fn cmd_chunks(input: &Path, granularity: &str, max_chars: usize, overlap: usize) {
+    // Convert documents to Markdown then parse to real IR blocks (headings,
+    // GFM tables, lists) instead of reconstructing one paragraph per raw line.
+    let text = match input_to_text(input) {
+        Some(t) => t,
+        None => { eprintln!("\u{274c} Failed to read {}", input.display()); std::process::exit(1); }
+    };
+    let blocks = markdown_to_ir_blocks(&text);
+
+    let opts = chunker::ChunkOptions {
+        granularity: match granularity {
+            "block" => chunker::Granularity::Block,
+            _ => chunker::Granularity::Section,
+        },
+        max_chars: if max_chars == 0 { None } else { Some(max_chars) },
+        overlap,
+        include_table_cells: false,
+    };
+
+    let chunks = chunker::chunk(&blocks, &opts);
+    println!("{}", serde_json::to_string_pretty(&chunks).unwrap_or_default());
+}
+
+#[cfg(feature = "watch")]
+fn cmd_watch(dir: &Path, output: &Path, webhook: Option<&str>) {
+    use watch::{OutputFormat, WatchOptions};
+
+    let opts = WatchOptions {
+        out_dir: Some(output.to_path_buf()),
+        webhook: webhook.map(|s| s.to_string()),
+        format: OutputFormat::Markdown,
+        silent: false,
+    };
+
+    println!("\u{1f4c2} Watching {} ...", dir.display());
+    println!("  Output: {}", output.display());
+    if webhook.is_some() {
+        println!("  Webhook: enabled");
+    }
+    println!("  Supported: {:?}", watch::supported_extensions());
+
+    // `FileEvent` is a struct: { path, file_name, result: Result<String, String>, out_path }.
+    let result = watch::watch_dir(dir, opts, |event| match event.result {
+        Ok(_) => {
+            let out = event
+                .out_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(stdout)".to_string());
+            println!("  \u{2705} {} -> {}", event.path.display(), out);
+        }
+        Err(err) => eprintln!("  \u{274c} {}: {}", event.file_name, err),
+    });
+    if let Err(e) = result {
+        eprintln!("\u{274c} Watch failed: {}", e);
+    }
+}
+
+fn convert_hwp3(input: &Path, output: &Path, format: &str, verbose: bool) {
+    let data = match fs::read(input) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", input.display(), e); return; }
+    };
+
+    match hwp3::parse_hwp3_document(&data) {
+        Ok(doc) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+            let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+            let source_name = input.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "document.hwp".to_string());
+
+            let mut mv2 = ManifestV2::new(input, "hwp3");
+
+            match format {
+                "json" => {
+                    let json_path = output.join(format!("{}.json", stem));
+                    let json_data = json!({
+                        "version": "1.0",
+                        "format": "hwp3",
+                        "metadata": {
+                            "title": doc.metadata.title,
+                            "author": doc.metadata.author,
+                            "subject": doc.metadata.subject,
+                            "date": doc.metadata.date,
+                        },
+                        "content": doc.markdown,
+                        "warnings": doc.warnings,
+                    });
+                    fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                        .expect("Failed to write JSON");
+                    println!("  \u{2713} Created: {}", json_path.display());
+                }
+                _ => {
+                    let mdx_content = format!(
+                        "---\nformat: hwp3\nsource: \"{}\"---\n\n{}",
+                        source_name.replace('"', "\\\""),
+                        doc.markdown,
+                    );
+                    let mdx_path = output.join(format!("{}.mdx", stem));
+                    fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
+                    println!("  \u{2713} Created: {}", mdx_path.display());
+                }
+            }
+
+            mv2.stats.markdown_lines = doc.markdown.lines().count();
+            mv2.stats.markdown_chars = doc.markdown.len();
+
+            if let Err(e) = save_manifest(&mv2, output, &stem) {
+                eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+            }
+
+            if verbose {
+                println!("\n\u{1f4ca} Summary:");
+                println!("  - Format: HWP 3.0 (1996-2002)");
+                if let Some(ref t) = doc.metadata.title {
+                    println!("  - Title: {}", t);
+                }
+                println!("  - Blocks: {}", doc.blocks.len());
+                println!("  - Text length: {} chars", doc.markdown.len());
+                if !doc.warnings.is_empty() {
+                    println!("  - Warnings: {}", doc.warnings.len());
+                }
+            }
+
+            println!("\u{2705} Conversion complete!");
+        }
+        Err(e) => eprintln!("\u{274c} Error parsing HWP3: {}", e),
+    }
+}
+
+fn cmd_legal(input: &Path, format: &str) {
+    let mut chunker = legal::KoreanLegalChunker::new();
+    match chunker.parse_markdown(input) {
+        Ok(chunks) => {
+            match format {
+                "json" => {
+                    println!("{}", serde_json::to_string_pretty(&chunks).unwrap_or_default());
+                }
+                _ => {
+                    for chunk in &chunks {
+                        println!("{}", chunk.to_json());
+                    }
+                }
+            }
+        }
+        Err(e) => eprintln!("\u{274c} Legal parsing failed: {}", e),
+    }
+}
+
+#[cfg(feature = "ocr")]
+fn ocr_available() -> bool {
+    ocr::ocr_available()
+}
+
+#[cfg(not(feature = "ocr"))]
+fn ocr_available() -> bool {
+    false
+}
+
+fn convert_doc97(input: &Path, output: &Path, format: &str, verbose: bool) {
+    match doc97::DocParser::open(input) {
+        Ok(parser) => {
+            fs::create_dir_all(output).expect("Failed to create output directory");
+
+            match parser.parse() {
+                Ok(doc) => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    let source_name = input.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "document.doc".to_string());
+
+                    let mut mv2 = ManifestV2::new(input, "doc");
+
+                    match format {
+                        "json" => {
+                            let json_path = output.join(format!("{}.json", stem));
+                            let json_data = json!({
+                                "version": "1.0",
+                                "format": "doc",
+                                "content": doc.to_markdown(),
+                            });
+                            fs::write(&json_path, serde_json::to_string_pretty(&json_data).unwrap())
+                                .expect("Failed to write JSON");
+                            println!("  \u{2713} Created: {}", json_path.display());
+                        }
+                        _ => {
+                            let mdx_path = output.join(format!("{}.mdx", stem));
+                            fs::write(&mdx_path, doc.to_mdx(&source_name)).expect("Failed to write MDX");
+                            println!("  \u{2713} Created: {}", mdx_path.display());
+                        }
+                    }
+
+                    let md = doc.to_markdown();
+                    mv2.stats.markdown_lines = md.lines().count();
+                    mv2.stats.markdown_chars = md.len();
+
+                    if let Err(e) = save_manifest(&mv2, output, &stem) {
+                        eprintln!("  \u{26a0}\u{fe0f}  Failed to write manifest: {}", e);
+                    }
+
+                    if verbose {
+                        println!("\n\u{1f4ca} Summary:");
+                        println!("  - Format: DOC (Word 97-2003)");
+                        println!("  - Text length: {} chars", md.len());
+                    }
+
+                    println!("\u{2705} Conversion complete!");
+                }
+                Err(e) => eprintln!("\u{274c} Error parsing DOC: {}", e),
+            }
+        }
+        Err(e) => eprintln!("\u{274c} Error opening DOC file: {}", e),
+    }
+}
+
+#[cfg(feature = "url-fetch")]
+fn cmd_url(urls: &[String], output: Option<&Path>) {
+    let url_refs: Vec<&str> = urls.iter().map(|s| s.as_str()).collect();
+    let results = url_fetch::fetch_urls(&url_refs);
+
+    for (url, result) in urls.iter().zip(results.iter()) {
+        match result {
+            Ok(doc) => {
+                if let Some(out_dir) = output {
+                    fs::create_dir_all(out_dir).ok();
+                    let slug = url
+                        .replace("https://", "")
+                        .replace("http://", "")
+                        .replace('/', "_")
+                        .chars()
+                        .take(60)
+                        .collect::<String>();
+                    let mdx_path = out_dir.join(format!("{}.mdx", slug));
+                    fs::write(&mdx_path, doc.to_mdx()).ok();
+                    println!("\u{2705} {} -> {}", url, mdx_path.display());
+                } else {
+                    println!("\n## {}\n\n{}", url, doc.markdown);
+                }
+            }
+            Err(e) => eprintln!("\u{274c} {}: {}", url, e),
+        }
+    }
+}
+
+fn cmd_validate(input: &Path) {
+    match fs::read(input) {
+        Ok(data) => {
+            let result = hwpx_gen::validate::validate_hwpx(&data);
+            if result.ok {
+                println!("\u{2705} HWPX validation passed ({} entries checked).",
+                    result.entry_count);
+            } else {
+                eprintln!("\u{274c} Validation failed:");
+                for issue in &result.issues {
+                    let path = issue.path.as_deref().unwrap_or("(root)");
+                    eprintln!("  - {}: {}", path, issue.message);
+                }
+            }
+        }
+        Err(e) => eprintln!("\u{274c} Failed to read {}: {}", input.display(), e),
+    }
+}
+
+fn cmd_equation(input: &Path, direction: &str) {
+    let text = match fs::read_to_string(input) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", input.display(), e); return; }
+    };
+
+    match direction {
+        "latex2hulk" => println!("{}", equation::latex_to_hulk(&text)),
+        _ => println!("{}", equation::hulk_to_latex(&text)),
+    }
+}
+
+#[cfg(test)]
+mod md_ir_tests {
+    use super::*;
+
+    fn table_count(blocks: &[ir::IRBlock]) -> usize {
+        blocks.iter().filter(|b| matches!(b, ir::IRBlock::Table(_))).count()
+    }
+
+    #[test]
+    fn md_ir_parses_piped_gfm_table() {
+        let md = "| Name | Amount |\n| --- | --- |\n| A | 1 |\n";
+        let blocks = markdown_to_ir_blocks(md);
+        assert_eq!(table_count(&blocks), 1);
+    }
+
+    #[test]
+    fn md_ir_parses_gfm_table_without_outer_pipes() {
+        let md = "Name | Amount\n--- | ---\nA | 1\nB | 2\n";
+        let blocks = markdown_to_ir_blocks(md);
+        assert_eq!(table_count(&blocks), 1, "outer-pipe-less GFM table must parse as IRBlock::Table");
+        if let Some(ir::IRBlock::Table(t)) = blocks.iter().find(|b| matches!(b, ir::IRBlock::Table(_))) {
+            assert_eq!(t.rows, 3); // header + 2 body rows (separator dropped)
+            assert_eq!(t.cols, 2);
+        }
+    }
+
+    #[test]
+    fn md_ir_pipe_in_paragraph_is_not_a_table() {
+        // No separator row on the next line → must stay a paragraph.
+        let md = "either | or is fine here\njust prose\n";
+        let blocks = markdown_to_ir_blocks(md);
+        assert_eq!(table_count(&blocks), 0);
+    }
+
+    #[test]
+    fn md_ir_column_count_mismatch_is_not_a_table() {
+        // Separator row with a different column count → not a table header.
+        let md = "a | b | c\n--- | ---\n";
+        let blocks = markdown_to_ir_blocks(md);
+        assert_eq!(table_count(&blocks), 0);
+    }
 }

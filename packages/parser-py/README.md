@@ -7,7 +7,7 @@ MDM Python 패키지는 HWP, PDF, HTML 문서를 처리하고 Markdown+Media 형
 ### PyPI에서 설치 (권장)
 
 ```bash
-pip install mdm-parser-py
+pip install mdm-parser
 ```
 
 ### 소스에서 설치
@@ -44,7 +44,7 @@ pip install -r requirements.txt
 ### 1. hwp_to_svg.py - HWP 표를 SVG로 변환
 
 ```python
-from packages.parser_py.hwp_to_svg import HwpToSvgConverter
+from mdm_parser.hwp_to_svg import HwpToSvgConverter
 
 # 변환기 생성
 converter = HwpToSvgConverter('document.hwp')
@@ -70,7 +70,7 @@ python hwp_to_svg.py document.hwp output_dir/
 ### 2. pdf_processor.py - PDF 텍스트/이미지 추출
 
 ```python
-from packages.parser_py.pdf_processor import PdfProcessor
+from mdm_parser.pdf_processor import PdfProcessor
 
 # 프로세서 생성
 processor = PdfProcessor('report.pdf')
@@ -103,7 +103,7 @@ python pdf_processor.py document.pdf --extract-images assets/
 ### 3. ocr_processor.py - OCR (이미지 → 텍스트)
 
 ```python
-from packages.parser_py.ocr_processor import OcrProcessor
+from mdm_parser.ocr_processor import OcrProcessor
 
 # OCR 프로세서 생성 (자동 엔진 선택)
 processor = OcrProcessor(engine='auto', lang='kor+eng')
@@ -143,7 +143,7 @@ python ocr_processor.py --engine tesseract image.png
 ### 예시 1: HWP 파일에서 텍스트 추출
 
 ```python
-from packages.parser_py.hwp_to_svg import HwpToSvgConverter
+from mdm_parser.hwp_to_svg import HwpToSvgConverter
 
 def extract_hwp_content(hwp_path, output_dir):
     converter = HwpToSvgConverter(hwp_path)
@@ -164,7 +164,7 @@ extract_hwp_content('report.hwp', './output/')
 ### 예시 2: PDF 보고서 처리
 
 ```python
-from packages.parser_py.pdf_processor import PdfProcessor
+from mdm_parser.pdf_processor import PdfProcessor
 import json
 
 def process_pdf_report(pdf_path):
@@ -198,7 +198,7 @@ process_pdf_report('annual_report.pdf')
 ### 예시 3: 스캔 문서 OCR
 
 ```python
-from packages.parser_py.ocr_processor import OcrProcessor
+from mdm_parser.ocr_processor import OcrProcessor
 import os
 
 def ocr_scanned_documents(input_dir, output_dir):
@@ -229,7 +229,7 @@ ocr_scanned_documents('./scans/', './ocr_results/')
 ## 에러 처리
 
 ```python
-from packages.parser_py.pdf_processor import PdfProcessor
+from mdm_parser.pdf_processor import PdfProcessor
 
 try:
     processor = PdfProcessor('document.pdf')

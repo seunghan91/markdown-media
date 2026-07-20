@@ -5,6 +5,7 @@ from mdm_core._mdm_native import (
     convert_bytes,
     convert_file_to_json,
     detect_format,
+    extract_images,
     version,
 )
 

@@ -403,10 +403,11 @@ impl HwpParser {
                                 current_char_shape_mapping = None;
                             }
                             if let Some(script) = extract_subtree_equation_script(&records, i, 50) {
+                                let latex = crate::equation::hulk_to_latex(&script);
                                 let marker = if script.contains('\n') {
-                                    format!("\n\n$$\n{}\n$$\n\n", script)
+                                    format!("\n\n$$\n{}\n$$\n\n", latex)
                                 } else {
-                                    format!("${}$", script)
+                                    format!("${}$", latex)
                                 };
                                 match blocks.last_mut() {
                                     Some(IRBlock::Paragraph { text, .. }) => {
@@ -706,10 +707,11 @@ impl HwpParser {
                                 current_char_shape_mapping = None;
                             }
                             if let Some(script) = extract_subtree_equation_script(&records, i, 50) {
+                                let latex = crate::equation::hulk_to_latex(&script);
                                 let marker = if script.contains('\n') {
-                                    format!("\n\n$$\n{}\n$$\n\n", script)
+                                    format!("\n\n$$\n{}\n$$\n\n", latex)
                                 } else {
-                                    format!("${}$", script)
+                                    format!("${}$", latex)
                                 };
                                 match blocks.last_mut() {
                                     Some(last) if !last.starts_with('|') => {

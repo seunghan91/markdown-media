@@ -72,7 +72,7 @@ impl XlsxParser {
                         Data::Int(i) => i.to_string(),
                         Data::Bool(b) => b.to_string(),
                         Data::Error(e) => format!("#ERR:{:?}", e),
-                        Data::DateTime(dt) => format!("{}", dt),
+                        Data::DateTime(dt) => excel_datetime_to_string(dt),
                         Data::DateTimeIso(s) => s.clone(),
                         Data::DurationIso(s) => s.clone(),
                     })
@@ -161,6 +161,44 @@ fn format_float(f: f64) -> String {
         format!("{:.0}", f)
     } else {
         f.to_string()
+    }
+}
+
+/// Render a calamine `ExcelDateTime` cell as text.
+///
+/// Without calamine's `dates` cargo feature, `Data::DateTime`'s `Display`
+/// prints the raw serial number (e.g. `45123`) instead of a date. We convert
+/// the serial ourselves via chrono so date cells render as real dates.
+/// Elapsed-time cells (durations) keep their numeric value.
+fn excel_datetime_to_string(dt: &calamine::ExcelDateTime) -> String {
+    if dt.is_duration() {
+        return format_float(dt.as_f64());
+    }
+    excel_serial_to_iso(dt.as_f64())
+}
+
+/// Convert an Excel 1900-system serial date to `YYYY-MM-DD[ HH:MM:SS]`.
+///
+/// The `serial < 60.0` branch compensates for Excel's fictitious 1900-02-29
+/// leap day (serials >= 60 are shifted one day forward from real dates).
+fn excel_serial_to_iso(serial: f64) -> String {
+    use chrono::{Duration, NaiveDate, NaiveTime};
+    let days = if serial < 60.0 { serial } else { serial - 1.0 };
+    let base = match NaiveDate::from_ymd_opt(1899, 12, 31) {
+        Some(d) => d,
+        None => return format_float(serial),
+    };
+    let date = match base.checked_add_signed(Duration::days(days.trunc() as i64)) {
+        Some(d) => d,
+        None => return format_float(serial),
+    };
+    let secs = (serial.fract() * 86_400.0).round() as i64;
+    if secs <= 0 {
+        date.format("%Y-%m-%d").to_string()
+    } else {
+        let t = NaiveTime::from_num_seconds_from_midnight_opt((secs % 86_400) as u32, 0)
+            .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        format!("{} {}", date.format("%Y-%m-%d"), t.format("%H:%M:%S"))
     }
 }
 
