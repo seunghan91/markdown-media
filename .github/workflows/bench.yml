@@ -1,0 +1,79 @@
+name: Bench
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+    paths:
+      - 'core/**'
+      - 'bench/**'
+      - '.github/workflows/bench.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: PDF→MD Quality Bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('core/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+            ${{ runner.os }}-cargo-
+
+      - name: Build hwp2mdm release
+        working-directory: core
+        run: cargo build --release --features pdf --bin hwp2mdm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: bench/requirements.txt
+
+      - name: Install bench deps
+        working-directory: bench
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Only the MDM adapter runs in CI — external adapters are developer-
+      # only (gated by config.local.toml) and their installs add minutes
+      # to every workflow run without strengthening the regression gate.
+      - name: Run bench (MDM only)
+        working-directory: bench
+        run: python runner.py --config config.toml
+
+      - name: Check regression gate
+        working-directory: bench
+        run: |
+          python check_regression.py \
+            --adapter mdm \
+            --baseline baseline-metrics.json \
+            --strict
+
+      - name: Upload scoreboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.run_number }}
+          path: bench/results/
+          retention-days: 30
