@@ -34,8 +34,6 @@ mod doc97;
 mod heic;
 #[cfg(feature = "docx-out")]
 mod gen_docx;
-#[cfg(feature = "pdf-out")]
-mod gen_pdf;
 mod html;
 mod csv_parser;
 mod txt_parser;
@@ -2720,7 +2718,7 @@ fn cmd_generate(input: &Path, output: Option<&Path>, fmt: &str, preset: Option<&
         }
         "pdf" => {
             #[cfg(feature = "pdf-out")]
-            match gen_pdf::markdown_to_pdf(&markdown) {
+            match mdm_core::gen_pdf::markdown_to_pdf(&markdown) {
                 Ok(doc) => write_output(output, &doc.bytes, "pdf"),
                 Err(e) => eprintln!("\u{274c} PDF generation failed: {}", e),
             }
