@@ -1,10 +1,23 @@
 {
-  "format": "docx",
-  "metadata": {
+  "version": "2.0",
+  "source": {
+    "filename": "test_comprehensive.docx",
+    "format": "docx",
+    "size_bytes": 37996,
+    "hash": "62a0509a5e5835a117f61a460de6c600f7f067801ffaf4e0b3f8629b7d994daf",
+    "title": "MDM DOCX Parser Benchmark",
     "author": "Seunghan Kim",
-    "title": "MDM DOCX Parser Benchmark"
+    "pages": 1
   },
-  "resources": {},
-  "source": "test_comprehensive.docx",
-  "version": "1.0"
+  "assets": [],
+  "stats": {
+    "total_assets": 0,
+    "images": 0,
+    "tables": 0,
+    "charts": 0,
+    "equations": 0,
+    "markdown_lines": 83,
+    "markdown_chars": 1434,
+    "conversion_ms": 0
+  }
 }

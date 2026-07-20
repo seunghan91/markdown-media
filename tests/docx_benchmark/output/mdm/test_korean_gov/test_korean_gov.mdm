@@ -1,10 +1,23 @@
 {
-  "format": "docx",
-  "metadata": {
+  "version": "2.0",
+  "source": {
+    "filename": "test_korean_gov.docx",
+    "format": "docx",
+    "size_bytes": 37453,
+    "hash": "9cf9b88f8ee5186f207037fe4a8ba905de50e0085bee655f554870844611d484",
+    "title": null,
     "author": "python-docx",
-    "title": null
+    "pages": 1
   },
-  "resources": {},
-  "source": "test_korean_gov.docx",
-  "version": "1.0"
+  "assets": [],
+  "stats": {
+    "total_assets": 0,
+    "images": 0,
+    "tables": 0,
+    "charts": 0,
+    "equations": 0,
+    "markdown_lines": 33,
+    "markdown_chars": 875,
+    "conversion_ms": 0
+  }
 }

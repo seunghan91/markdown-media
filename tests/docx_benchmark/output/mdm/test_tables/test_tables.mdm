@@ -1,10 +1,23 @@
 {
-  "format": "docx",
-  "metadata": {
+  "version": "2.0",
+  "source": {
+    "filename": "test_tables.docx",
+    "format": "docx",
+    "size_bytes": 37217,
+    "hash": "9b7bdd71ac07d7774b1ad41749aaee225650adba3a088d73756f6624ebc896b7",
+    "title": null,
     "author": "python-docx",
-    "title": null
+    "pages": 1
   },
-  "resources": {},
-  "source": "test_tables.docx",
-  "version": "1.0"
+  "assets": [],
+  "stats": {
+    "total_assets": 0,
+    "images": 0,
+    "tables": 0,
+    "charts": 0,
+    "equations": 0,
+    "markdown_lines": 11,
+    "markdown_chars": 162,
+    "conversion_ms": 0
+  }
 }

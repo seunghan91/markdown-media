@@ -69,3 +69,8 @@ target/
 packages/parser-py/build/
 packages/parser-py/dist/
 **/*.egg-info/
+output/
+desktop/src-tauri/gen/
+.metadata_never_index
+assets/
+bench/
