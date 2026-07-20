@@ -38,6 +38,8 @@ hwpx-render-png = ["hwpx-render", "dep:resvg"]
 # print module (IRBlock[] -> print HTML, always on) + optional printpdf-based
 # best-effort PDF path (port of kkdoc src/print, see core/src/print/mod.rs).
 print-pdf = ["dep:printpdf"]
+# Optional performance benchmark tests (tests/parser_tests.rs benchmark_tests).
+benchmark = []
 
 [dependencies]
 cfb = "0.12.1"

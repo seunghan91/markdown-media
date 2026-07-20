@@ -28,6 +28,7 @@ fn get_sample_path(filename: &str) -> PathBuf {
 }
 
 /// 테스트 유틸리티 - 출력 디렉토리 생성
+#[allow(dead_code)]
 fn create_test_output_dir(test_name: &str) -> PathBuf {
     let output_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("test_output")
@@ -126,7 +127,7 @@ mod hwp_tests {
 
     #[test]
     fn test_hwp_table_markdown_output() {
-        use mdm_core::hwp::record::{HwpTable, TableCell};
+        use mdm_core::hwp::record::HwpTable;
 
         let mut table = HwpTable::new(2, 2);
         table.cells[0][0].content = "A".to_string();
@@ -147,7 +148,6 @@ mod hwp_tests {
 
 #[cfg(test)]
 mod docx_tests {
-    use super::*;
 
     #[test]
     fn test_docx_text_run_markdown() {
@@ -259,8 +259,6 @@ mod pdf_tests {
 
     #[test]
     fn test_pdf_version_detection() {
-        use mdm_core::pdf::parser::PdfParser;
-
         // 직접 PdfParser 생성 테스트는 실제 파일이 필요하므로 스킵
         // 대신 버전 파싱 로직만 테스트
         let header = b"%PDF-1.7\n";
@@ -359,7 +357,6 @@ mod pdf_tests {
 
 #[cfg(test)]
 mod integration_tests {
-    use super::*;
 
     #[test]
     #[ignore = "Requires sample files from all formats for consistency testing"]
