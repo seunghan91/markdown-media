@@ -2927,12 +2927,24 @@ fn markdown_to_ir_blocks(md: &str) -> Vec<ir::IRBlock> {
         // Ordered / unordered list.
         if let Some(ordered) = list_marker(line) {
             flush_para(&mut para, &mut blocks);
-            let mut items: Vec<String> = Vec::new();
+            let mut items: Vec<ir::ListItem> = Vec::new();
             while i < lines.len() {
-                let l = lines[i].trim();
+                let raw = lines[i];
+                let l = raw.trim();
                 match list_marker(l) {
                     Some(o) if o == ordered => {
-                        items.push(strip_list_marker(l));
+                        // Nesting depth from leading indentation: two spaces
+                        // (or one tab) per level, capped at 8.
+                        let mut spaces = 0usize;
+                        for c in raw.chars() {
+                            match c {
+                                ' ' => spaces += 1,
+                                '\t' => spaces += 2,
+                                _ => break,
+                            }
+                        }
+                        let depth = (spaces / 2).min(8) as u8;
+                        items.push(ir::ListItem::new(strip_list_marker(l), depth));
                         i += 1;
                     }
                     _ => break,

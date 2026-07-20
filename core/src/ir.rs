@@ -72,6 +72,61 @@ impl IRCell {
     }
 }
 
+/// A single item inside an [`IRBlock::List`], carrying its nesting `depth`
+/// (0 = top level). Depth lets the RAG chunker build multi-level breadcrumb
+/// paths for nested lists (see `crate::chunker`); it mirrors the per-item
+/// `listDepth` kkdoc attaches to each list-item block.
+///
+/// `From<&str>` / `From<String>` default `depth` to 0, so existing
+/// construction sites that pushed plain strings keep compiling unchanged —
+/// only sources that actually know the nesting level (currently the
+/// Markdown→IR converters, via leading-indent width) set a non-zero depth.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListItem {
+    pub text: String,
+    /// Nesting level, 0 = top. Capped at 8 (gongmun's deepest numbering).
+    #[serde(skip_serializing_if = "is_zero_depth")]
+    pub depth: u8,
+}
+
+fn is_zero_depth(d: &u8) -> bool {
+    *d == 0
+}
+
+impl ListItem {
+    pub fn new<S: Into<String>>(text: S, depth: u8) -> Self {
+        Self {
+            text: text.into(),
+            depth: depth.min(8),
+        }
+    }
+}
+
+impl From<&str> for ListItem {
+    fn from(s: &str) -> Self {
+        ListItem::new(s, 0)
+    }
+}
+
+impl From<String> for ListItem {
+    fn from(s: String) -> Self {
+        ListItem::new(s, 0)
+    }
+}
+
+impl From<(&str, u8)> for ListItem {
+    fn from((s, d): (&str, u8)) -> Self {
+        ListItem::new(s, d)
+    }
+}
+
+impl From<(String, u8)> for ListItem {
+    fn from((s, d): (String, u8)) -> Self {
+        ListItem::new(s, d)
+    }
+}
+
 /// A rectangular table laid out as `rows × cols`. `cells` is indexed
 /// `cells[row][col]`. `has_header` signals "render row 0 as `<th>`" —
 /// currently a layout hint rather than semantic detection, matching kordoc
@@ -116,7 +171,7 @@ pub enum IRBlock {
     Table(IRTable),
     List {
         ordered: bool,
-        items: Vec<String>,
+        items: Vec<ListItem>,
     },
     /// Image placeholder. `alt` is the rendered text (e.g. `image12`).
     Image {
@@ -142,6 +197,20 @@ impl IRBlock {
         }
     }
 
+    /// Convenience constructor that accepts anything convertible into
+    /// [`ListItem`] — `&str`/`String` (depth 0) or `(text, depth)` tuples —
+    /// so callers rarely need to spell out `ListItem` literals.
+    pub fn list<I, T>(ordered: bool, items: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<ListItem>,
+    {
+        IRBlock::List {
+            ordered,
+            items: items.into_iter().map(Into::into).collect(),
+        }
+    }
+
     /// Comparable text content of a block — used by [`diff_blocks`] to
     /// compute similarity. `None` for blocks without meaningful text
     /// (e.g. separators, images without alt).
@@ -149,7 +218,13 @@ impl IRBlock {
         match self {
             IRBlock::Paragraph { text, .. } => Some(text.clone()),
             IRBlock::Heading { text, .. } => Some(text.clone()),
-            IRBlock::List { items, .. } => Some(items.join(" ")),
+            IRBlock::List { items, .. } => Some(
+                items
+                    .iter()
+                    .map(|it| it.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
             IRBlock::Image { alt } => Some(alt.clone()),
             IRBlock::Table(_) => None,
             IRBlock::Separator => None,
@@ -236,6 +311,29 @@ pub struct DiffResult {
 /// `#`-prefixed headings, and `[이미지: ...]` placeholders — matching the
 /// existing mdm HWP parser output so downstream consumers see consistent
 /// Markdown regardless of which path built the blocks.
+/// Per-item ordinal for an ordered list, restarting numbering at each
+/// nesting depth (so `1.` / `2.` under a `가.` parent). Index-aligned with
+/// `items`. Shared by the Markdown ([`blocks_to_markdown`]) and PDF
+/// (`crate::print::pdf`) renderers so nested-list numbering stays identical
+/// across output formats. Values for items in an *unordered* list are
+/// harmless but meaningless — callers only read them when `ordered`.
+pub(crate) fn ordered_list_ordinals(items: &[ListItem]) -> Vec<usize> {
+    let mut counters: Vec<usize> = Vec::new();
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let depth = item.depth as usize;
+        if counters.len() <= depth {
+            counters.resize(depth + 1, 0);
+        }
+        // Climbing back up drops deeper counters so a re-entered sublevel
+        // restarts at 1.
+        counters.truncate(depth + 1);
+        counters[depth] += 1;
+        out.push(counters[depth]);
+    }
+    out
+}
+
 pub fn blocks_to_markdown(blocks: &[IRBlock]) -> String {
     let mut out = String::new();
     for (i, block) in blocks.iter().enumerate() {
@@ -268,15 +366,21 @@ pub fn blocks_to_markdown(blocks: &[IRBlock]) -> String {
                 out.push_str(&render_table(table));
             }
             IRBlock::List { ordered, items } => {
+                // Per-depth ordinal numbering (shared with the PDF renderer)
+                // so nested ordered lists restart at each level.
+                let ordinals = ordered_list_ordinals(items);
                 for (idx, item) in items.iter().enumerate() {
                     if idx > 0 {
                         out.push('\n');
                     }
+                    for _ in 0..(item.depth as usize) {
+                        out.push_str("  ");
+                    }
                     if *ordered {
-                        out.push_str(&format!("{}. {}", idx + 1, item));
+                        out.push_str(&format!("{}. {}", ordinals[idx], item.text));
                     } else {
                         out.push_str("- ");
-                        out.push_str(item);
+                        out.push_str(&item.text);
                     }
                 }
             }
@@ -1026,6 +1130,28 @@ fn block_similarity(a: &IRBlock, b: &IRBlock) -> f64 {
     match (a, b) {
         (IRBlock::Table(ta), IRBlock::Table(tb)) => table_similarity(ta, tb),
         (IRBlock::Separator, IRBlock::Separator) => 1.0,
+        (
+            IRBlock::List { ordered: oa, items: ia },
+            IRBlock::List { ordered: ob, items: ib },
+        ) => {
+            // Content similarity uses the item text only (so `text_for_compare`
+            // stays clean for the diff report), but a change confined to
+            // nesting depth / ordered-ness / item count still has to surface
+            // as `Modified` rather than a false `Unchanged`. Gate the score
+            // just below `UNCHANGED_THRESHOLD` whenever the list structure
+            // differs, so identical text at a different depth diffs.
+            let ta = a.text_for_compare().unwrap_or_default();
+            let tb = b.text_for_compare().unwrap_or_default();
+            let content = normalized_similarity(&ta, &tb);
+            let same_structure = oa == ob
+                && ia.len() == ib.len()
+                && ia.iter().zip(ib.iter()).all(|(x, y)| x.depth == y.depth);
+            if same_structure {
+                content
+            } else {
+                content.min(UNCHANGED_THRESHOLD - 0.01)
+            }
+        }
         _ => {
             let ta = a.text_for_compare().unwrap_or_default();
             let tb = b.text_for_compare().unwrap_or_default();
@@ -1424,19 +1550,65 @@ mod tests {
 
     #[test]
     fn markdown_list_unordered_and_ordered() {
-        let unordered = IRBlock::List {
-            ordered: false,
-            items: vec!["첫째".to_string(), "둘째".to_string()],
-        };
-        let ordered = IRBlock::List {
-            ordered: true,
-            items: vec!["A".to_string(), "B".to_string()],
-        };
+        let unordered = IRBlock::list(false, ["첫째", "둘째"]);
+        let ordered = IRBlock::list(true, ["A", "B"]);
         let md = blocks_to_markdown(&[unordered, ordered]);
         assert!(md.contains("- 첫째"));
         assert!(md.contains("- 둘째"));
         assert!(md.contains("1. A"));
         assert!(md.contains("2. B"));
+    }
+
+    /// Nested list items render with depth indentation and per-level ordered
+    /// numbering (regression guard for the `list_depth` extension).
+    #[test]
+    fn markdown_nested_list_indents_by_depth() {
+        let nested = IRBlock::list(
+            false,
+            [("가", 0u8), ("세부1", 1u8), ("세부2", 1u8), ("나", 0u8)],
+        );
+        let md = blocks_to_markdown(&[nested]);
+        assert!(md.contains("- 가"));
+        assert!(md.contains("  - 세부1"), "depth-1 item should be indented: {md:?}");
+        assert!(md.contains("  - 세부2"));
+        assert!(md.contains("- 나"));
+
+        let ordered = IRBlock::list(true, [("상위", 0u8), ("하위1", 1u8), ("하위2", 1u8)]);
+        let md = blocks_to_markdown(&[ordered]);
+        // Sublevel numbering restarts at 1, indented two spaces.
+        assert!(md.contains("1. 상위"));
+        assert!(md.contains("  1. 하위1"), "sublevel should restart at 1: {md:?}");
+        assert!(md.contains("  2. 하위2"));
+    }
+
+    /// Per-depth ordinal counter restarts numbering at each nesting level and
+    /// drops deeper counters when climbing back up. Single source of truth
+    /// for both the Markdown and PDF ordered-list renderers.
+    #[test]
+    fn ordered_list_ordinals_restart_per_depth() {
+        let items: Vec<ListItem> = [0u8, 1, 1, 0, 2]
+            .iter()
+            .map(|&d| ListItem::new("x", d))
+            .collect();
+        assert_eq!(ordered_list_ordinals(&items), vec![1, 1, 2, 2, 1]);
+    }
+
+    /// A list whose item text is identical but whose nesting depth changed
+    /// must diff as `Modified`, not a false `Unchanged` (regression guard —
+    /// the depth field was previously invisible to the comparison).
+    #[test]
+    fn diff_list_depth_only_change_is_modified() {
+        let a = vec![IRBlock::list(false, [("항목", 0u8)])];
+        let b = vec![IRBlock::list(false, [("항목", 1u8)])];
+        let r = diff_blocks(&a, &b);
+        assert_eq!(r.stats.modified, 1, "depth change should be Modified: {:?}", r.stats);
+        assert_eq!(r.stats.unchanged, 0);
+        assert_eq!(r.diffs[0].change, DiffChangeType::Modified);
+
+        // Same text AND same depth still reads as Unchanged.
+        let c = vec![IRBlock::list(false, [("항목", 1u8)])];
+        let r2 = diff_blocks(&b, &c);
+        assert_eq!(r2.stats.unchanged, 1);
     }
 
     // ── diff_blocks ──

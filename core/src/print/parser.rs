@@ -21,7 +21,7 @@
 //! + reimplementing `markdown_to_ir` on top of its event stream, not a
 //! source-compatible change to today's signature.
 
-use crate::ir::{IRBlock, IRCell, IRTable};
+use crate::ir::{IRBlock, IRCell, IRTable, ListItem};
 
 /// Parse a Markdown subset (see module doc comment) into `IRBlock`s.
 pub fn markdown_to_ir(markdown: &str) -> Vec<IRBlock> {
@@ -173,23 +173,40 @@ fn list_item_text(line: &str, kind: ListKind) -> String {
 
 /// Collects consecutive list items of the same `kind` starting at `lines[start]`.
 /// Returns `(items, lines_consumed)`.
-fn collect_list(lines: &[&str], start: usize, kind: ListKind) -> (Vec<String>, usize) {
+fn collect_list(lines: &[&str], start: usize, kind: ListKind) -> (Vec<ListItem>, usize) {
     let mut items = Vec::new();
     let mut i = start;
     while i < lines.len() {
-        let t = lines[i].trim();
+        let raw = lines[i];
+        let t = raw.trim();
         if t.is_empty() {
             break;
         }
         match list_item_kind(t) {
             Some(k) if k == kind => {
-                items.push(list_item_text(t, kind));
+                let depth = markdown_indent_depth(raw);
+                items.push(ListItem::new(list_item_text(t, kind), depth));
                 i += 1;
             }
             _ => break,
         }
     }
     (items, i - start)
+}
+
+/// Nesting depth of a Markdown list item from its leading indentation:
+/// two spaces (or one tab) per level, capped at 8. Top-level items (no
+/// indent) are depth 0, keeping flat lists identical to the prior behavior.
+fn markdown_indent_depth(raw: &str) -> u8 {
+    let mut spaces = 0usize;
+    for c in raw.chars() {
+        match c {
+            ' ' => spaces += 1,
+            '\t' => spaces += 2,
+            _ => break,
+        }
+    }
+    ((spaces / 2).min(8)) as u8
 }
 
 /// A GFM table separator row, e.g. `|---|:--:|--:|`.
@@ -295,7 +312,25 @@ mod tests {
         match &blocks[0] {
             IRBlock::List { ordered, items } => {
                 assert!(!ordered);
-                assert_eq!(items, &vec!["하나".to_string(), "둘".to_string(), "셋".to_string()]);
+                let texts: Vec<&str> = items.iter().map(|it| it.text.as_str()).collect();
+                assert_eq!(texts, vec!["하나", "둘", "셋"]);
+                assert!(items.iter().all(|it| it.depth == 0));
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_list_indentation_sets_item_depth() {
+        // Two-space indentation → depth 1; the whole thing stays one list.
+        let blocks = markdown_to_ir("- 상위\n  - 하위 A\n  - 하위 B\n- 다음 상위");
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            IRBlock::List { ordered, items } => {
+                assert!(!ordered);
+                let depths: Vec<u8> = items.iter().map(|it| it.depth).collect();
+                assert_eq!(depths, vec![0, 1, 1, 0]);
+                assert_eq!(items[1].text, "하위 A");
             }
             other => panic!("expected list, got {other:?}"),
         }

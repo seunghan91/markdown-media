@@ -6,30 +6,32 @@
 //! ## Divergences from the TS original
 //!
 //! The Rust [`crate::ir::IRBlock`] this module walks is *not* a 1:1 mirror
-//! of kkdoc's `IRBlock` (see `reference/kkdoc/src/types.ts`). Two gaps force
-//! behavior changes vs. the reference implementation:
+//! of kkdoc's `IRBlock` (see `reference/kkdoc/src/types.ts`). One remaining
+//! gap forces a behavior change vs. the reference implementation:
 //!
 //! - **No `pageNumber` field.** kkdoc's `DocChunk.page` has no Rust
-//!   equivalent, so this module does not emit a page number at all.
-//! - **No per-item `listDepth` field, and `List` is block-aggregated.**
-//!   kkdoc represents each list item as its own `IRBlock` carrying an
-//!   explicit `listDepth`, letting `chunks.ts` build a multi-level
-//!   breadcrumb stack. The Rust `IRBlock::List { ordered, items }` instead
-//!   bundles an entire list into one block with no per-item position or
-//!   depth. Consequently:
-//!   - `IRBlock::List` blocks are always emitted as their own standalone
-//!     chunk (never merged with neighboring text, like a table) — there is
-//!     no single anchor text to push onto a list breadcrumb stack.
-//!   - List-hierarchy breadcrumb entries are only ever inferred from
-//!     `IRBlock::Paragraph` text via the same leading-marker heuristic
-//!     kkdoc uses as its *fallback* path (`LIST_MARKER_RE`, e.g. `□`, `○`,
-//!     `1.`, `가.`, `①` …). Since that heuristic only ever yields depth 0
-//!     in kkdoc too (deeper depths there come solely from the explicit
-//!     `listDepth` field this Rust IR lacks), this port can only reproduce
-//!     depth-0 promotion — never multi-level nesting. Reproducing deeper
-//!     nesting would require adding a `list_depth` field to
-//!     [`crate::ir::IRBlock::Paragraph`] upstream, which is out of scope
-//!     here (`ir.rs` is owned by another workstream).
+//!   equivalent — none of the parsers that build this IR (flow-oriented
+//!   HWP/HWPML and the Markdown→IR converters) carry a per-block page
+//!   number, so this module does not emit a page number at all.
+//!
+//! ## Multi-level list breadcrumbs
+//!
+//! Each [`crate::ir::ListItem`] carries a `depth` (0 = top level). When a
+//! `List` block is chunked, its items are walked against an in-list ancestor
+//! stack: sibling items that resolve to the same breadcrumb are emitted as
+//! one chunk, while nested items split into per-level chunks whose
+//! breadcrumb carries the ancestor items (depth 1+). A *flat* list (every
+//! item at depth 0) therefore stays a single cohesive chunk, matching the
+//! earlier block-aggregated behavior, while a nested list gains the
+//! multi-level breadcrumb kkdoc builds from its explicit `listDepth`.
+//!
+//! The document-level `list_stack` is left untouched by a `List` block, so
+//! following body text is never spuriously nested under a list item.
+//! Separately, list-context breadcrumbs are still *also* inferred from
+//! `IRBlock::Paragraph` text via a leading-marker heuristic (`LIST_MARKER_RE`,
+//! e.g. `□`, `○`, `1.`, `가.`, `①` …) for gongmun paragraphs that a parser
+//! emitted as plain paragraphs rather than `List` blocks; that heuristic
+//! path only ever yields depth 0 (see [`depth_of_paragraph`]).
 //!
 //! ## Extensions beyond the TS original
 //!
@@ -46,7 +48,7 @@
 //!   and the header row (if `has_header`) is repeated at the top of every
 //!   split piece so each one stays self-describing.
 
-use crate::ir::{blocks_to_markdown, IRBlock, IRCell, IRTable};
+use crate::ir::{blocks_to_markdown, IRBlock, IRCell, IRTable, ListItem};
 use serde::{Deserialize, Serialize};
 
 lazy_static::lazy_static! {
@@ -233,6 +235,13 @@ impl<'a> ChunkBuilder<'a> {
         let members: Vec<IRBlock> = indices.iter().map(|&i| self.blocks[i].clone()).collect();
         let text = blocks_to_markdown(&members);
         let range = (indices[0], *indices.last().unwrap());
+        self.push_text_split(breadcrumb, text, range);
+    }
+
+    /// Push an already-rendered text chunk, honoring the `max_chars` split
+    /// policy. Shared by [`Self::emit_text`] and the per-breadcrumb list
+    /// groups in [`chunk`].
+    fn push_text_split(&mut self, breadcrumb: Vec<String>, text: String, range: (usize, usize)) {
         match self.opts.max_chars {
             Some(max) if max > 0 && text.chars().count() > max => {
                 for piece in split_by_chars(&text, max, self.opts.overlap) {
@@ -241,6 +250,29 @@ impl<'a> ChunkBuilder<'a> {
             }
             _ => self.push(ChunkKind::Text, breadcrumb, text, range, None),
         }
+    }
+
+    /// Emit one text chunk for a run of list items that share the same
+    /// breadcrumb (i.e. siblings at the same nesting level). Items are
+    /// re-rendered as a standalone `IRBlock::List` so bullets/indentation
+    /// are preserved. All groups of one source list report that list's
+    /// single block index as their `block_range` (same convention as a
+    /// row-split table).
+    fn emit_list_group(
+        &mut self,
+        breadcrumb: Vec<String>,
+        ordered: bool,
+        items: &[ListItem],
+        block_idx: usize,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+        let text = blocks_to_markdown(&[IRBlock::List {
+            ordered,
+            items: items.to_vec(),
+        }]);
+        self.push_text_split(breadcrumb, text, (block_idx, block_idx));
     }
 
     fn emit_heading(&mut self, breadcrumb: Vec<String>, idx: usize, block: &IRBlock) {
@@ -364,13 +396,42 @@ pub fn chunk(blocks: &[IRBlock], opts: &ChunkOptions) -> Vec<Chunk> {
                 let breadcrumb = crumb(&heading_stack, &list_stack);
                 builder.emit_table(breadcrumb, i, table);
             }
-            IRBlock::List { .. } => {
-                // Block-aggregated list (see module docs) — always
-                // standalone, like a table; no single anchor text exists
-                // to push onto the list breadcrumb stack.
+            IRBlock::List { ordered, items } => {
+                // Walk the list's items, maintaining an in-list ancestor
+                // stack keyed by each item's depth. Items that resolve to
+                // the same breadcrumb (siblings at one level) are emitted as
+                // one chunk, so a flat list stays a single chunk while a
+                // nested list splits into per-level chunks whose breadcrumb
+                // carries the ancestor items (depth 1+). The document-level
+                // `list_stack` is intentionally left untouched so following
+                // body text isn't spuriously nested under a list item.
                 flush_run(&mut run, &mut builder);
-                let breadcrumb = crumb(&heading_stack, &list_stack);
-                builder.emit_text(breadcrumb, &[i]);
+                let base = crumb(&heading_stack, &list_stack);
+                let mut in_list: Vec<(u8, String)> = Vec::new();
+                let mut group: Vec<ListItem> = Vec::new();
+                let mut group_bc: Option<Vec<String>> = None;
+                for item in items {
+                    while in_list.last().is_some_and(|(ld, _)| *ld >= item.depth) {
+                        in_list.pop();
+                    }
+                    let mut bc = base.clone();
+                    bc.extend(in_list.iter().map(|(_, t)| t.clone()));
+                    if group_bc.as_ref() != Some(&bc) && !group.is_empty() {
+                        builder.emit_list_group(
+                            group_bc.take().unwrap(),
+                            *ordered,
+                            &group,
+                            i,
+                        );
+                        group.clear();
+                    }
+                    group.push(item.clone());
+                    group_bc = Some(bc);
+                    in_list.push((item.depth, item.text.trim().to_string()));
+                }
+                if let Some(bc) = group_bc {
+                    builder.emit_list_group(bc, *ordered, &group, i);
+                }
             }
             _ => {
                 // Paragraph / Image / Separator.
@@ -589,13 +650,53 @@ mod tests {
         let blocks = vec![
             IRBlock::heading(1, "목록"),
             IRBlock::paragraph("앞 문단"),
-            IRBlock::List { ordered: false, items: vec!["첫째".to_string(), "둘째".to_string()] },
+            IRBlock::list(false, ["첫째", "둘째"]),
             IRBlock::paragraph("뒤 문단"),
         ];
         let chunks = chunk(&blocks, &ChunkOptions::default());
         let list_chunk = chunks.iter().find(|c| c.text.contains("첫째")).unwrap();
+        // A flat list (all depth 0) stays one cohesive chunk.
         assert_eq!(list_chunk.text, "- 첫째\n- 둘째");
         assert_eq!(list_chunk.block_range, (2, 2));
+        assert_range_integrity(&chunks, &blocks);
+    }
+
+    /// A nested list splits into per-level chunks whose breadcrumb carries
+    /// the ancestor item text (depth 1+). This is the capability the earlier
+    /// port could not reach with the block-aggregated `Vec<String>` list.
+    #[test]
+    fn nested_list_produces_depth1_breadcrumbs() {
+        let blocks = vec![
+            IRBlock::heading(1, "추진 계획"),
+            IRBlock::list(
+                false,
+                [
+                    ("가. 상위 항목", 0u8),
+                    ("1) 하위 항목 A", 1u8),
+                    ("2) 하위 항목 B", 1u8),
+                    ("나. 다음 상위", 0u8),
+                ],
+            ),
+        ];
+        let chunks = chunk(&blocks, &ChunkOptions::default());
+        // The two depth-1 siblings share a breadcrumb that includes their
+        // depth-0 parent under the heading.
+        let sub = chunks
+            .iter()
+            .find(|c| c.text.contains("하위 항목 A"))
+            .expect("nested sublevel chunk");
+        assert_eq!(
+            sub.breadcrumb,
+            vec!["추진 계획".to_string(), "가. 상위 항목".to_string()],
+            "depth-1 items must carry their parent item in the breadcrumb"
+        );
+        assert_eq!(sub.block_range, (1, 1));
+        // Top-level items only carry the heading breadcrumb.
+        let top = chunks
+            .iter()
+            .find(|c| c.text.contains("나. 다음 상위"))
+            .expect("top-level chunk");
+        assert_eq!(top.breadcrumb, vec!["추진 계획".to_string()]);
         assert_range_integrity(&chunks, &blocks);
     }
 

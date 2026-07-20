@@ -18,6 +18,12 @@ mod zip_patch;
 pub use fill::{fill_hwpx, patch_hwpx, FillResult, PatchResult};
 pub use matcher::{format_fill_value, normalize_label, FillValue, RawFillInput};
 pub use recognize::{infer_field_type, is_label_cell, FormFieldType};
+// Source map — the section-XML byte-position map plus precise-edit primitives
+// (byte-range splicing that preserves formatting). Reusable outside form filling.
+pub use scan::{
+    apply_splices, build_range_splices, para_t_text, scan_section, Cell, Para, Scan, SpliceEdit,
+    Table, TextRun,
+};
 pub use seal::{place_seal_hwpx, SealAnchor, SealOptions};
 pub use zip_patch::{patch_zip_entries, read_zip_entries};
 
@@ -30,7 +36,6 @@ use zip::ZipArchive;
 
 use matcher::normalize_label as norm;
 use recognize::{infer_field_type as infer, is_empty_value, is_required_label};
-use scan::{scan_section, Table};
 
 lazy_static! {
     static ref SECTION_RE: Regex = Regex::new(r"(?i)section\d+\.xml$").unwrap();

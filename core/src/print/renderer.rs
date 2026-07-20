@@ -304,12 +304,49 @@ fn render_block(block: &IRBlock, out: &mut String) {
             out.push('\n');
         }
         IRBlock::List { ordered, items } => {
+            // Build genuinely nested <ul>/<ol> from the flat depth-tagged
+            // items so nesting renders structurally (indentation + native
+            // per-level restart of <ol> numbering) rather than relying on a
+            // CSS class no preset defines.
             let tag = if *ordered { "ol" } else { "ul" };
-            out.push_str(&format!("<{tag}>\n"));
+            let mut open_depth: i32 = -1; // no list open yet
             for item in items {
-                out.push_str(&format!("<li>{}</li>\n", html_escape(item)));
+                // Clamp any depth jump to at most one level deeper than the
+                // currently-open nesting. A raw jump (e.g. a first item at
+                // depth 2, or 0→2 from a 4-space indent that `markdown_to_ir`
+                // accepts) would otherwise open a <ul>/<ol> with no enclosing
+                // parent <li> and emit an unbalanced </li> on close. Clamping
+                // guarantees every descent opens exactly one list, nested
+                // inside the item's <li> — so tags always balance.
+                let d = (item.depth as i32).min(open_depth + 1);
+                if open_depth < 0 {
+                    // First item is necessarily depth 0 (clamped against -1+1).
+                    out.push_str(&format!("<{tag}>\n"));
+                    open_depth = 0;
+                } else if d > open_depth {
+                    // Descend exactly one level: nest a new list in the parent
+                    // <li> we just emitted (not yet closed).
+                    out.push_str(&format!("<{tag}>\n"));
+                    open_depth = d;
+                } else {
+                    // Same level or shallower: close the previous <li>, then
+                    // unwind nested lists back down to this item's depth.
+                    out.push_str("</li>\n");
+                    while open_depth > d {
+                        out.push_str(&format!("</{tag}>\n</li>\n"));
+                        open_depth -= 1;
+                    }
+                }
+                out.push_str(&format!("<li>{}", html_escape(&item.text)));
             }
-            out.push_str(&format!("</{tag}>\n"));
+            if open_depth >= 0 {
+                out.push_str("</li>\n");
+                while open_depth > 0 {
+                    out.push_str(&format!("</{tag}>\n</li>\n"));
+                    open_depth -= 1;
+                }
+                out.push_str(&format!("</{tag}>\n"));
+            }
         }
         IRBlock::Image { alt } => {
             let safe_alt = html_escape_attr(&sanitize_asset_name(alt));
@@ -532,6 +569,78 @@ mod tests {
         let html = render_ir_to_html(&blocks, &opts());
         assert!(html.contains("<ol>"));
         assert!(html.contains("<li>하나</li>"));
+    }
+
+    #[test]
+    fn nested_list_renders_nested_ul() {
+        // depth [0,1,1,0] → the two depth-1 items sit inside the first
+        // item's <li> as a nested <ul>, and the list closes back to depth 0.
+        let blocks = vec![IRBlock::list(
+            false,
+            [("가", 0u8), ("세부1", 1u8), ("세부2", 1u8), ("나", 0u8)],
+        )];
+        let html = render_ir_to_html(&blocks, &opts());
+        // A nested <ul> opens directly after the parent item's text.
+        assert!(html.contains("<li>가<ul>"), "nested list not opened inside parent: {html}");
+        assert!(html.contains("<li>세부1</li>"));
+        assert!(html.contains("<li>세부2</li>"));
+        // The inner list closes before the following top-level item.
+        assert!(html.contains("</ul>\n</li>\n<li>나</li>"), "nesting not closed correctly: {html}");
+        // Exactly two <ul> opened (outer + one nested), balanced with closes.
+        assert_eq!(html.matches("<ul>").count(), 2);
+        assert_eq!(html.matches("</ul>").count(), 2);
+    }
+
+    #[test]
+    fn nested_ordered_list_restarts_numbering_via_native_ol() {
+        // Native <ol> nesting means each nested <ol> restarts at 1 in the
+        // browser; structurally we assert one nested <ol> per sublevel.
+        let blocks = vec![IRBlock::list(
+            true,
+            [("상위1", 0u8), ("하위A", 1u8), ("하위B", 1u8), ("상위2", 0u8)],
+        )];
+        let html = render_ir_to_html(&blocks, &opts());
+        assert!(html.contains("<li>상위1<ol>"), "sublevel <ol> not nested: {html}");
+        assert!(html.contains("<li>하위A</li>"));
+        assert!(html.contains("</ol>\n</li>\n<li>상위2</li>"));
+        assert_eq!(html.matches("<ol>").count(), 2);
+        assert_eq!(html.matches("</ol>").count(), 2);
+    }
+
+    #[test]
+    fn depth_jump_and_leading_deep_item_stay_balanced() {
+        // Inputs `markdown_to_ir` can actually produce (a stray 4-space or
+        // deeper indent → depth ≥ 2) must never emit a parentless nested
+        // list or an unbalanced </li>.
+        let cases = [
+            IRBlock::list(false, [("깊은 첫 항목", 2u8)]),
+            IRBlock::list(false, [("상위", 0u8), ("점프", 2u8), ("복귀", 0u8)]),
+            IRBlock::list(true, [("깊은 첫", 3u8), ("다음", 0u8)]),
+        ];
+        for block in cases {
+            let html = render_ir_to_html(std::slice::from_ref(&block), &opts());
+            assert_eq!(
+                html.matches("<ul>").count(),
+                html.matches("</ul>").count(),
+                "ul open/close unbalanced: {html}"
+            );
+            assert_eq!(
+                html.matches("<ol>").count(),
+                html.matches("</ol>").count(),
+                "ol open/close unbalanced: {html}"
+            );
+            assert_eq!(
+                html.matches("<li>").count(),
+                html.matches("</li>").count(),
+                "li open/close unbalanced: {html}"
+            );
+            // No list may open directly inside another list without an
+            // intervening <li> parent.
+            assert!(
+                !html.contains("<ul>\n<ul>") && !html.contains("<ol>\n<ol>"),
+                "parentless nested list: {html}"
+            );
+        }
     }
 
     #[test]

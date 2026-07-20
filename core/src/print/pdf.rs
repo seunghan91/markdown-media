@@ -239,16 +239,22 @@ impl Layout {
                 }
             }
             IRBlock::List { ordered, items } => {
+                // Per-depth ordinal numbering shared with the Markdown
+                // renderer (see `crate::ir::ordered_list_ordinals`) so a
+                // nested ordered list numbers 1./2. per level instead of a
+                // running global count.
+                let ordinals = crate::ir::ordered_list_ordinals(items);
                 for (idx, item) in items.iter().enumerate() {
+                    let indent = "  ".repeat(item.depth as usize);
                     let prefix = if *ordered {
-                        format!("{}. ", idx + 1)
+                        format!("{}. ", ordinals[idx])
                     } else {
                         "\u{2022} ".to_string()
                     };
                     self.text_line(
                         page,
                         pages,
-                        &format!("{prefix}{item}"),
+                        &format!("{indent}{prefix}{}", item.text),
                         body,
                         BuiltinFont::Helvetica,
                         BLACK,
