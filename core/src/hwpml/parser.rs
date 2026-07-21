@@ -606,7 +606,13 @@ pub fn parse_hwpml_document(buffer: &[u8]) -> io::Result<HwpmlDocument> {
         version: root.attr("Version").map(|s| s.to_string()),
         ..Default::default()
     };
-    if let Some(doc_summary) = root.find_child("DOCSUMMARY") {
+    // DOCSUMMARY 위치는 실제 문서마다 다르다 — DTD상 HWPML 의 직계 자식이지만,
+    // 한글에서 내보낸 UTF-16 문서는 HEAD 하위에 중첩된 경우가 흔하다(opt-cli
+    // 리포트로 확인). 둘 다 지원.
+    let doc_summary = root
+        .find_child("DOCSUMMARY")
+        .or_else(|| root.find_child("HEAD").and_then(|head| head.find_child("DOCSUMMARY")));
+    if let Some(doc_summary) = doc_summary {
         if let Some(title) = doc_summary.find_child("TITLE") {
             metadata.title = non_empty(title.text_content());
         }
@@ -806,6 +812,37 @@ mod tests {
             .iter()
             .any(|b| matches!(b, IRBlock::Heading { text, .. } if text == "제목입니다"));
         assert!(has_heading, "blocks: {:?}", doc.blocks);
+    }
+
+    #[test]
+    fn utf16_title_under_head_extracted() {
+        // 한글에서 내보낸 실제 UTF-16 HWPML 문서는 DOCSUMMARY 가 HWPML 의
+        // 직계 자식이 아니라 HEAD 하위에 중첩되는 경우가 흔하다(opt-cli
+        // 리포트로 재현). 본문/버전은 DOCSUMMARY 위치와 무관해 정상 추출되던
+        // 반면 title/author/date 만 누락됐었다.
+        let xml = r#"<?xml version="1.0" encoding="utf-16"?>
+<!DOCTYPE HWPML SYSTEM "hwpml.dtd">
+<HWPML Version="2.8" SubVersion="8.0.0.0">
+<HEAD SecCnt="1">
+<DOCSUMMARY>
+<TITLE>제목입니다</TITLE>
+<AUTHOR>홍길동</AUTHOR>
+<DATE>2026-01-01</DATE>
+</DOCSUMMARY>
+<MAPPINGTABLE>
+</MAPPINGTABLE>
+</HEAD>
+<BODY><SECTION><P><TEXT><CHAR>본문</CHAR></TEXT></P></SECTION></BODY>
+</HWPML>"#;
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in xml.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        let doc = parse_hwpml_document(&bytes).unwrap();
+        assert_eq!(doc.metadata.version.as_deref(), Some("2.8"));
+        assert_eq!(doc.metadata.title.as_deref(), Some("제목입니다"));
+        assert_eq!(doc.metadata.author.as_deref(), Some("홍길동"));
+        assert_eq!(doc.metadata.date.as_deref(), Some("2026-01-01"));
     }
 
     #[test]

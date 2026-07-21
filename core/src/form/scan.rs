@@ -6,8 +6,10 @@
 //! HWPX nesting reality (verified against real 행정안전부 fixtures):
 //!   - tables live inside a run inside a paragraph (`<hp:p><hp:run><hp:tbl>`)
 //!   - `<hp:tbl>` → `<hp:tr>` → `<hp:tc>` → `<hp:subList>` → `<hp:p>` …
-//!   - a cell's own `<hp:cellAddr>` / `<hp:cellSpan>` are direct children of the
-//!     `<hp:tc>`, appearing *after* the cell's `</hp:subList>`.
+//!   - a cell's own `<hp:cellAddr>` / `<hp:cellSpan>` / `<hp:cellSz>` are direct
+//!     children of the `<hp:tc>`, appearing *after* the cell's `</hp:subList>`.
+
+use std::collections::HashMap;
 
 /// Inner text byte range of a single `<hp:t>…</hp:t>` run.
 #[derive(Debug, Clone)]
@@ -69,11 +71,28 @@ impl Table {
 }
 
 /// Full scan of one section XML.
+///
+/// `cell_widths`/`table_parents` are Scan-level side tables rather than fields
+/// on [`Cell`]/[`Table`] themselves — `Cell`/`Table` are small, plausibly
+/// hand-constructed POD structs (form-filling call sites build them in tests),
+/// so adding fields there would break any external `Cell { row, col, col_span,
+/// row_span, paras }` / `Table { cells }` literal. `Scan` has no such literal-
+/// construction use case (it's always produced by [`scan_section`]), so its
+/// field set can grow freely.
 #[derive(Debug, Clone)]
 pub struct Scan {
     pub tables: Vec<Table>,
     /// Section-level paragraphs not inside any cell (for inline "라벨: 값" fills).
     pub body_paras: Vec<Para>,
+    /// `<hp:cellSz width="…">` (hwpunit), keyed by `(tables` index, that
+    /// table's `cells` index`)`. Present only when the cell carries a `cellSz`
+    /// sibling. Used to compute a cell's left offset within its table's column
+    /// grid (seal placement anchored inside a table cell).
+    pub cell_widths: HashMap<(usize, usize), u32>,
+    /// Nested-table parent link, keyed by `tables` index: `(parent table's
+    /// `tables` index, parent cell's index in that table's `cells)`. Absent
+    /// for a top-level (not nested inside another table's cell) table.
+    pub table_parents: HashMap<usize, (usize, usize)>,
 }
 
 // ─── low-level matched-close scanner ───────────────────────────────────────
@@ -134,18 +153,39 @@ const SUBLIST_OPENS: &[&str] = &["<hp:subList ", "<hp:subList>"];
 const RUN_OPENS: &[&str] = &["<hp:run ", "<hp:run>"];
 const T_OPENS: &[&str] = &["<hp:t>", "<hp:t "];
 
+/// A cell's index within its table, paired with the byte range of that cell's
+/// `<hp:subList>` inner content (for nested-table recursion in `collect_tables`).
+type CellSublistRange = (usize, (usize, usize));
+
 // ─── public entry ──────────────────────────────────────────────────────────
 
 pub fn scan_section(xml: &str) -> Scan {
     let mut tables = Vec::new();
-    collect_tables(xml, 0, xml.len(), &mut tables);
+    let mut cell_widths = HashMap::new();
+    let mut table_parents = HashMap::new();
+    collect_tables(xml, 0, xml.len(), None, &mut tables, &mut cell_widths, &mut table_parents);
     let body_paras = parse_paragraphs(xml, 0, xml.len());
-    Scan { tables, body_paras }
+    Scan { tables, body_paras, cell_widths, table_parents }
 }
 
-/// Collect every top-level table within `[start,end)` (skipping nested ones,
-/// which are recursed into via each cell's subList). Parent-first DFS order.
-fn collect_tables(xml: &str, start: usize, end: usize, out: &mut Vec<Table>) {
+/// Collect every table within `[start,end)`, recursing into each cell's
+/// subList for nested tables. `parent` is `(tables index, cell index)` of the
+/// cell that directly contains `[start,end)` — `None` at the section top
+/// level. Parent-first DFS order, so a table's parent index is always already
+/// present in `out` by the time a caller reads it. Cell widths and
+/// nested-table parent links are recorded into the `Scan`-level side tables
+/// (`cell_widths`/`table_parents`) rather than onto `Table`/`Cell` themselves —
+/// see the doc comment on [`Scan`].
+#[allow(clippy::too_many_arguments)]
+fn collect_tables(
+    xml: &str,
+    start: usize,
+    end: usize,
+    parent: Option<(usize, usize)>,
+    out: &mut Vec<Table>,
+    cell_widths: &mut HashMap<(usize, usize), u32>,
+    table_parents: &mut HashMap<usize, (usize, usize)>,
+) {
     let mut pos = start;
     while let Some((open, _pat)) = find_any(xml, pos, TBL_OPENS) {
         if open >= end {
@@ -159,21 +199,31 @@ fn collect_tables(xml: &str, start: usize, end: usize, out: &mut Vec<Table>) {
             Some(c) => c,
             None => break,
         };
-        let (table, sublist_ranges) = parse_table(xml, open_end, close);
+        let (table, widths, sublist_ranges) = parse_table(xml, open_end, close);
+        let my_idx = out.len();
+        if let Some(p) = parent {
+            table_parents.insert(my_idx, p);
+        }
+        for (cell_idx, w) in widths {
+            cell_widths.insert((my_idx, cell_idx), w);
+        }
         out.push(table);
-        for (s, e) in sublist_ranges {
-            collect_tables(xml, s, e, out);
+        for (cell_idx, (s, e)) in sublist_ranges {
+            collect_tables(xml, s, e, Some((my_idx, cell_idx)), out, cell_widths, table_parents);
         }
         pos = close + "</hp:tbl>".len();
     }
 }
 
-/// Parse a table's direct cells. Returns the table plus each cell's subList
-/// inner range (for nested-table recursion).
-fn parse_table(xml: &str, start: usize, end: usize) -> (Table, Vec<(usize, usize)>) {
+/// Parse a table's direct cells. Returns the table, each cell's `<hp:cellSz>`
+/// width (index, hwpunit) when present, and each cell's index paired with its
+/// subList inner range (for nested-table recursion).
+fn parse_table(xml: &str, start: usize, end: usize) -> (Table, Vec<(usize, u32)>, Vec<CellSublistRange>) {
     let mut cells = Vec::new();
+    let mut widths = Vec::new();
     let mut sublists = Vec::new();
     let mut pos = start;
+    let mut cell_idx = 0usize;
     while let Some((tc_open, _)) = find_any(xml, pos, TC_OPENS) {
         if tc_open >= end {
             break;
@@ -186,18 +236,23 @@ fn parse_table(xml: &str, start: usize, end: usize) -> (Table, Vec<(usize, usize
             Some(c) => c,
             None => break,
         };
-        let (cell, sub) = parse_cell(xml, tc_open_end, tc_close);
+        let (cell, width_hu, sub) = parse_cell(xml, tc_open_end, tc_close);
+        if let Some(w) = width_hu {
+            widths.push((cell_idx, w));
+        }
         cells.push(cell);
         if let Some(r) = sub {
-            sublists.push(r);
+            sublists.push((cell_idx, r));
         }
+        cell_idx += 1;
         pos = tc_close + "</hp:tc>".len();
     }
-    (Table { cells }, sublists)
+    (Table { cells }, widths, sublists)
 }
 
-/// Parse one `<hp:tc>` body `[start,end)`.
-fn parse_cell(xml: &str, start: usize, end: usize) -> (Cell, Option<(usize, usize)>) {
+/// Parse one `<hp:tc>` body `[start,end)`. Returns the cell, its `<hp:cellSz>`
+/// width (hwpunit) when present, and its subList inner range.
+fn parse_cell(xml: &str, start: usize, end: usize) -> (Cell, Option<u32>, Option<(usize, usize)>) {
     // subList holds the cell content paragraphs
     let (sub_start, sub_end) = match find_any(xml, start, SUBLIST_OPENS) {
         Some((open, _)) if open < end => {
@@ -211,14 +266,15 @@ fn parse_cell(xml: &str, start: usize, end: usize) -> (Cell, Option<(usize, usiz
     };
     let paras = parse_paragraphs(xml, sub_start, sub_end);
 
-    // cellAddr / cellSpan are this cell's own children, after </hp:subList>
+    // cellAddr / cellSpan / cellSz are this cell's own children, after </hp:subList>
     let after = sub_end.min(end);
     let tail = &xml[after..end];
     let (row, col) = parse_cell_addr(tail);
     let (col_span, row_span) = parse_cell_span(tail);
+    let width_hu = parse_cell_sz_width(tail);
 
     let sub_range = if sub_start < sub_end { Some((sub_start, sub_end)) } else { None };
-    (Cell { row, col, col_span, row_span, paras }, sub_range)
+    (Cell { row, col, col_span, row_span, paras }, width_hu, sub_range)
 }
 
 fn parse_cell_addr(s: &str) -> (u32, u32) {
@@ -240,6 +296,15 @@ fn parse_cell_span(s: &str) -> (u32, u32) {
         return (cs, rs);
     }
     (1, 1)
+}
+
+/// `<hp:cellSz width="…"/>` width (hwpunit) — `None` when the sibling is
+/// absent (a well-formed HWPX table cell always carries one, but tests/other
+/// callers may build cells without it).
+fn parse_cell_sz_width(s: &str) -> Option<u32> {
+    let i = s.find("<hp:cellSz")?;
+    let seg = &s[i..s[i..].find("/>").map(|j| i + j).unwrap_or(s.len())];
+    attr_u32(seg, "width")
 }
 
 fn attr_u32(seg: &str, name: &str) -> Option<u32> {

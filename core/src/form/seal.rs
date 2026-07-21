@@ -8,8 +8,9 @@
 //! kkdoc 원본(seal.ts) 대비 단순화한 부분 (판단 필요 지점 — 보고 참고):
 //! - 정렬(가운데/오른쪽 문단)·셀 사용가능폭 기반 "auto" 모드 미구현 — 앵커
 //!   모드는 항상 "문구 오른쪽 2mm" 배치만 지원, dx_mm/dy_mm으로 수동 보정.
-//! - 셀 좌측 오프셋·중첩표 바깥 셀 체인 미구현 — 표 셀 안의 앵커는 위치가
-//!   근사값일 수 있다(dx_mm 보정 필요).
+//! - 표 셀 안 앵커는 셀의 표 내 좌측 오프셋(및 중첩표라면 바깥 셀 체인)을
+//!   가산해 단(컬럼) 원점 기준으로 보정한다(`cell_left_offset_mm`). rowSpan이
+//!   얽힌 복잡한 그리드·들여쓴 표는 근사가 어긋날 수 있다(dx_mm 보정).
 //! - 이미지 포맷은 PNG만 지원 (원본은 png/jpg/bmp/gif).
 //! - 네임스페이스 프리픽스는 폼 모듈 전체 관례를 따라 "hp:" 고정.
 
@@ -142,27 +143,108 @@ fn read_zip_text(zip: &mut ZipArchive<Cursor<Vec<u8>>>, name: &str) -> Result<St
 }
 
 /// 앵커 탐색용 문단 하나(본문 또는 표 셀). 문서 순서 근사(첫 run 시작 offset)로 정렬.
+///
+/// `cell_chain`은 이 문단이 속한 셀 자신과, `scan.table_parents`를 타고 올라간
+/// 모든 조상 셀을 (가까운 조상부터) `(tables 인덱스, 그 표의 cells 인덱스)`로
+/// 담는다 — 표 밖 본문 문단은 빈 벡터. `width_hu`/`parent`가 `Cell`/`Table`
+/// 자체가 아니라 `Scan`의 사이드 테이블(`cell_widths`/`table_parents`)에 있으므로
+/// (외부 `Cell{...}`/`Table{cells}` 리터럴 생성을 깨지 않기 위해 — [`Scan`] 문서
+/// 참고) 인덱스만 들고 다니고, 실제 조회는 [`cell_left_offset_mm`]에서 한다.
 struct Site<'a> {
     para: &'a Para,
+    cell_chain: Vec<(usize, usize)>,
 }
 
 fn collect_sites(scan: &Scan) -> Vec<Site<'_>> {
     fn order_of(p: &Para) -> usize {
         p.runs.first().map(|r| r.start).or(p.first_run_open_end).unwrap_or(usize::MAX)
     }
-    let mut ordered: Vec<(usize, &Para)> = Vec::new();
+    let mut ordered: Vec<(usize, Site)> = Vec::new();
     for p in &scan.body_paras {
-        ordered.push((order_of(p), p));
+        ordered.push((order_of(p), Site { para: p, cell_chain: Vec::new() }));
     }
-    for table in &scan.tables {
-        for cell in &table.cells {
+    for (ti, table) in scan.tables.iter().enumerate() {
+        for (ci, cell) in table.cells.iter().enumerate() {
+            let chain = cell_ancestor_chain(scan, ti, ci);
             for p in &cell.paras {
-                ordered.push((order_of(p), p));
+                ordered.push((order_of(p), Site { para: p, cell_chain: chain.clone() }));
             }
         }
     }
     ordered.sort_by_key(|(o, _)| *o);
-    ordered.into_iter().map(|(_, para)| Site { para }).collect()
+    ordered.into_iter().map(|(_, site)| site).collect()
+}
+
+/// `(table_idx, cell_idx)` 자신과, `scan.table_parents`를 타고 올라간 모든
+/// 조상 `(table_idx, cell_idx)`를 가까운 조상부터 순서대로 담는다. 중첩표
+/// (표 안 표) 셀에 앉은 앵커의 가로 오프셋을 바깥 표까지 체인으로 누적하는
+/// 데 쓰인다 ([`cell_chain_shift_mm`]).
+fn cell_ancestor_chain(scan: &Scan, table_idx: usize, cell_idx: usize) -> Vec<(usize, usize)> {
+    let mut chain = vec![(table_idx, cell_idx)];
+    let mut cur = table_idx;
+    while let Some(&(parent_ti, parent_ci)) = scan.table_parents.get(&cur) {
+        chain.push((parent_ti, parent_ci));
+        cur = parent_ti;
+    }
+    chain
+}
+
+/// `scan.tables[table_idx]`의 `cell_idx`번째 셀이 속한 열 그리드 안에서, 그
+/// 셀의 colAddr보다 앞선 모든 열의 폭(mm) 합 — 표 셀 안 앵커의 가로 원점을
+/// "단(컬럼)"에서 재는 한컴 동작을 보정한다 (레퍼런스 seal.ts
+/// `cellLeftOffsetMm` 이식). 폭은 `scan.cell_widths`(Scan 사이드 테이블)에서
+/// `(table_idx, cell_idx)`로 조회한다 — [`Scan`] 문서 참고.
+///
+/// 열폭은 표 전체 행을 훑어 구성한다: rowSpan으로 덮인 행에는 그 열의 셀
+/// 엔트리가 없어 한 행만 보면 오프셋이 비어 있을 수 있으므로, 다른 행에서
+/// 같은 열의 폭을 조회해 메운다. colSpan>1 병합 셀은 폭이 여러 열에 걸쳐
+/// 있어 한 열에 귀속시킬 수 없으므로 열폭 테이블 구성에서 제외한다(가로
+/// 병합 헤더행에서의 이중계상 방지).
+///
+/// `colAddr`는 검증되지 않은 XML 속성에서 그대로 `u32`로 파싱되므로(최대
+/// ~42억), 손상되거나 악의적인 HWPX는 셀의 colAddr에 터무니없이 큰 값을 실어
+/// `0..col` 루프를 수십억 회 반복시킬 수 있다 — [`MAX_TABLE_COLS`]로 상한을
+/// 두어 막는다(실무 표는 많아야 수십 열). 폭 합산도 `u32` 오버플로를 피하기
+/// 위해 `u64`로 넓혀 계산한다.
+const MAX_TABLE_COLS: u32 = 1024;
+
+fn cell_left_offset_mm(scan: &Scan, table_idx: usize, cell_idx: usize) -> f64 {
+    let table = match scan.tables.get(table_idx) {
+        Some(t) => t,
+        None => return 0.0,
+    };
+    let cell = match table.cells.get(cell_idx) {
+        Some(c) => c,
+        None => return 0.0,
+    };
+
+    // colAddr → width(hu) 테이블을 (인덱스 있는) 전체 셀 순회로 구성 — width는
+    // Cell이 아니라 scan.cell_widths에 있으므로 각 셀의 자기 인덱스가 필요해
+    // Table::rows()(참조만 반환) 대신 직접 순회한다.
+    let mut col_w: HashMap<u32, u32> = HashMap::new();
+    for (idx, c) in table.cells.iter().enumerate() {
+        if col_w.contains_key(&c.col) || c.col_span > 1 {
+            continue;
+        }
+        if let Some(&w) = scan.cell_widths.get(&(table_idx, idx)) {
+            if w > 0 {
+                col_w.insert(c.col, w);
+            }
+        }
+    }
+    let bound = cell.col.min(MAX_TABLE_COLS);
+    let mut sum: u64 = 0;
+    for col in 0..bound {
+        sum = sum.saturating_add(u64::from(col_w.get(&col).copied().unwrap_or(0)));
+    }
+    sum as f64 / HU_PER_MM
+}
+
+/// [`cell_left_offset_mm`]을 조상 체인 전체(자기 셀 + 바깥 표들)에 대해
+/// 합산 — 중첩표 앵커는 안쪽 표의 열 오프셋 위에 바깥 표의 열 오프셋도
+/// 더해야 화면상 위치가 맞는다.
+fn cell_chain_shift_mm(scan: &Scan, chain: &[(usize, usize)]) -> f64 {
+    chain.iter().map(|&(ti, ci)| cell_left_offset_mm(scan, ti, ci)).sum()
 }
 
 /// idx_in_text(문단 텍스트 내 바이트 오프셋)를 포함하는 run을 찾는다.
@@ -328,7 +410,7 @@ pub fn place_seal_hwpx(hwpx: &[u8], seal_png: &[u8], opts: &SealOptions) -> Resu
                 let scans: Vec<Scan> = section_xmls.iter().map(|x| scan_section(x)).collect();
                 let sites_by_section: Vec<Vec<Site>> = scans.iter().map(collect_sites).collect();
 
-                let mut found: Option<(usize, &Para, usize)> = None;
+                let mut found: Option<(usize, &Site, usize)> = None;
                 let mut total = 0usize;
                 'outer: for (si, sites) in sites_by_section.iter().enumerate() {
                     for site in sites {
@@ -336,7 +418,7 @@ pub fn place_seal_hwpx(hwpx: &[u8], seal_png: &[u8], opts: &SealOptions) -> Resu
                         while let Some(rel) = site.para.text[from..].find(text.as_str()) {
                             let abs = from + rel;
                             if total == *occurrence {
-                                found = Some((si, site.para, abs));
+                                found = Some((si, site, abs));
                                 break 'outer;
                             }
                             total += 1;
@@ -345,7 +427,7 @@ pub fn place_seal_hwpx(hwpx: &[u8], seal_png: &[u8], opts: &SealOptions) -> Resu
                     }
                 }
 
-                let (si, para, idx_in_text) = match found {
+                let (si, site, idx_in_text) = match found {
                     Some(v) => v,
                     None => {
                         let mut total2 = 0usize;
@@ -366,6 +448,7 @@ pub fn place_seal_hwpx(hwpx: &[u8], seal_png: &[u8], opts: &SealOptions) -> Resu
                 };
 
                 let xml = &section_xmls[si];
+                let para = site.para;
                 let run = locate_containing_run(xml, para, idx_in_text)
                     .ok_or_else(|| format!("place_seal_hwpx: 앵커 \"{text}\" 문단에서 run을 찾지 못했습니다"))?;
                 let (char_pr, insert_at) = anchor_run_info(xml, run)
@@ -377,7 +460,11 @@ pub fn place_seal_hwpx(hwpx: &[u8], seal_png: &[u8], opts: &SealOptions) -> Resu
                 let line_h_mm = em_mm;
                 let start_x_mm = measure_mm(&para.text[..idx_in_text], em_mm);
                 let anchor_w_mm = measure_mm(text, em_mm);
-                let pos_x_mm = start_x_mm + anchor_w_mm + 2.0 + opts.dx_mm;
+                // 표 셀 안 앵커 — 한컴이 front 부유 가로 오프셋을 셀이 아니라 단(컬럼)
+                // 원점에서 재므로, 셀(및 중첩표라면 바깥 셀 체인)의 표 내 좌측
+                // 오프셋을 더해야 화면상 앵커 문구를 따라간다 (레퍼런스 seal.ts 실측).
+                let cell_shift_mm = cell_chain_shift_mm(&scans[si], &site.cell_chain);
+                let pos_x_mm = start_x_mm + anchor_w_mm + 2.0 + cell_shift_mm + opts.dx_mm;
                 let pos_y_mm = -(opts.size_mm - line_h_mm) / 2.0 + opts.dy_mm;
 
                 (si, char_pr, insert_at, pos_x_mm, pos_y_mm)
@@ -478,6 +565,53 @@ mod tests {
             .to_string()
     }
 
+    /// A 1-row, 2-column table whose second cell (colAddr=1) holds the anchor —
+    /// each cell carries a `<hp:cellSz width="4000">` so the anchor's left
+    /// offset within the section should include column 0's full width.
+    fn section_with_table_anchor(anchor: &str) -> String {
+        fn tc(col: u32, text: &str) -> String {
+            format!(
+                concat!(
+                    r#"<hp:tc name="" borderFillIDRef="1">"#,
+                    r#"<hp:subList id="" vertAlign="CENTER">"#,
+                    r#"<hp:p id="0" paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:t>{text}</hp:t></hp:run></hp:p>"#,
+                    "</hp:subList>",
+                    r#"<hp:cellAddr colAddr="{col}" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/>"#,
+                    r#"<hp:cellSz width="4000" height="1000"/>"#,
+                    "</hp:tc>"
+                ),
+                text = text,
+                col = col,
+            )
+        }
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><hp:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p id="0" paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:tbl id="9" rowCnt="1" colCnt="2" borderFillIDRef="1"><hp:tr>{col0}{col1}</hp:tr></hp:tbl></hp:run></hp:p></hp:sec>"#,
+            col0 = tc(0, "라벨"),
+            col1 = tc(1, anchor),
+        )
+    }
+
+    /// A single-cell table whose anchor cell carries a corrupted/adversarial
+    /// `colAddr` near `u32::MAX` — reproduces the pre-fix "0..cell.col" runaway
+    /// loop (would iterate billions of times) and the u32 width-sum overflow.
+    fn section_with_huge_coladdr_anchor(anchor: &str) -> String {
+        format!(
+            concat!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><hp:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">"#,
+                r#"<hp:p id="0" paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:tbl id="9" rowCnt="1" colCnt="1" borderFillIDRef="1"><hp:tr>"#,
+                r#"<hp:tc name="" borderFillIDRef="1">"#,
+                r#"<hp:subList id="" vertAlign="CENTER">"#,
+                r#"<hp:p id="0" paraPrIDRef="0"><hp:run charPrIDRef="0"><hp:t>{anchor}</hp:t></hp:run></hp:p>"#,
+                "</hp:subList>",
+                r#"<hp:cellAddr colAddr="4294967295" rowAddr="0"/><hp:cellSpan colSpan="1" rowSpan="1"/>"#,
+                r#"<hp:cellSz width="4000" height="1000"/>"#,
+                "</hp:tc>",
+                "</hp:tr></hp:tbl></hp:run></hp:p></hp:sec>"
+            ),
+            anchor = anchor,
+        )
+    }
+
     fn build_hwpx(section: &str, extra: Option<(&str, &[u8])>) -> Vec<u8> {
         let mut buf = Vec::new();
         {
@@ -561,6 +695,73 @@ mod tests {
             assert_eq!(data, d2, "bytes preserved for {name}");
         }
         let _ = zip.by_name("Contents/header.xml").unwrap(); // sanity: still readable
+    }
+
+    /// 표 셀 앵커 재현 테스트 — 2열 표의 두 번째 셀(colAddr=1)에 앉은 앵커는,
+    /// 한컴이 front 부유 가로 오프셋을 셀이 아니라 단(컬럼) 원점에서 재므로
+    /// 첫 번째 열의 폭(cellSz width=4000hu)만큼 오른쪽으로 밀려야 한다 —
+    /// 이 보정이 없으면 도장이 옆 셀(첫 번째 열)로 밀려 찍힌다.
+    #[test]
+    fn seal_anchor_in_table_cell_adds_left_offset_of_preceding_columns() {
+        let bytes = build_hwpx(&section_with_table_anchor("(인)"), None);
+        let png = tiny_png();
+        let opts = SealOptions {
+            anchor: SealAnchor::Text { text: "(인)".to_string(), occurrence: 0 },
+            size_mm: 10.0,
+            opacity: 0,
+            dx_mm: 0.0,
+            dy_mm: 0.0,
+        };
+        let out = place_seal_hwpx(&bytes, &png, &opts).expect("seal placed");
+        let section = String::from_utf8(read_entry(&out, "Contents/section0.xml")).unwrap();
+        assert!(section.contains("<hp:pic"), "pic inserted, got: {section}");
+        assert!(section.contains("horzRelTo=\"COLUMN\""));
+
+        // Expected x = anchor width (2 CJK-glyph em @ height=1000 → 10pt) + 2mm gap
+        // + column 0's full width (4000hu) — matches cell_left_offset_mm/place_seal_hwpx's
+        // own formula so this test pins the exact contract, not just "some" offset.
+        let em_mm = (1000f64 / 100.0) * 25.4 / 72.0;
+        let anchor_w_mm = 2.0 * em_mm; // "(인)" = '(' 0.5em + '인' 1.0em + ')' 0.5em
+        let col0_offset_mm = 4000.0 / HU_PER_MM;
+        let expected_hu = mm2hu(anchor_w_mm + 2.0 + col0_offset_mm);
+        assert!(
+            section.contains(&format!("horzOffset=\"{expected_hu}\"")),
+            "expected horzOffset={expected_hu} (cleared column 0's {} hu width), got: {section}",
+            4000
+        );
+    }
+
+    /// codex P1 재현 — anchor 셀의 `colAddr`가 `u32::MAX` 근처인 손상/악의적
+    /// HWPX. 고정 전에는 `cell_left_offset_mm`이 `0..cell.col`을 42억 회
+    /// 반복(사실상 행 없음)했고 폭 합산이 `u32`로 오버플로할 수 있었다.
+    /// `MAX_TABLE_COLS` 상한 + `u64` 누적 이후엔 즉시 끝나야 한다 — 테스트가
+    /// 정상 종료(타임아웃 없이)하는 것 자체가 반복폭발이 없다는 증거이고,
+    /// horzOffset도 유한하고 작은(비정상적으로 크지 않은) 값이어야 한다.
+    #[test]
+    fn seal_anchor_with_huge_col_addr_does_not_blow_up() {
+        let bytes = build_hwpx(&section_with_huge_coladdr_anchor("(인)"), None);
+        let png = tiny_png();
+        let opts = SealOptions {
+            anchor: SealAnchor::Text { text: "(인)".to_string(), occurrence: 0 },
+            size_mm: 10.0,
+            opacity: 0,
+            dx_mm: 0.0,
+            dy_mm: 0.0,
+        };
+        // The huge colAddr's own column never appears inside the [0, MAX_TABLE_COLS)
+        // scan window (no other cell exists), so no column width contributes to the
+        // shift — offset resolves to the same as a plain (non-table) anchor.
+        let out = place_seal_hwpx(&bytes, &png, &opts).expect("seal placed (no panic/hang)");
+        let section = String::from_utf8(read_entry(&out, "Contents/section0.xml")).unwrap();
+        assert!(section.contains("<hp:pic"), "pic inserted, got: {section}");
+
+        let em_mm = (1000f64 / 100.0) * 25.4 / 72.0;
+        let anchor_w_mm = 2.0 * em_mm;
+        let expected_hu = mm2hu(anchor_w_mm + 2.0);
+        assert!(
+            section.contains(&format!("horzOffset=\"{expected_hu}\"")),
+            "expected bounded horzOffset={expected_hu}, got: {section}"
+        );
     }
 
     #[test]

@@ -49,6 +49,28 @@ const US_MIN_BAND_MISMATCH: usize = 2;
 const US_MIN_BAND_EPSILON: f64 = 3.0;
 const US_BAND_EPSILON_RATIO: f64 = 0.6;
 
+// ── kkdoc closeOpenTableEdges constants (line-extract.ts) ──────────────────────
+const EDGE_ALIGN_TOL: f64 = 3.0; // endpoint-aligned grouping tolerance
+const EDGE_MIN_RULES: usize = 3; // ≥3 rules (2+ rows) to synthesize
+const EDGE_MIN_SPAN: f64 = 12.0; // min group y-span (guards decorative doubles)
+const EDGE_INSET: f64 = 15.0; // interior-vertical test inset from a side
+const EDGE_NEAR: f64 = 10.0; // an existing vertical this close ⇒ side already closed
+const EDGE_CONNECT_TOL: f64 = 5.0; // crossing tolerance (== CONNECT_TOL)
+const EDGE_YGAP_SPLIT_K: f64 = 2.5; // group split when y-gap > median * K
+const EDGE_YGAP_ABS_MIN: f64 = 30.0; // absolute y-gap floor for a split
+const CHAIN_Y_TOL: f64 = 1.5; // chain view: same-logical-rule y tolerance
+const CHAIN_GAP: f64 = 3.0; // chain view: collinear connect gap
+
+// ── kkdoc splitStackedGroup constants (table-grid.ts) ─────────────────────────
+const CUT_FULLWIDTH_RATIO: f64 = 0.9; // cut line must span ≥ ratio of group width
+const CUT_CROSS_EPS: f64 = 2.0; // cut-line / crossing y tolerance
+const CUT_MIN_SIDE_VERTICALS: usize = 2; // each side must look table-shaped
+const CUT_EDGE_MARGIN: f64 = 12.0; // interior-vertical margin from group edges
+const CUT_INTERIOR_MATCH_TOL: f64 = 8.0; // interior column x-match tolerance
+const CUT_MAX_INTERIOR_OVERLAP: f64 = 0.5; // >half interior overlap ⇒ same table
+const CUT_VCHAIN_X_TOL: f64 = 1.5; // vertical chain view: same-x tolerance
+const CUT_VCHAIN_GAP: f64 = 1.0; // vertical chain view: collinear connect gap
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Types (ported from line-types.ts)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -554,6 +576,213 @@ fn merge_parallel_lines(mut lines: Vec<LineSegment>, horizontal: bool) -> Vec<Li
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Open-edge border synthesis (line-extract.ts closeOpenTableEdges)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Chain view — join collinear same-y horizontal segments (rules drawn cell by
+/// cell) into one logical rule. Endpoint-alignment judgement only; the physical
+/// horizontals are untouched. Near-parallel decorative doubles are absorbed too.
+fn chain_collinear_rules(horizontals: &[LineSegment]) -> Vec<LineSegment> {
+    if horizontals.len() <= 1 {
+        return horizontals.to_vec();
+    }
+    let mut sorted = horizontals.to_vec();
+    sorted.sort_by(|a, b| {
+        a.y1
+            .partial_cmp(&b.y1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    let mut rules = Vec::new();
+    let n = sorted.len();
+    let mut band_start = 0usize;
+    for i in 1..=n {
+        if i == n || sorted[i].y1 - sorted[band_start].y1 > CHAIN_Y_TOL {
+            let mut band: Vec<LineSegment> = sorted[band_start..i].to_vec();
+            band.sort_by(|a, b| a.x1.partial_cmp(&b.x1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut cur = band[0];
+            for seg in band.iter().skip(1) {
+                if seg.x1 - cur.x2 <= CHAIN_GAP {
+                    if seg.x2 > cur.x2 {
+                        cur.x2 = seg.x2;
+                    }
+                    if seg.line_width > cur.line_width {
+                        cur.line_width = seg.line_width;
+                    }
+                } else {
+                    rules.push(cur);
+                    cur = *seg;
+                }
+            }
+            rules.push(cur);
+            band_start = i;
+        }
+    }
+    rules
+}
+
+/// Synthesize missing outer side borders — Korean-gov tables commonly omit the
+/// left/right outer borders (horizontal rules span the full width; verticals
+/// draw only interior separators). Vertex-based grid construction loses the
+/// column at an unruled side entirely, so for an endpoint-aligned bundle of
+/// horizontal rules (≥3) that has ≥1 interior vertical crossing 2+ of those
+/// rules, synthesize a phantom vertical border at each endpoint x that has no
+/// existing vertical nearby, closing the grid.
+///
+/// Global endpoint grouping tends to lump similar-width tables stacked on a
+/// page into one bundle with a wide y-range; a large intra-bundle y-gap that is
+/// not bridged by a penetrating interior vertical splits the bundle, so a
+/// phantom border is never welded across the prose between two separate tables.
+fn close_open_table_edges(
+    horizontals: &[LineSegment],
+    verticals: &[LineSegment],
+) -> Vec<LineSegment> {
+    if horizontals.len() < EDGE_MIN_RULES {
+        return verticals.to_vec();
+    }
+
+    // 1) endpoint-aligned grouping over chained logical rules
+    let mut groups: Vec<Vec<LineSegment>> = Vec::new();
+    for hl in chain_collinear_rules(horizontals) {
+        let mut placed = false;
+        for g in groups.iter_mut() {
+            if (g[0].x1 - hl.x1).abs() <= EDGE_ALIGN_TOL && (g[0].x2 - hl.x2).abs() <= EDGE_ALIGN_TOL
+            {
+                g.push(hl);
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            groups.push(vec![hl]);
+        }
+    }
+
+    // 1b) y-gap split — separate stacked same-width tables lumped into one group
+    //     at the large vertical gap between them, unless a vertical bridges the
+    //     gap within this table's x-range (a merged tall row, not a table break).
+    let mut split_groups: Vec<Vec<LineSegment>> = Vec::new();
+    for g in &groups {
+        let mut sorted = g.clone();
+        sorted.sort_by(|a, b| a.y1.partial_cmp(&b.y1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut gaps: Vec<f64> = Vec::new();
+        for i in 1..sorted.len() {
+            gaps.push(sorted[i].y1 - sorted[i - 1].y1);
+        }
+        let median = if gaps.is_empty() {
+            0.0
+        } else {
+            let mut gs = gaps.clone();
+            gs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            gs[gs.len() >> 1]
+        };
+        let threshold = median * EDGE_YGAP_SPLIT_K;
+        let mut cur: Vec<LineSegment> = if sorted.is_empty() { Vec::new() } else { vec![sorted[0]] };
+        for i in 1..sorted.len() {
+            let y_lo = sorted[i - 1].y1;
+            let y_hi = sorted[i].y1;
+            let gap = y_hi - y_lo;
+            let gx1 = sorted[i - 1].x1.min(sorted[i].x1);
+            let gx2 = sorted[i - 1].x2.max(sorted[i].x2);
+            let bridged = verticals.iter().any(|vl| {
+                vl.y1 <= y_lo + EDGE_NEAR
+                    && vl.y2 >= y_hi - EDGE_NEAR
+                    && vl.x1 >= gx1 - EDGE_CONNECT_TOL
+                    && vl.x1 <= gx2 + EDGE_CONNECT_TOL
+            });
+            if median > 0.0
+                && gap > threshold
+                && gap > EDGE_YGAP_ABS_MIN
+                && !bridged
+                && cur.len() >= EDGE_MIN_RULES
+                && sorted.len() - i >= EDGE_MIN_RULES
+            {
+                split_groups.push(std::mem::take(&mut cur));
+            }
+            cur.push(sorted[i]);
+        }
+        if !cur.is_empty() {
+            split_groups.push(cur);
+        }
+    }
+
+    let mut synthesized: Vec<LineSegment> = Vec::new();
+    for g in &split_groups {
+        if g.len() < EDGE_MIN_RULES {
+            continue;
+        }
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+        let mut x1 = 0.0;
+        let mut x2 = 0.0;
+        for hl in g {
+            if hl.y1 < y_min {
+                y_min = hl.y1;
+            }
+            if hl.y1 > y_max {
+                y_max = hl.y1;
+            }
+            x1 += hl.x1;
+            x2 += hl.x2;
+        }
+        let count = g.len() as f64;
+        x1 /= count;
+        x2 /= count;
+        if y_max - y_min < EDGE_MIN_SPAN {
+            continue;
+        }
+
+        // 2) require a real interior vertical crossing ≥2 group rules
+        let cross_count = |v: &LineSegment| -> usize {
+            let mut n = 0;
+            for hl in g {
+                if v.x1 >= hl.x1 - EDGE_CONNECT_TOL
+                    && v.x1 <= hl.x2 + EDGE_CONNECT_TOL
+                    && hl.y1 >= v.y1 - EDGE_CONNECT_TOL
+                    && hl.y1 <= v.y2 + EDGE_CONNECT_TOL
+                {
+                    n += 1;
+                }
+            }
+            n
+        };
+        let has_interior = verticals
+            .iter()
+            .any(|v| v.x1 > x1 + EDGE_INSET && v.x1 < x2 - EDGE_INSET && cross_count(v) >= 2);
+        if !has_interior {
+            continue;
+        }
+
+        // 3) synthesize a phantom border at each side lacking an existing vertical
+        for edge_x in [x1, x2] {
+            let closed = verticals.iter().any(|v| {
+                (v.x1 - edge_x).abs() <= EDGE_NEAR
+                    && v.y1 <= y_max + EDGE_CONNECT_TOL
+                    && v.y2 >= y_min - EDGE_CONNECT_TOL
+            });
+            if !closed {
+                synthesized.push(LineSegment {
+                    x1: edge_x,
+                    y1: y_min,
+                    x2: edge_x,
+                    y2: y_max,
+                    line_width: 0.5,
+                    from_fill: false,
+                });
+            }
+        }
+    }
+
+    if synthesized.is_empty() {
+        verticals.to_vec()
+    } else {
+        let mut out = verticals.to_vec();
+        out.extend(synthesized);
+        out
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Grid construction (table-grid.ts)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -762,8 +991,161 @@ fn enforce_min(coords: &[f64], min_delta: f64, descending: bool) -> Vec<f64> {
     result
 }
 
-/// Build table grids from preprocessed ruling lines (kkdoc buildTableGrids,
-/// without the deferred splitStackedGroup / mergeAdjacentGrids refinements).
+/// Vertical chain view (kkdoc chainVerticals) — join collinear same-x vertical
+/// segments (outer borders / separators drawn section by section) into logical
+/// vertical spans `(y1, y2)`. A single table's segments abut (gap≈0); separate
+/// tables leave a real gap. Judgement only; physical verticals are untouched.
+fn chain_verticals(vs: &[LineSegment]) -> Vec<(f64, f64)> {
+    if vs.len() <= 1 {
+        return vs.iter().map(|v| (v.y1, v.y2)).collect();
+    }
+    let mut sorted = vs.to_vec();
+    sorted.sort_by(|a, b| {
+        a.x1
+            .partial_cmp(&b.x1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.y1.partial_cmp(&b.y1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    let mut rules = Vec::new();
+    let n = sorted.len();
+    let mut band_start = 0usize;
+    for i in 1..=n {
+        if i == n || sorted[i].x1 - sorted[band_start].x1 > CUT_VCHAIN_X_TOL {
+            let mut band: Vec<LineSegment> = sorted[band_start..i].to_vec();
+            band.sort_by(|a, b| a.y1.partial_cmp(&b.y1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut cur = (band[0].y1, band[0].y2);
+            for seg in band.iter().skip(1) {
+                if seg.y1 - cur.1 <= CUT_VCHAIN_GAP {
+                    if seg.y2 > cur.1 {
+                        cur.1 = seg.y2;
+                    }
+                } else {
+                    rules.push(cur);
+                    cur = (seg.y1, seg.y2);
+                }
+            }
+            rules.push(cur);
+            band_start = i;
+        }
+    }
+    rules
+}
+
+/// Split a stacked group (kkdoc splitStackedGroup) — two separate tables abutting
+/// vertically that share one boundary rule (so Union-Find lumped them) are split
+/// into vertical bands. A cut line is a near-full-width horizontal that (a) is not
+/// penetrated by any logical vertical (chain view) — a real interior boundary has
+/// its outer verticals run continuously through it, (b) has 2+ verticals on each
+/// side, and (c) whose interior column x-sets overlap by ≤ half. The cut line
+/// itself is duplicated into both bands (bottom edge of the upper / top of lower).
+fn split_stacked_group(group: &[(bool, LineSegment)]) -> Vec<Vec<(bool, LineSegment)>> {
+    let hs: Vec<LineSegment> = group.iter().filter(|(h, _)| *h).map(|(_, l)| *l).collect();
+    let vs: Vec<LineSegment> = group.iter().filter(|(h, _)| !*h).map(|(_, l)| *l).collect();
+    if hs.len() < 3 || vs.len() < 4 {
+        return vec![group.to_vec()];
+    }
+    let mut gx1 = f64::INFINITY;
+    let mut gx2 = f64::NEG_INFINITY;
+    for (_, l) in group {
+        if l.x1 < gx1 {
+            gx1 = l.x1;
+        }
+        if l.x2 > gx2 {
+            gx2 = l.x2;
+        }
+    }
+    let group_w = gx2 - gx1;
+    if group_w <= 0.0 {
+        return vec![group.to_vec()];
+    }
+    let is_interior = |v: &LineSegment| v.x1 > gx1 + CUT_EDGE_MARGIN && v.x1 < gx2 - CUT_EDGE_MARGIN;
+    let chained = chain_verticals(&vs);
+    let mut cuts: Vec<f64> = Vec::new();
+    for h in &hs {
+        let y = h.y1;
+        if h.x2 - h.x1 < group_w * CUT_FULLWIDTH_RATIO {
+            continue;
+        }
+        if cuts.iter().any(|c| (c - y).abs() <= CUT_CROSS_EPS) {
+            continue;
+        }
+        // (a) a penetrating logical vertical ⇒ same-table interior boundary
+        if chained
+            .iter()
+            .any(|(vy1, vy2)| *vy1 < y - CUT_CROSS_EPS && *vy2 > y + CUT_CROSS_EPS)
+        {
+            continue;
+        }
+        // (b) both sides must be table-shaped
+        let above: Vec<LineSegment> =
+            vs.iter().filter(|v| v.y1 >= y - CUT_CROSS_EPS).copied().collect();
+        let below: Vec<LineSegment> =
+            vs.iter().filter(|v| v.y2 <= y + CUT_CROSS_EPS).copied().collect();
+        if above.len() < CUT_MIN_SIDE_VERTICALS || below.len() < CUT_MIN_SIDE_VERTICALS {
+            continue;
+        }
+        // (c) interior column x-set overlap
+        let ia: Vec<LineSegment> = above.iter().filter(|v| is_interior(v)).copied().collect();
+        let ib: Vec<LineSegment> = below.iter().filter(|v| is_interior(v)).copied().collect();
+        if ia.is_empty() || ib.is_empty() {
+            continue;
+        }
+        let mut matched = 0usize;
+        for a in &ia {
+            if ib.iter().any(|b| (a.x1 - b.x1).abs() <= CUT_INTERIOR_MATCH_TOL) {
+                matched += 1;
+            }
+        }
+        if matched as f64 / (ia.len().min(ib.len()) as f64) > CUT_MAX_INTERIOR_OVERLAP {
+            continue;
+        }
+        cuts.push(y);
+    }
+    if cuts.is_empty() {
+        return vec![group.to_vec()];
+    }
+
+    cuts.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)); // top→bottom
+    let band_of = |y: f64| -> usize {
+        let mut k = 0usize;
+        while k < cuts.len() && y < cuts[k] {
+            k += 1;
+        }
+        k
+    };
+    let mut bands: Vec<Vec<(bool, LineSegment)>> = vec![Vec::new(); cuts.len() + 1];
+    for v in &vs {
+        // by (a) no vertical straddles a cut, so its midpoint lands in one band.
+        bands[band_of((v.y1 + v.y2) / 2.0)].push((false, *v));
+    }
+    for h in &hs {
+        if let Some(at_cut) = cuts.iter().position(|c| (h.y1 - c).abs() <= CUT_CROSS_EPS) {
+            bands[at_cut].push((true, *h));
+            bands[at_cut + 1].push((true, *h));
+        } else {
+            bands[band_of(h.y1)].push((true, *h));
+        }
+    }
+    bands.into_iter().filter(|b| !b.is_empty()).collect()
+}
+
+// NOTE: kkdoc's `mergeAdjacentGrids` (per-page, TableGrid-level) is intentionally
+// NOT applied here. In kkdoc it stitches *same-page* over-segmented grids, but the
+// only continuation this project actually needs is *cross-page* — and that is a
+// separate kkdoc function, `mergeCrossPageTables` (page-blocks.ts), run at the
+// block-aggregation layer with x-bbox alignment + reading-order block adjacency +
+// repeated-header removal. mdm's aggregation layer is a flat `Vec<PdfTable>` that
+// lacks x-extent (see `PdfTable`, parser.rs) and whose renderer keys inline-text
+// dedup by `t.page == elem.page` (parser.rs) — so merging two `PdfTable`s across a
+// page break would leave the continuation page's inline text un-suppressed and
+// double-render it. A faithful cross-page stitch therefore needs a renderer/IR
+// change beyond this refinement's scope; it is deferred (see the report / bottom
+// doc block). The per-page grid merge was dropped because it cannot deliver that
+// goal and risks fusing two independent same-page tables (column-matched, ≤20pt
+// apart) with no demonstrated corpus benefit.
+
+/// Build table grids from preprocessed ruling lines (kkdoc buildTableGrids),
+/// including the stacked-group split refinement.
 pub fn build_table_grids(horizontals: &[LineSegment], verticals: &[LineSegment]) -> Vec<TableGrid> {
     if horizontals.len() < 2 || verticals.len() < 2 {
         return Vec::new();
@@ -776,11 +1158,26 @@ pub fn build_table_grids(horizontals: &[LineSegment], verticals: &[LineSegment])
     let global_radius = vertices.iter().map(|v| v.radius).fold(1.0_f64, f64::max);
 
     let mut grids = Vec::new();
+    // Split stacked tables sharing a boundary line into per-band groups. A split
+    // band recomputes its vertices from its own lines, because the shared cut
+    // line's vertices otherwise carry the other table's column x's into the band.
+    let mut bands: Vec<(Vec<(bool, LineSegment)>, bool)> = Vec::new();
     for group in group_connected_lines(horizontals, verticals) {
+        let typed: Vec<(bool, LineSegment)> = group
+            .iter()
+            .map(|(is_h, i)| if *is_h { (true, horizontals[*i]) } else { (false, verticals[*i]) })
+            .collect();
+        let split = split_stacked_group(&typed);
+        let from_split = split.len() > 1;
+        for band in split {
+            bands.push((band, from_split));
+        }
+    }
+    for (band, from_split) in &bands {
         let h_lines: Vec<LineSegment> =
-            group.iter().filter(|(is_h, _)| *is_h).map(|(_, i)| horizontals[*i]).collect();
+            band.iter().filter(|(is_h, _)| *is_h).map(|(_, l)| *l).collect();
         let v_lines: Vec<LineSegment> =
-            group.iter().filter(|(is_h, _)| !*is_h).map(|(_, i)| verticals[*i]).collect();
+            band.iter().filter(|(is_h, _)| !*is_h).map(|(_, l)| *l).collect();
         if h_lines.len() < 2 || v_lines.len() < 2 {
             continue;
         }
@@ -789,11 +1186,17 @@ pub fn build_table_grids(horizontals: &[LineSegment], verticals: &[LineSegment])
         let gx2 = v_lines.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, f64::max) + CONNECT_TOL;
         let gy1 = h_lines.iter().map(|l| l.y1).fold(f64::INFINITY, f64::min) - CONNECT_TOL;
         let gy2 = h_lines.iter().map(|l| l.y1).fold(f64::NEG_INFINITY, f64::max) + CONNECT_TOL;
-        let group_vertices: Vec<Vertex> = vertices
-            .iter()
-            .copied()
-            .filter(|vx| vx.x >= gx1 && vx.x <= gx2 && vx.y >= gy1 && vx.y <= gy2)
-            .collect();
+        // Split bands recompute their vertices from their own lines; unsplit
+        // groups keep the global-vertex bbox filter (identical to before).
+        let group_vertices: Vec<Vertex> = if *from_split {
+            merge_vertices(&build_vertices(&h_lines, &v_lines))
+        } else {
+            vertices
+                .iter()
+                .copied()
+                .filter(|vx| vx.x >= gx1 && vx.x <= gx2 && vx.y >= gy1 && vx.y <= gy2)
+                .collect()
+        };
         let group_radius = if group_vertices.is_empty() {
             global_radius
         } else {
@@ -1239,6 +1642,9 @@ pub fn detect_line_tables(
 ) -> Vec<DetectedTable> {
     let (h0, v0) = extract_ruling_lines(doc, page_id);
     let (horizontals, verticals) = preprocess_lines(h0, v0);
+    // Synthesize missing outer side borders (open-edge Korean-gov tables) before
+    // building grids; conservative — needs interior verticals crossing the rules.
+    let verticals = close_open_table_edges(&horizontals, &verticals);
     let grids = build_table_grids(&horizontals, &verticals);
 
     let mut out = Vec::new();
@@ -1368,14 +1774,27 @@ pub fn merge_line_and_cluster(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Deferred kkdoc refinements (not yet ported — documented for follow-up):
+// Ported refinements (wave-2 follow-up):
 //   * closeOpenTableEdges — synthesize missing outer side borders for
-//     Korean-gov tables that omit them.
+//     Korean-gov tables that omit them. (`close_open_table_edges`, wired into
+//     `detect_line_tables` after preprocessing.)
 //   * splitStackedGroup — separate two stacked tables sharing one boundary.
-//   * mergeAdjacentGrids — stitch a table continued across a page break.
+//     (`split_stacked_group`, run per group inside `build_table_grids`.)
+//
+// Deferred / intentionally not ported:
+//   * mergeAdjacentGrids (kkdoc, same-page TableGrid stitch) — dropped: it can't
+//     deliver cross-page continuation (its results are per-page here) and risks
+//     fusing independent same-page tables. See the note above `build_table_grids`.
+//   * Cross-page table continuation (kkdoc `mergeCrossPageTables`, page-blocks.ts)
+//     — the real "stitch a table continued across a page break" feature. Deferred:
+//     it belongs at the block-aggregation layer and needs signals mdm's flat
+//     `Vec<PdfTable>` lacks (x-bbox alignment, reading-order block adjacency) plus
+//     a renderer change so the continuation page's inline text stays suppressed
+//     (`to_markdown_with_layout` keys table dedup by `t.page == elem.page`).
 //   * The full cluster-detector.ts rewrite (header-anchored column model,
 //     two-column-prose demotion). The existing `detect_tables_from_positions`
-//     in parser.rs serves as the line-less fallback in the meantime.
+//     in parser.rs serves as the line-less fallback; the line-based path above
+//     (now with open-edge synthesis) covers the ruled-table majority.
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1576,5 +1995,87 @@ mod tests {
         assert_eq!(out.len(), 2, "overlapping cluster dropped, disjoint kept");
         assert_eq!(out[0].rows[0][0], "L");
         assert_eq!(out[1].rows[0][0], "D");
+    }
+
+    // ── closeOpenTableEdges ──────────────────────────────────────────────────
+
+    #[test]
+    fn close_open_edges_synthesizes_both_side_borders() {
+        // 3 full-width rules + one interior vertical crossing all of them, no
+        // left/right outer borders → synthesize both side borders.
+        let horizontals = vec![hseg(0.0, 200.0, 0.0), hseg(0.0, 200.0, 50.0), hseg(0.0, 200.0, 100.0)];
+        let verticals = vec![vseg(0.0, 100.0, 100.0)];
+        let out = close_open_table_edges(&horizontals, &verticals);
+        assert_eq!(out.len(), 3, "two side borders synthesized alongside the interior");
+        assert!(out.iter().any(|v| (v.x1 - 0.0).abs() < 1e-9), "left border synthesized");
+        assert!(out.iter().any(|v| (v.x1 - 200.0).abs() < 1e-9), "right border synthesized");
+        // The interior separator is preserved.
+        assert!(out.iter().any(|v| (v.x1 - 100.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn close_open_edges_only_fills_missing_side() {
+        // Left border already present at x=0 → only the right side is synthesized.
+        let horizontals = vec![hseg(0.0, 200.0, 0.0), hseg(0.0, 200.0, 50.0), hseg(0.0, 200.0, 100.0)];
+        let verticals = vec![vseg(0.0, 100.0, 0.0), vseg(0.0, 100.0, 100.0)];
+        let out = close_open_table_edges(&horizontals, &verticals);
+        assert_eq!(out.len(), 3, "only the missing right border is added");
+        assert_eq!(out.iter().filter(|v| (v.x1 - 200.0).abs() < 1e-9).count(), 1);
+    }
+
+    #[test]
+    fn close_open_edges_no_synthesis_without_interior_vertical() {
+        // No interior vertical → nothing to anchor a table geometry → no-op.
+        let horizontals = vec![hseg(0.0, 200.0, 0.0), hseg(0.0, 200.0, 50.0), hseg(0.0, 200.0, 100.0)];
+        let out = close_open_table_edges(&horizontals, &[]);
+        assert!(out.is_empty(), "no interior vertical ⇒ no phantom borders");
+    }
+
+    // ── splitStackedGroup (via build_table_grids) ────────────────────────────
+
+    #[test]
+    fn stacked_tables_sharing_a_boundary_split_into_two_grids() {
+        // A narrow top strip stacked on a wider bottom table, sharing the
+        // full-width boundary line at y=100. Outer borders sit at different x's
+        // (no chaining) and interior columns don't align (x=70/120 vs x=100),
+        // so the boundary is a valid cut → two grids from one connected group.
+        let mut h = Vec::new();
+        // top strip (narrow, x 30..170)
+        h.push(hseg(30.0, 170.0, 200.0));
+        h.push(hseg(30.0, 170.0, 150.0));
+        h.push(hseg(30.0, 170.0, 100.0));
+        // bottom table (wide, x 0..200) — its top edge (y=100) is the shared cut
+        h.push(hseg(0.0, 200.0, 100.0));
+        h.push(hseg(0.0, 200.0, 50.0));
+        h.push(hseg(0.0, 200.0, 0.0));
+        let mut v = Vec::new();
+        // top strip verticals (y 100..200): outer 30/170 + interior 70/120
+        v.push(vseg(100.0, 200.0, 30.0));
+        v.push(vseg(100.0, 200.0, 170.0));
+        v.push(vseg(100.0, 200.0, 70.0));
+        v.push(vseg(100.0, 200.0, 120.0));
+        // bottom verticals (y 0..100): outer 0/200 + interior 100
+        v.push(vseg(0.0, 100.0, 0.0));
+        v.push(vseg(0.0, 100.0, 200.0));
+        v.push(vseg(0.0, 100.0, 100.0));
+
+        // All lines are one connected component (strip verticals touch the wide
+        // boundary line), so two grids can only arise from the stacked split.
+        let groups = group_connected_lines(&h, &v);
+        assert_eq!(groups.len(), 1, "single connected group before splitting");
+
+        let grids = build_table_grids(&h, &v);
+        assert_eq!(grids.len(), 2, "stacked group split into two grids");
+        // Bands carry different column counts (strip 3 cols, bottom 2 cols).
+        let mut ncols: Vec<usize> = grids.iter().map(|g| g.col_xs.len()).collect();
+        ncols.sort_unstable();
+        assert_eq!(ncols, vec![3, 4], "strip 4 col-boundaries, bottom 3");
+    }
+
+    #[test]
+    fn single_table_is_not_split() {
+        // The plain 3×3 grid must stay a single grid (no spurious cut).
+        let (h, v) = simple_grid_lines();
+        assert_eq!(build_table_grids(&h, &v).len(), 1, "no false split on a plain grid");
     }
 }
