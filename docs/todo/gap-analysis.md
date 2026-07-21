@@ -1,7 +1,35 @@
 # Gap Analysis: markdown-media vs 레퍼런스 엔진
 
 > Reference: `reference/kkdoc/` (한국 문서 파서 레퍼런스, MIT)
-> Date: 2026-07-19
+> Date: 2026-07-19 · **Status updated: 2026-07-20**
+
+## ✅ 구현 완료 현황 (2026-07-20)
+
+**25개 갭 전부 해소 — master 머지 완료.** PR #4(wave-1+2), #5(기존 결함 정리), #6(남은 2갭).
+
+| 갭 | 구현 위치 | 갭 | 구현 위치 |
+|----|-----------|----|-----------|
+| 1 OCR | `core/src/ocr/` (ort ONNX) | 14 patch | `core/src/form/` `patch_hwpx` |
+| 2 MCP 22도구 | `packages/parser-py/mdm/mcp_server.py` | 15 HWP3 | `core/src/hwp3/` |
+| 3 HWPX 생성 | `core/src/hwpx_gen/` `markdown_to_hwpx` | 16 HWPML | `core/src/hwpml/` |
+| 4 양식 인식/채움 | `core/src/form/` | 17 XLS/BIFF8 | `core/src/xls.rs` (calamine) |
+| 5 diff 고도화 | `core/src/ir.rs` (moved·span 감지, 레퍼런스 초과) | 18 표 형식 프로필 | `core/src/hwpx_gen/profile.rs` |
+| 6 PII 마스킹 | `core/src/pii.rs` | 19 HWPX 검증 | `core/src/hwpx_gen/` `validate_hwpx` |
+| 7 PDF 테이블 이중감지 | `core/src/pdf/table_detect.rs` | 20 AI 클라이언트 설치 | `packages/parser-py/mdm/setup.py` |
+| 8 수식 HULK↔LaTeX | `core/src/equation/` | 21 공문서 린트 | `core/src/lint.rs` |
+| 9 차트 20종 | `core/src/hwpx_gen/chart.rs` | 22 감시 모드 | `core/src/watch.rs` |
+| 10 RAG 청킹 | `core/src/chunker.rs` (다단계 depth) | 23 도장 날인 | `core/src/form/seal.rs` |
+| 11 인쇄 렌더링 | `core/src/print/` (IR→HTML, printpdf) | 24 source map | `core/src/form/scan.rs` `build_range_splices` |
+| 12 HWPX 레이아웃 렌더러 | `core/src/hwpx_render/` (SVG, feature) | 25 배포용 복호화 | `core/src/hwp/crypto.rs` |
+| 13 공문서 프리셋 7종 | `core/src/hwpx_gen/` | | |
+
+**검증**: `RUSTFLAGS="-D warnings" cargo test` 그린(default + print-pdf/hwpx-render/watch), mypy Success, pytest 그린. 각 wave codex review 2~3R 통과.
+
+**MDM이 레퍼런스를 앞서게 된 부분**: IR diff의 moved-block 감지 + colspan/rowspan 셀 diff(레퍼런스에 없음).
+
+**후속 개선 후보(갭 아님, 선택)**: 한글 PDF 폰트 임베딩, OCR의 PDF 파이프라인 자동 연동(래스터라이저), docx/hwpx 파서의 IR List 마이그레이션(네이티브 depth 소스), wave-2 신규 렌더러/파서의 CLI 서브커맨드 배선.
+
+---
 
 ## 요약
 
@@ -155,4 +183,6 @@ Buffer → detectFormat() → format-specific parser → IRBlock[] → blocksToM
 
 ## 결론
 
-MDM은 **추출 파이프라인 성능**에서 Rust로 레퍼런스를 크게 앞서나, **기능 완성도**에서는 레퍼런스의 양방향·문서조작·AI연동 기능들이 대거 누락되어 있다. 특히 OCR / MCP 서버 / 양식처리 / diff / PII 마스킹 / 공문서 생성의 6개 영역이 핵심 갭이다. 레퍼런스 설계를 참고해 이 기능들을 Rust로 구현하면 MDM은 한국 문서 처리의 압도적 솔루션이 될 수 있다.
+MDM은 **추출 파이프라인 성능**에서 Rust로 레퍼런스를 크게 앞서나, **기능 완성도**에서는 레퍼런스의 양방향·문서조작·AI연동 기능들이 대거 누락되어 있었다. 특히 OCR / MCP 서버 / 양식처리 / diff / PII 마스킹 / 공문서 생성의 6개 영역이 핵심 갭이었다.
+
+**→ 2026-07-20 기준, 이 25개 갭을 전부 Rust로 구현·머지 완료했다** (상단 "구현 완료 현황" 참조). 레퍼런스의 양방향·문서조작·AI연동 기능을 흡수했고, IR diff의 moved/span 감지처럼 일부 영역은 오히려 레퍼런스를 앞선다. MDM은 이제 한국 문서 처리에서 성능(Rust)과 기능 완성도를 모두 갖춘 솔루션이다.
