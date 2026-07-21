@@ -31,6 +31,11 @@ pdf-out = ["print-pdf"]
 full = ["hwp", "hwpx", "pdf", "docx", "xls", "rtf", "epub", "image-processing", "heic", "docx-out", "pdf-out"]
 watch = ["dep:notify", "dep:url", "dep:ureq"]
 ocr = ["dep:ort", "dep:image"]
+# PDF -> OCR pipeline (core/src/pdf/pdf_ocr.rs `ocr_pdf`), rasterizing with
+# pdfium-render (needs a system libpdfium at runtime). Not part of default/full —
+# opt in explicitly. The injectable `ocr_pdf_with_rasterizer` path works under
+# plain `ocr` without this feature.
+ocr-pdf = ["ocr", "pdf", "dep:pdfium-render"]
 url-fetch = ["dep:ureq", "dep:htmd"]
 # HWPX layout-preserving SVG renderer (port of kkdoc src/render). roxmltree =
 # read-only DOM for section/header XML. PNG rasterization reuses the existing
@@ -64,6 +69,9 @@ lopdf = { version = "0.34", optional = true }
 # ONNX Runtime for the built-in OCR engine (feature = "ocr"). Downloads a
 # prebuilt onnxruntime binary at build time (download-binaries is on by default).
 ort = { version = "2.0.0-rc.10", optional = true }
+# PDF rasterizer for the OCR pipeline (feature = "ocr-pdf"). Links a system
+# libpdfium at runtime (no bundled binary) — see `ocr_pdf` in pdf/pdf_ocr.rs.
+pdfium-render = { version = "0.8", optional = true }
 quick-xml = "0.31"
 roxmltree = { version = "0.20", optional = true }
 thiserror = "2.0"

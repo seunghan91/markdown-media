@@ -158,6 +158,16 @@ pub fn ocr_image_impl(bytes: &[u8]) -> Result<Vec<OcrLine>> {
     guard.recognize_image(&img, w, h)
 }
 
+/// Decode raw RGBA bytes and recognize text lines. Used by the PDF OCR
+/// pipeline (`pdf::pdf_ocr`), which rasterizes pages itself and already has
+/// pixels rather than an encoded image.
+pub fn ocr_rgba_impl(rgba: &[u8], w: u32, h: u32) -> Result<Vec<OcrLine>> {
+    let mut guard = engine()?
+        .lock()
+        .map_err(|_| OcrError::Runtime("OCR engine mutex poisoned".into()))?;
+    guard.recognize_rgba(rgba, w, h)
+}
+
 #[cfg(test)]
 mod smoke {
     use super::*;

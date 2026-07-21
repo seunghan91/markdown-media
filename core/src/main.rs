@@ -16,7 +16,6 @@ mod chunker;
 mod legal;
 #[cfg(feature = "watch")]
 mod watch;
-#[cfg(feature = "ocr")]
 mod ocr;
 mod manifest;
 mod pdf;
@@ -461,6 +460,88 @@ enum Commands {
         #[arg(short, long, default_value = "hulk2latex")]
         direction: String,
     },
+
+    /// Render HWPX pages to layout-preserving SVG (or PNG).
+    ///
+    /// Writes one file per page (`<stem>-p001.svg`, ...) into the output
+    /// directory. Requires the `hwpx-render` feature (PNG needs
+    /// `hwpx-render-png`); without them a build note is printed.
+    ///
+    /// Example:
+    ///   hwp2mdm render document.hwpx -o ./pages
+    ///   hwp2mdm render document.hwpx --png --scale 3.0 -o ./pages
+    Render {
+        /// Input HWPX file
+        input: PathBuf,
+
+        /// Output directory for page images
+        #[arg(short, long, default_value = "./output")]
+        output: PathBuf,
+
+        /// Emit PNG instead of SVG (requires `hwpx-render-png` feature)
+        #[arg(long)]
+        png: bool,
+
+        /// PNG rasterization scale factor (only with --png)
+        #[arg(long, default_value = "2.0")]
+        scale: f32,
+
+        /// Tier-2 reflow — render files without a layout cache via synthetic typesetting
+        #[arg(long)]
+        reflow: bool,
+    },
+
+    /// Render Markdown (or any supported document) to print-ready HTML (or PDF).
+    ///
+    /// Converts the input to Markdown, then emits print HTML with the chosen
+    /// preset. `--pdf` emits a best-effort PDF instead (requires the
+    /// `print-pdf` feature; Latin-only glyphs — see the print module docs).
+    ///
+    /// Example:
+    ///   hwp2mdm print report.md -o report.html
+    ///   hwp2mdm print report.md --preset gov-formal --pdf -o report.pdf
+    Print {
+        /// Input file (Markdown, HWPX, PDF, DOCX, ...)
+        input: PathBuf,
+
+        /// Output file path (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Print preset: default, gov-formal, compact
+        #[arg(long, default_value = "default")]
+        preset: String,
+
+        /// Emit PDF instead of HTML (requires `print-pdf` feature)
+        #[arg(long)]
+        pdf: bool,
+    },
+
+    /// Extract a fillable-form schema from an HWPX file, or apply literal text patches.
+    ///
+    /// With `--extract` (default) prints the detected form schema as JSON.
+    /// With `--patch <FILE>` applies find→replace pairs (JSON object) to every
+    /// text run losslessly and writes the patched HWPX.
+    ///
+    /// Example:
+    ///   hwp2mdm form template.hwpx --extract
+    ///   hwp2mdm form template.hwpx --patch pairs.json -o filled.hwpx
+    Form {
+        /// Input HWPX file
+        input: PathBuf,
+
+        /// Print the form schema as JSON (default mode)
+        #[arg(long)]
+        extract: bool,
+
+        /// Apply literal find→replace patches from a JSON object file
+        #[arg(long, value_name = "FILE")]
+        patch: Option<PathBuf>,
+
+        /// Output file path for --patch (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -548,6 +629,15 @@ fn main() {
         }
         Some(Commands::Equation { input, direction }) => {
             cmd_equation(&input, &direction);
+        }
+        Some(Commands::Render { input, output, png, scale, reflow }) => {
+            cmd_render(&input, &output, png, scale, reflow);
+        }
+        Some(Commands::Print { input, output, preset, pdf }) => {
+            cmd_print(&input, output.as_deref(), &preset, pdf);
+        }
+        Some(Commands::Form { input, extract, patch, output }) => {
+            cmd_form(&input, extract, patch.as_deref(), output.as_deref());
         }
         None => {
             // Quick conversion mode
@@ -862,6 +952,13 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
         convert_txt(input, output, format, verbose);
         return;
     }
+    // Raw HWPML exports (.hml / .hwpml). Handled here in addition to the
+    // `<?xml` magic-byte path below, so BOM-prefixed or oddly-encoded files that
+    // miss the magic check still route to the HWPML parser by extension.
+    if ext.eq_ignore_ascii_case("hml") || ext.eq_ignore_ascii_case("hwpml") {
+        convert_hwpml(input, output, format, verbose);
+        return;
+    }
 
     // Neither ZIP nor PDF nor CFB → unknown
     // Detect known unsupported formats with friendly messages BEFORE the
@@ -1031,19 +1128,46 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
 }
 
 fn convert_hwpml(input: &Path, output: &Path, format: &str, verbose: bool) {
-    let xml = match fs::read_to_string(input) {
-        Ok(xml) => xml,
+    let bytes = match fs::read(input) {
+        Ok(b) => b,
         Err(e) => {
             eprintln!("\u{274c} Error reading XML file: {}", e);
             return;
         }
     };
 
-    let (version, title, content, sections) = match parse_hwpml(&xml) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            eprintln!("\u{274c} Error parsing HWPML: {}", e);
-            return;
+    // Section count is display-only metadata. Decode with the same BOM strategy
+    // as the lib parser (`decode_hwpml_bytes`) before counting `<SECTION`: a raw
+    // `from_utf8_lossy` mangles UTF-16 (NUL between ASCII bytes) so the tag never
+    // matches and multi-section UTF-16 docs would mis-report `sections: 1`.
+    // UTF-8/EUC-KR keep the ASCII tag bytes literal, so lossy is fine for those.
+    let decoded_for_count = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        encoding_rs::UTF_16LE.decode(&bytes[2..]).0.into_owned()
+    } else if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        encoding_rs::UTF_16BE.decode(&bytes[2..]).0.into_owned()
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let sections = decoded_for_count.matches("<SECTION").count().max(1);
+
+    // Prefer the library's full HWPML parser (headings/tables/encoding) over the
+    // bin-local paragraph-only `parse_hwpml`; fall back to it on parser error so
+    // malformed inputs still degrade gracefully rather than producing nothing.
+    let (version, title, content) = match mdm_core::hwpml::parse_hwpml_document(&bytes) {
+        Ok(doc) => (
+            doc.metadata.version.unwrap_or_else(|| "unknown".to_string()),
+            doc.metadata.title.unwrap_or_default(),
+            doc.markdown,
+        ),
+        Err(lib_err) => {
+            let xml = String::from_utf8_lossy(&bytes);
+            match parse_hwpml(&xml) {
+                Ok((version, title, content, _)) => (version, title, content),
+                Err(e) => {
+                    eprintln!("\u{274c} Error parsing HWPML: {} (lib: {})", e, lib_err);
+                    return;
+                }
+            }
         }
     };
 
@@ -1412,7 +1536,40 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
 
                     // OCR: if enabled and available, run OCR on image-heavy pages
                     let ocr_text = if ocr && ocr_available() {
-                        let ocr_parts: Vec<String> = Vec::new();
+                        // `mut` is only exercised when an OCR path is compiled
+                        // in (`ocr` fallback loop or `ocr-pdf` branch push); under
+                        // default features nothing pushes, so allow unused_mut.
+                        #[allow(unused_mut)]
+                        let mut ocr_parts: Vec<String> = Vec::new();
+
+                        // Full-page rasterization OCR for scanned PDFs — rasters
+                        // the whole page, catching scans with no embedded image
+                        // XObjects. Opt-in via `ocr-pdf` (needs system libpdfium).
+                        #[cfg(feature = "ocr-pdf")]
+                        {
+                            let pdf_bytes = fs::read(input).unwrap_or_default();
+                            let opts = pdf::pdf_ocr::OcrPdfOptions { render_scale: 3.0, pages: None };
+                            match pdf::pdf_ocr::ocr_pdf(&pdf_bytes, &opts) {
+                                Ok(pages) => {
+                                    for page in &pages {
+                                        if !page.text.trim().is_empty() {
+                                            ocr_parts.push(format!(
+                                                "## Page {} (OCR)\n\n{}\n",
+                                                page.page, page.text
+                                            ));
+                                        }
+                                    }
+                                }
+                                Err(e) => eprintln!(
+                                    "  \u{26a0}\u{fe0f}  OCR-PDF rasterization failed: {}",
+                                    e
+                                ),
+                            }
+                        }
+
+                        // Fallback (ocr-pdf off): OCR embedded image XObjects on
+                        // text-sparse pages, preserving the original behavior.
+                        #[cfg(not(feature = "ocr-pdf"))]
                         for img in &doc.images {
                             let empty = String::new();
                             let page_text = doc.pages.iter()
@@ -2824,6 +2981,44 @@ fn markdown_to_ir_blocks(md: &str) -> Vec<ir::IRBlock> {
                 !t.is_empty() && t.chars().all(|ch| ch == '-' || ch == ':')
             })
     }
+    // docx's list renderer (`docx::Paragraph::to_markdown`) emits ordered
+    // markers this parser's plain "N. "/"N) " check above doesn't cover:
+    // single-letter markers ("a) "/"A) ", or Korean ganada/chosung markers
+    // like "가) "/"ㄱ) " — see `docx::ganada_marker`/`chosung_marker`) and
+    // roman-numeral markers ("i. "/"I. "). Word's default multilevel list
+    // style nests exactly decimal → lowerLetter → lowerRoman, so without
+    // this, every level below the first breaks out of the list block and
+    // loses its `depth`. Returns the marker's byte length (so callers can
+    // strip it) when `line` starts with one of these forms.
+    fn docx_ordered_marker_len(line: &str) -> Option<usize> {
+        let mut chars = line.chars();
+        let first = chars.next()?;
+        let rest = chars.as_str();
+
+        // Single letter (ASCII or Korean ganada/chosung) + ") ".
+        if first.is_alphabetic() && rest.starts_with(") ") {
+            return Some(first.len_utf8() + 2);
+        }
+
+        // Roman numeral run (one case only) + ". ".
+        const LOWER_ROMAN: &[char] = &['i', 'v', 'x', 'l', 'c', 'd', 'm'];
+        const UPPER_ROMAN: &[char] = &['I', 'V', 'X', 'L', 'C', 'D', 'M'];
+        let roman_set: &[char] = if LOWER_ROMAN.contains(&first) {
+            LOWER_ROMAN
+        } else if UPPER_ROMAN.contains(&first) {
+            UPPER_ROMAN
+        } else {
+            return None;
+        };
+        let roman_len: usize = line.chars()
+            .take_while(|c| roman_set.contains(c))
+            .map(|c| c.len_utf8())
+            .sum();
+        if line[roman_len..].starts_with(". ") {
+            return Some(roman_len + 2);
+        }
+        None
+    }
     // Some(true)=ordered, Some(false)=unordered, None=not a list item.
     fn list_marker(line: &str) -> Option<bool> {
         if let Some(rest) = line.strip_prefix(|c| c == '-' || c == '*' || c == '+') {
@@ -2838,6 +3033,9 @@ fn markdown_to_ir_blocks(md: &str) -> Vec<ir::IRBlock> {
                 return Some(true);
             }
         }
+        if docx_ordered_marker_len(line).is_some() {
+            return Some(true);
+        }
         None
     }
     fn strip_list_marker(line: &str) -> String {
@@ -2850,6 +3048,9 @@ fn markdown_to_ir_blocks(md: &str) -> Vec<ir::IRBlock> {
             if after.starts_with('.') || after.starts_with(')') {
                 return after[1..].trim_start().to_string();
             }
+        }
+        if let Some(marker_len) = docx_ordered_marker_len(line) {
+            return line[marker_len..].trim_start().to_string();
         }
         line.to_string()
     }
@@ -3092,6 +3293,169 @@ fn cmd_fill(input: &Path, values_path: Option<&Path>, output: Option<&Path>, dry
             }
         }
         Err(e) => eprintln!("\u{274c} Fill failed: {}", e),
+    }
+}
+
+/// `render` — HWPX → per-page SVG (or PNG) via the layout-preserving renderer.
+fn cmd_render(input: &Path, output: &Path, png: bool, scale: f32, reflow: bool) {
+    let bytes = match fs::read(input) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", input.display(), e); std::process::exit(1); }
+    };
+
+    #[cfg(feature = "hwpx-render")]
+    {
+        let mut opts = mdm_core::hwpx_render::RenderOptions::default();
+        opts.reflow = reflow;
+        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+
+        if png {
+            #[cfg(feature = "hwpx-render-png")]
+            {
+                match mdm_core::hwpx_render::render_hwpx_png(&bytes, &opts, scale) {
+                    Ok(pages) => {
+                        fs::create_dir_all(output).expect("Failed to create output directory");
+                        for (i, page) in pages.iter().enumerate() {
+                            let path = output.join(format!("{}-p{:03}.png", stem, i + 1));
+                            fs::write(&path, page).expect("Failed to write PNG");
+                            println!("  \u{2713} Created: {}", path.display());
+                        }
+                        println!("\u{2705} Rendered {} page(s) to PNG.", pages.len());
+                    }
+                    Err(e) => { eprintln!("\u{274c} Render failed: {}", e); std::process::exit(1); }
+                }
+            }
+            #[cfg(not(feature = "hwpx-render-png"))]
+            {
+                let _ = scale;
+                eprintln!("\u{26a0}\u{fe0f}  PNG output requires the `hwpx-render-png` feature.");
+                eprintln!("   Rebuild with: cargo build --features hwpx-render-png");
+                std::process::exit(1);
+            }
+        } else {
+            match mdm_core::hwpx_render::render_hwpx_svg(&bytes, &opts) {
+                Ok(pages) => {
+                    fs::create_dir_all(output).expect("Failed to create output directory");
+                    for (i, page) in pages.iter().enumerate() {
+                        let path = output.join(format!("{}-p{:03}.svg", stem, i + 1));
+                        fs::write(&path, page).expect("Failed to write SVG");
+                        println!("  \u{2713} Created: {}", path.display());
+                    }
+                    println!("\u{2705} Rendered {} page(s) to SVG.", pages.len());
+                }
+                Err(e) => { eprintln!("\u{274c} Render failed: {}", e); std::process::exit(1); }
+            }
+        }
+    }
+    #[cfg(not(feature = "hwpx-render"))]
+    {
+        let _ = (bytes, output, png, scale, reflow);
+        eprintln!("\u{26a0}\u{fe0f}  The `render` command requires the `hwpx-render` feature.");
+        eprintln!("   Rebuild with: cargo build --features hwpx-render (add hwpx-render-png for --png)");
+        std::process::exit(1);
+    }
+}
+
+/// `print` — Markdown/any document → print-ready HTML (or PDF with `--pdf`).
+fn cmd_print(input: &Path, output: Option<&Path>, preset: &str, pdf: bool) {
+    let md = match input_to_text(input) {
+        Some(t) => t,
+        None => { eprintln!("\u{274c} Failed to read {}", input.display()); std::process::exit(1); }
+    };
+
+    let mut opts = mdm_core::print::RenderOptions::default();
+    opts.preset = match preset.to_ascii_lowercase().as_str() {
+        "gov-formal" | "govformal" | "gov" => mdm_core::print::PrintPreset::GovFormal,
+        "compact" => mdm_core::print::PrintPreset::Compact,
+        "default" => mdm_core::print::PrintPreset::Default,
+        other => {
+            eprintln!("\u{26a0}\u{fe0f}  Unknown preset '{}', using 'default'. (default | gov-formal | compact)", other);
+            mdm_core::print::PrintPreset::Default
+        }
+    };
+
+    if pdf {
+        #[cfg(feature = "print-pdf")]
+        {
+            let blocks = mdm_core::print::markdown_to_ir(&md);
+            match mdm_core::print::render_ir_to_pdf(&blocks, &opts) {
+                Ok(bytes) => {
+                    if let Some(out) = output {
+                        fs::write(out, &bytes).expect("Failed to write PDF");
+                        println!("\u{2705} Wrote PDF: {} ({} bytes)", out.display(), bytes.len());
+                    } else {
+                        io::stdout().write_all(&bytes).ok();
+                    }
+                }
+                Err(e) => { eprintln!("\u{274c} PDF render failed: {}", e); std::process::exit(1); }
+            }
+        }
+        #[cfg(not(feature = "print-pdf"))]
+        {
+            eprintln!("\u{26a0}\u{fe0f}  PDF output requires the `print-pdf` feature.");
+            eprintln!("   Rebuild with: cargo build --features print-pdf");
+            std::process::exit(1);
+        }
+    } else {
+        let html = mdm_core::print::render_markdown_to_html(&md, &opts);
+        if let Some(out) = output {
+            fs::write(out, &html).expect("Failed to write HTML");
+            println!("\u{2705} Wrote HTML: {} ({} bytes)", out.display(), html.len());
+        } else {
+            println!("{}", html);
+        }
+    }
+}
+
+/// `form` — extract a fillable-form schema as JSON, or apply literal patches.
+fn cmd_form(input: &Path, extract: bool, patch: Option<&Path>, output: Option<&Path>) {
+    let bytes = match fs::read(input) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", input.display(), e); std::process::exit(1); }
+    };
+
+    if let Some(patch_path) = patch {
+        // Patch mode: JSON object of find→replace string pairs.
+        let json: serde_json::Value = match fs::read_to_string(patch_path) {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(v) => v,
+                Err(e) => { eprintln!("\u{274c} Invalid patch JSON: {}", e); std::process::exit(1); }
+            },
+            Err(e) => { eprintln!("\u{274c} Failed to read {}: {}", patch_path.display(), e); std::process::exit(1); }
+        };
+        let replacements: Vec<(String, String)> = json
+            .as_object()
+            .map(|obj| obj.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+            .unwrap_or_default();
+        if replacements.is_empty() {
+            eprintln!("\u{274c} No find\u{2192}replace pairs found in {}", patch_path.display());
+            std::process::exit(1);
+        }
+        match form::patch_hwpx(&bytes, &replacements) {
+            Ok(result) => {
+                if let Some(out) = output {
+                    // Surface write failures (unwritable path, missing parent
+                    // dir) instead of printing success with no file on disk.
+                    if let Err(e) = fs::write(out, &result.buffer) {
+                        eprintln!("\u{274c} Failed to write {}: {}", out.display(), e);
+                        std::process::exit(1);
+                    }
+                    println!("\u{2705} Patched {} run(s): {} ({} bytes)", result.replaced, out.display(), result.buffer.len());
+                } else if let Err(e) = io::stdout().write_all(&result.buffer) {
+                    eprintln!("\u{274c} Failed to write patched output: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => { eprintln!("\u{274c} Patch failed: {}", e); std::process::exit(1); }
+        }
+        return;
+    }
+
+    // Extract mode (default): print the form schema as JSON.
+    let _ = extract;
+    match form::form_schema_json(&bytes) {
+        Ok(json) => println!("{}", json),
+        Err(e) => { eprintln!("\u{274c} Form extraction failed: {}", e); std::process::exit(1); }
     }
 }
 
@@ -3432,5 +3796,55 @@ mod md_ir_tests {
         let md = "a | b | c\n--- | ---\n";
         let blocks = markdown_to_ir_blocks(md);
         assert_eq!(table_count(&blocks), 0);
+    }
+
+    fn list_items(blocks: &[ir::IRBlock]) -> &[ir::ListItem] {
+        blocks.iter()
+            .find_map(|b| match b {
+                ir::IRBlock::List { items, .. } => Some(items.as_slice()),
+                _ => None,
+            })
+            .expect("expected an IRBlock::List")
+    }
+
+    #[test]
+    fn md_ir_docx_bullet_indent_becomes_depth() {
+        // docx::Paragraph::to_markdown indents nested list items with two
+        // spaces per numPr ilvl — confirm the round trip back into IRBlock::List.
+        let md = "- top\n  - nested\n    - deeper\n";
+        let blocks = markdown_to_ir_blocks(md);
+        let items = list_items(&blocks);
+        assert_eq!(items.iter().map(|i| i.depth).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(items[1].text, "nested");
+    }
+
+    #[test]
+    fn md_ir_docx_multilevel_word_default_list_keeps_depth() {
+        // Word's default multilevel numbering nests decimal -> lowerLetter ->
+        // lowerRoman, which is exactly what docx::Paragraph::to_markdown emits
+        // for list_type "decimal"/"lowerLetter"/"lowerRoman". Before recognizing
+        // these markers, level 1+ broke out of the list block entirely and lost
+        // its depth (and list-ness).
+        let md = "1. top\n  a) nested\n    i. deeper\n";
+        let blocks = markdown_to_ir_blocks(md);
+        let items = list_items(&blocks);
+        assert_eq!(items.len(), 3, "lettered/roman levels must stay inside the list block");
+        assert_eq!(items.iter().map(|i| i.depth).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(items[1].text, "nested");
+        assert_eq!(items[2].text, "deeper");
+    }
+
+    #[test]
+    fn md_ir_docx_ganada_and_chosung_markers_keep_depth() {
+        // docx::ganada_marker / chosung_marker output ("가) ", "ㄱ) ") for
+        // Korean-numbered lists.
+        let md = "가) 항목\n  ㄱ) 하위\n";
+        let blocks = markdown_to_ir_blocks(md);
+        let items = list_items(&blocks);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].depth, 0);
+        assert_eq!(items[1].depth, 1);
+        assert_eq!(items[0].text, "항목");
+        assert_eq!(items[1].text, "하위");
     }
 }

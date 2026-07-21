@@ -93,3 +93,21 @@ pub fn ocr_image(bytes: &[u8]) -> Result<Vec<OcrLine>> {
         Err(OcrError::FeatureDisabled)
     }
 }
+
+/// Recognize text lines directly from decoded RGBA pixels (top-left origin,
+/// row-major, `len == w * h * 4`). Used by the PDF OCR pipeline
+/// (`pdf::pdf_ocr`), which rasterizes pages itself and has no encoded image
+/// bytes to hand to [`ocr_image`].
+///
+/// Without the `ocr` feature this returns [`OcrError::FeatureDisabled`].
+pub fn ocr_rgba(rgba: &[u8], w: u32, h: u32) -> Result<Vec<OcrLine>> {
+    #[cfg(feature = "ocr")]
+    {
+        engine::ocr_rgba_impl(rgba, w, h)
+    }
+    #[cfg(not(feature = "ocr"))]
+    {
+        let _ = (rgba, w, h);
+        Err(OcrError::FeatureDisabled)
+    }
+}

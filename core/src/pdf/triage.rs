@@ -708,17 +708,32 @@ pub fn stage1(
     }
 }
 
-fn page_media_box_wh(doc: &Document, page_id: ObjectId) -> Option<(f64, f64)> {
-    let page = doc.get_object(page_id).ok()?.as_dict().ok()?;
-    let mb = page.get(b"MediaBox").ok()?.as_array().ok()?;
-    if mb.len() < 4 {
-        return None;
+/// `MediaBox` is an inheritable page attribute (PDF 32000-1 §7.7.3.4) — many
+/// valid documents set it once on a `Pages` node and never repeat it on leaf
+/// pages. Walk `Parent` until a `MediaBox` is found; a cycle guard covers
+/// malformed documents with a `Parent` loop.
+pub(crate) fn page_media_box_wh(doc: &Document, page_id: ObjectId) -> Option<(f64, f64)> {
+    let mut current = page_id;
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let dict = doc.get_object(current).ok()?.as_dict().ok()?;
+        if let Ok(mb) = dict.get(b"MediaBox").and_then(Object::as_array) {
+            if mb.len() >= 4 {
+                let llx = read_num(&mb[0])?;
+                let lly = read_num(&mb[1])?;
+                let urx = read_num(&mb[2])?;
+                let ury = read_num(&mb[3])?;
+                return Some(((urx - llx).abs(), (ury - lly).abs()));
+            }
+        }
+        match dict.get(b"Parent") {
+            Ok(Object::Reference(parent_id)) => current = *parent_id,
+            _ => return None,
+        }
     }
-    let llx = read_num(&mb[0])?;
-    let lly = read_num(&mb[1])?;
-    let urx = read_num(&mb[2])?;
-    let ury = read_num(&mb[3])?;
-    Some(((urx - llx).abs(), (ury - lly).abs()))
 }
 
 fn classify_stage1(text_cov: f32, image_cov: f32, cfg: &TriageConfig) -> (PdfCategory, f32) {
@@ -792,6 +807,40 @@ pub fn build_manifest(document: &str, triage: &[PageTriage]) -> OcrRoutingManife
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::dictionary;
+
+    #[test]
+    fn page_media_box_wh_walks_parent_inheritance() {
+        // MediaBox is an inheritable attribute (PDF 32000-1 §7.7.3.4) — set
+        // only on the Pages ancestor, never repeated on the leaf Page. Many
+        // real-world PDFs are authored this way.
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+        });
+        let pages = dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page_id.into()],
+            "Count" => 1,
+            "MediaBox" => vec![0.into(), 0.into(), 600.into(), 800.into()],
+        };
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+
+        let wh = page_media_box_wh(&doc, page_id);
+        assert_eq!(wh, Some((600.0, 800.0)));
+    }
+
+    #[test]
+    fn page_media_box_wh_parent_cycle_returns_none_not_infinite_loop() {
+        let mut doc = Document::with_version("1.5");
+        let page_id = doc.new_object_id();
+        // Parent points back to itself — malformed, must terminate via the
+        // visited-set guard instead of looping forever.
+        doc.objects.insert(page_id, Object::Dictionary(dictionary! { "Type" => "Page", "Parent" => page_id }));
+        assert_eq!(page_media_box_wh(&doc, page_id), None);
+    }
 
     #[test]
     fn default_config_matches_toml() {
