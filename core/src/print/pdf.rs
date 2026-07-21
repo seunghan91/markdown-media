@@ -15,16 +15,41 @@
 //! budget, no wrapping) but operates on structured `IRBlock`s instead of
 //! raw Markdown lines, so headings/tables/lists get distinct treatment.
 //!
+//! # Korean/CJK fonts
+//!
+//! Korean text renders when a CJK-capable TrueType/OpenType font is
+//! available at render time: it is parsed with [`printpdf::ParsedFont`],
+//! registered via [`PdfDocument::add_font`], and selected with
+//! `PdfFontHandle::External` so `printpdf` subsets and embeds it (see
+//! [`resolve_font_bytes`] for the search strategy). When no font resolves,
+//! this path degrades gracefully to the 14 Latin-1 [`BuiltinFont`]s — Latin
+//! text still renders, Hangul comes out as `?` — without panicking.
+//!
+//! Font resolution order (first hit wins):
+//!   1. `MDM_PDF_FONT` env var — an explicit font file path, authoritative
+//!      (no system search; used as-is or falls straight through to Latin).
+//!   2. System search over an **open-license allowlist** ([`OPEN_CJK_FONTS`]:
+//!      Nanum / Noto CJK-KR / Source Han, all SIL OFL 1.1) across
+//!      `$CARGO_MANIFEST_DIR/assets/fonts` (gitignored), `$MDM_PDF_FONT_DIR`,
+//!      user font dirs, and the standard macOS/Linux font directories.
+//!   3. With `MDM_PDF_ALLOW_SYSTEM_FONTS` set, the allowlist is dropped and
+//!      the first Hangul-covering system font (e.g. Apple SD Gothic Neo) is
+//!      embedded — **opt-in** because embedding proprietary system fonts into
+//!      a redistributed PDF is a licensing decision the caller must own; a
+//!      warning naming the font is logged.
+//!
+//! We deliberately do **not** auto-embed proprietary system fonts by default,
+//! and never commit font binaries to the repo (`assets/` is gitignored); an
+//! optional `scripts/download-fonts.sh` fetches Nanum Gothic (OFL) locally.
+//!
 //! # Known limitations (best-effort, see the porting brief's "한계는
 //! 보고서에 명시" requirement)
 //!
-//! - **No Korean/CJK glyph support.** `printpdf::BuiltinFont` covers only
-//!   the 14 standard PDF fonts (Helvetica/Times/Courier — Latin-1). Since
-//!   HWP/HWPX source documents are overwhelmingly Korean, this PDF path is
-//!   only useful for Latin-script content or as a rough layout preview
-//!   until an embedded Korean TTF is wired in via `printpdf`'s
-//!   `PdfDocument::add_font`. [`super::render_ir_to_html`] has no such
-//!   limitation.
+//! - **Bold/italic/monospace collapse under an embedded font.** When a single
+//!   CJK font is embedded, all four logical roles (regular/bold/italic/mono)
+//!   map to it — headings lose their bold weight and table cells lose the
+//!   Courier monospace, because `BuiltinFont::Courier` cannot render Hangul.
+//!   The Latin fallback keeps the four distinct builtins.
 //! - **No text wrapping.** A long paragraph/cell runs past the right
 //!   margin instead of wrapping — matches `crate::gen_pdf`'s existing
 //!   fixed-budget approach rather than introducing a new line-breaking
@@ -41,11 +66,12 @@
 //!   channel, so this approximates kordoc's `rgba(0,0,0,0.08)` with a
 //!   light solid gray instead of true transparency.
 
-use std::io;
+use std::path::{Path, PathBuf};
+use std::{env, fs, io};
 
 use printpdf::{
-    BuiltinFont, Color, Line, LinePoint, Mm, Op, PdfDocument, PdfFontHandle, PdfPage,
-    PdfSaveOptions, Point, Pt, Rgb, TextItem, TextMatrix,
+    BuiltinFont, Color, FontId, Line, LinePoint, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle,
+    PdfPage, PdfSaveOptions, Point, Pt, Rgb, TextItem, TextMatrix,
 };
 
 use crate::ir::IRBlock;
@@ -54,6 +80,190 @@ use super::renderer::{default_margin, Orientation, PageSize, RenderOptions};
 
 const GRAY: (f32, f32, f32) = (0.55, 0.55, 0.55);
 const BLACK: (f32, f32, f32) = (0.05, 0.05, 0.05);
+
+/// Filename fragments of the open-license CJK fonts we are willing to embed
+/// automatically. All are SIL Open Font License 1.1: Nanum (Naver),
+/// Noto Sans/Serif CJK-KR (Google), Source Han Sans/Serif (Adobe). Matching
+/// is by substring so weight/style variants (`NanumGothicBold`, …) also hit.
+/// Proprietary system fonts are intentionally excluded here (see the module
+/// doc comment's licensing note); `MDM_PDF_ALLOW_SYSTEM_FONTS` overrides.
+const OPEN_CJK_FONTS: &[&str] = &[
+    "NanumGothic",
+    "NanumMyeongjo",
+    "NanumBarunGothic",
+    "NanumSquare",
+    "NotoSansKR",
+    "NotoSansCJK",
+    "NotoSerifKR",
+    "NotoSerifCJK",
+    "SourceHanSans",
+    "SourceHanSerif",
+];
+
+/// A resolved font for one logical text role: either one of the 14 builtin
+/// Latin-1 fonts, or an embedded font registered on the [`PdfDocument`].
+#[derive(Clone)]
+enum FontRef {
+    Builtin(BuiltinFont),
+    Embedded(FontId),
+}
+
+impl FontRef {
+    fn handle(&self) -> PdfFontHandle {
+        match self {
+            FontRef::Builtin(f) => PdfFontHandle::Builtin(*f),
+            FontRef::Embedded(id) => PdfFontHandle::External(id.clone()),
+        }
+    }
+}
+
+/// The four logical text roles this renderer draws with. When a CJK font is
+/// embedded, every role points at the same embedded handle (bold/italic/mono
+/// distinctions are lost — see the module doc comment); otherwise each role
+/// keeps its distinct [`BuiltinFont`].
+struct FontSet {
+    regular: FontRef,
+    bold: FontRef,
+    italic: FontRef,
+    mono: FontRef,
+}
+
+impl FontSet {
+    /// The Latin-1 builtin fallback: no embedding, four distinct fonts.
+    fn latin_fallback() -> Self {
+        FontSet {
+            regular: FontRef::Builtin(BuiltinFont::Helvetica),
+            bold: FontRef::Builtin(BuiltinFont::HelveticaBold),
+            italic: FontRef::Builtin(BuiltinFont::HelveticaOblique),
+            mono: FontRef::Builtin(BuiltinFont::Courier),
+        }
+    }
+}
+
+/// Directories searched for CJK fonts, in priority order. Bundled/downloaded
+/// fonts under the crate's (gitignored) `assets/fonts` win over system ones.
+fn font_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts")];
+    if let Some(dir) = env::var_os("MDM_PDF_FONT_DIR") {
+        dirs.push(PathBuf::from(dir));
+    }
+    if let Some(home) = env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join("Library/Fonts")); // macOS user
+        dirs.push(home.join(".fonts")); // Linux user (legacy)
+        dirs.push(home.join(".local/share/fonts")); // Linux user (XDG)
+    }
+    for p in [
+        "/Library/Fonts",
+        "/System/Library/Fonts",
+        "/System/Library/Fonts/Supplemental",
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+    ] {
+        dirs.push(PathBuf::from(p));
+    }
+    dirs
+}
+
+/// Collects `*.ttf|otf|ttc` files under `dir` up to `max_depth` levels deep
+/// (Linux packagers nest fonts under `truetype/nanum/…`). Bounded so a huge
+/// system font tree can't turn resolution into a full-disk walk.
+fn collect_font_files(dir: &Path, max_depth: u32, out: &mut Vec<PathBuf>) {
+    if max_depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_font_files(&path, max_depth - 1, out);
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc") {
+                out.push(path);
+            }
+        }
+    }
+}
+
+/// Resolves the bytes of a CJK-capable font to embed, or `None` to fall back
+/// to Latin builtins. See the module doc comment for the full policy. Never
+/// panics — every failure path logs and degrades. Returns `(display_name,
+/// bytes)` so callers can log which font was chosen.
+fn resolve_font_bytes() -> Option<(String, Vec<u8>)> {
+    // 1. Explicit override wins and is authoritative — if it fails to read we
+    //    go straight to Latin fallback rather than scanning the system, so a
+    //    caller (or test) can force a deterministic outcome.
+    if let Ok(p) = env::var("MDM_PDF_FONT") {
+        let p = p.trim().to_string();
+        if !p.is_empty() {
+            return match fs::read(&p) {
+                Ok(bytes) => Some((p, bytes)),
+                Err(e) => {
+                    eprintln!("[print-pdf] MDM_PDF_FONT '{p}' 읽기 실패 ({e}) — 라틴 폴백");
+                    None
+                }
+            };
+        }
+    }
+
+    let allow_system = env::var_os("MDM_PDF_ALLOW_SYSTEM_FONTS").is_some();
+    for dir in font_search_dirs() {
+        let mut files = Vec::new();
+        collect_font_files(&dir, 3, &mut files);
+        files.sort();
+        for path in files {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let is_open = OPEN_CJK_FONTS.iter().any(|frag| name.contains(frag));
+            if !is_open && !allow_system {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            if is_open {
+                return Some((path.display().to_string(), bytes));
+            }
+            // allow_system: only accept a font that actually covers Hangul
+            // (U+AC00 '가'), and warn that its redistribution license is the
+            // caller's responsibility.
+            let mut warnings = Vec::new();
+            if let Some(parsed) = ParsedFont::from_bytes(&bytes, 0, &mut warnings) {
+                if parsed.lookup_glyph_index(0xAC00).is_some() {
+                    eprintln!(
+                        "[print-pdf] 시스템 폰트 '{}' 임베딩 — 재배포 라이선스는 호출자 책임 \
+                         (MDM_PDF_ALLOW_SYSTEM_FONTS)",
+                        path.display()
+                    );
+                    return Some((path.display().to_string(), bytes));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolves fonts and registers any embedded font on `doc`, returning the
+/// role→handle mapping the layout draws with. Falls back to Latin builtins
+/// when no CJK font resolves or parsing fails — never panics.
+fn build_font_set(doc: &mut PdfDocument) -> FontSet {
+    let Some((name, bytes)) = resolve_font_bytes() else {
+        return FontSet::latin_fallback();
+    };
+    let mut warnings = Vec::new();
+    let Some(parsed) = ParsedFont::from_bytes(&bytes, 0, &mut warnings) else {
+        eprintln!("[print-pdf] 폰트 '{name}' 파싱 실패 — 라틴 폴백");
+        return FontSet::latin_fallback();
+    };
+    let font = FontRef::Embedded(doc.add_font(&parsed));
+    FontSet {
+        regular: font.clone(),
+        bold: font.clone(),
+        italic: font.clone(),
+        mono: font,
+    }
+}
 
 fn rgb(c: (f32, f32, f32)) -> Color {
     Color::Rgb(Rgb {
@@ -127,6 +337,7 @@ struct Layout {
     content_top: f32,
     content_bottom: f32,
     sizes: [f32; 5],
+    fonts: FontSet,
 }
 
 impl Layout {
@@ -154,7 +365,7 @@ impl Layout {
         pages: &mut Vec<Vec<Op>>,
         text: &str,
         size_pt: f32,
-        font: BuiltinFont,
+        font: &FontRef,
         color: (f32, f32, f32),
     ) {
         let lh = Self::line_height(size_pt);
@@ -165,7 +376,7 @@ impl Layout {
                 pos: Point::new(Mm(self.content_left), Mm(page.y)),
             },
             Op::SetFont {
-                font: PdfFontHandle::Builtin(font),
+                font: font.handle(),
                 size: Pt(size_pt),
             },
             Op::SetFillColor { col: rgb(color) },
@@ -210,13 +421,13 @@ impl Layout {
         match block {
             IRBlock::Paragraph { text, footnote, href } => {
                 for line in text.lines() {
-                    self.text_line(page, pages, line, body, BuiltinFont::Helvetica, BLACK);
+                    self.text_line(page, pages, line, body, &self.fonts.regular, BLACK);
                 }
                 if let Some(url) = href {
-                    self.text_line(page, pages, url, body * 0.85, BuiltinFont::Helvetica, GRAY);
+                    self.text_line(page, pages, url, body * 0.85, &self.fonts.regular, GRAY);
                 }
                 if let Some(note) = footnote {
-                    self.text_line(page, pages, note, body * 0.85, BuiltinFont::HelveticaOblique, GRAY);
+                    self.text_line(page, pages, note, body * 0.85, &self.fonts.italic, GRAY);
                 }
             }
             IRBlock::Heading { level, text } => {
@@ -226,7 +437,7 @@ impl Layout {
                     3 => h3,
                     _ => h_rest,
                 };
-                self.text_line(page, pages, text, size, BuiltinFont::HelveticaBold, BLACK);
+                self.text_line(page, pages, text, size, &self.fonts.bold, BLACK);
             }
             IRBlock::Table(table) => {
                 for row in &table.cells {
@@ -235,7 +446,7 @@ impl Layout {
                         .map(|c| c.text.replace('\n', " "))
                         .collect::<Vec<_>>()
                         .join(" | ");
-                    self.text_line(page, pages, &line, body * 0.85, BuiltinFont::Courier, BLACK);
+                    self.text_line(page, pages, &line, body * 0.85, &self.fonts.mono, BLACK);
                 }
             }
             IRBlock::List { ordered, items } => {
@@ -256,7 +467,7 @@ impl Layout {
                         pages,
                         &format!("{indent}{prefix}{}", item.text),
                         body,
-                        BuiltinFont::Helvetica,
+                        &self.fonts.regular,
                         BLACK,
                     );
                 }
@@ -267,7 +478,7 @@ impl Layout {
                     pages,
                     &format!("[이미지: {alt}]"),
                     body * 0.85,
-                    BuiltinFont::HelveticaOblique,
+                    &self.fonts.italic,
                     GRAY,
                 );
             }
@@ -292,12 +503,17 @@ pub fn render_ir_to_pdf(blocks: &[IRBlock], options: &RenderOptions) -> io::Resu
     let margin_left = parse_mm(&margin.left);
     let margin_right = parse_mm(&margin.right);
 
+    // Register any embedded CJK font before laying out, so the produced ops
+    // can reference its `FontId`. `doc` owns the parsed font for the life of
+    // the render.
+    let mut doc = PdfDocument::new("MDM Print Document");
     let layout = Layout {
         content_left: margin_left,
         content_right: width_mm - margin_right,
         content_top: height_mm - margin_top,
         content_bottom: margin_bottom,
         sizes: preset_sizes(options.preset),
+        fonts: build_font_set(&mut doc),
     };
 
     let mut pages: Vec<Vec<Op>> = Vec::new();
@@ -311,7 +527,6 @@ pub fn render_ir_to_pdf(blocks: &[IRBlock], options: &RenderOptions) -> io::Resu
     pages.push(page.ops);
 
     let total = pages.len();
-    let mut doc = PdfDocument::new("MDM Print Document");
     let mut pdf_pages = Vec::with_capacity(total);
 
     for (idx, mut ops) in pages.into_iter().enumerate() {
@@ -344,7 +559,7 @@ fn add_chrome(
                 pos: Point::new(Mm(layout.content_left), Mm(height_mm - layout.content_top / 4.0)),
             },
             Op::SetFont {
-                font: PdfFontHandle::Builtin(BuiltinFont::Helvetica),
+                font: layout.fonts.regular.handle(),
                 size: Pt(9.0),
             },
             Op::SetFillColor { col: rgb(GRAY) },
@@ -368,7 +583,7 @@ fn add_chrome(
                 pos: Point::new(Mm(layout.content_left), Mm(layout.content_bottom / 2.0)),
             },
             Op::SetFont {
-                font: PdfFontHandle::Builtin(BuiltinFont::Helvetica),
+                font: layout.fonts.regular.handle(),
                 size: Pt(8.0),
             },
             Op::SetFillColor { col: rgb(GRAY) },
@@ -391,7 +606,7 @@ fn add_chrome(
                 ),
             },
             Op::SetFont {
-                font: PdfFontHandle::Builtin(BuiltinFont::HelveticaBold),
+                font: layout.fonts.bold.handle(),
                 size: Pt(48.0),
             },
             Op::SetFillColor {
@@ -470,5 +685,83 @@ mod tests {
         assert_eq!(parse_mm("20mm"), 20.0);
         assert!((parse_mm("1in") - 25.4).abs() < 0.01);
         assert_eq!(parse_mm("20"), 20.0);
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Probe candidate font files that may exist in this environment (open
+    /// fonts first, then well-known system CJK fonts) so the embedded-path
+    /// test can run wherever *some* usable font is present, and skip cleanly
+    /// where none is (e.g. a bare Linux CI image).
+    fn probe_existing_font() -> Option<String> {
+        let candidates = [
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc", // macOS
+            "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf", // Debian/Ubuntu
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        ];
+        candidates
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(|p| p.to_string())
+    }
+
+    /// Both halves of the font policy in one test to avoid `MDM_PDF_FONT`
+    /// env races between parallel test threads.
+    #[test]
+    fn korean_pdf_embeds_font_or_falls_back_latin() {
+        let blocks = vec![
+            IRBlock::heading(1, "한글 제목"),
+            IRBlock::paragraph("본문 단락 텍스트입니다."),
+        ];
+
+        // (b) Forced Latin fallback: a nonexistent override is authoritative,
+        // so no system font is picked up regardless of the host. Must not
+        // panic, must be a valid PDF, and must reference a builtin font.
+        env::set_var("MDM_PDF_FONT", "/nonexistent/none.ttf");
+        let bytes = pdf_bytes(&blocks, &RenderOptions::default());
+        env::remove_var("MDM_PDF_FONT");
+        assert!(bytes.starts_with(b"%PDF"));
+        assert!(
+            contains(&bytes, b"Helvetica"),
+            "fallback PDF should reference a builtin font"
+        );
+
+        // (a) Embedded path: only when a real CJK font exists in this env.
+        // Pointing MDM_PDF_FONT at it is authoritative (bypasses the
+        // open-license allowlist — this is a test, the caller owns the
+        // choice). Assert the font got embedded as a composite CID font.
+        let Some(font_path) = probe_existing_font() else {
+            eprintln!("[test] no system CJK font found — skipping embedded-path assertion");
+            return;
+        };
+        env::set_var("MDM_PDF_FONT", &font_path);
+        let bytes = pdf_bytes(&blocks, &RenderOptions::default());
+        env::remove_var("MDM_PDF_FONT");
+        assert!(bytes.starts_with(b"%PDF"));
+        // printpdf subsets+embeds CJK as a Type0 composite font with a
+        // CIDFontType2/CIDFontType0 descendant and an embedded FontFile.
+        assert!(
+            contains(&bytes, b"Type0")
+                && (contains(&bytes, b"CIDFont") || contains(&bytes, b"FontFile")),
+            "embedded PDF ({font_path}) should carry a Type0/CIDFont program"
+        );
+    }
+
+    #[test]
+    fn resolve_font_bytes_override_is_authoritative() {
+        // A readable override returns those exact bytes; an unreadable one
+        // returns None (no system search) rather than panicking.
+        env::set_var("MDM_PDF_FONT", "/nonexistent/none.ttf");
+        let resolved = resolve_font_bytes();
+        env::remove_var("MDM_PDF_FONT");
+        assert!(
+            resolved.is_none(),
+            "unreadable override must yield None (Latin fallback), got {:?}",
+            resolved.map(|(n, _)| n)
+        );
     }
 }

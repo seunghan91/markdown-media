@@ -1,4 +1,5 @@
 pub mod parser;
+pub mod pdf_ocr;
 pub mod table_detect;
 pub mod triage;
 
@@ -9,6 +10,10 @@ pub use table_detect::{
 };
 
 pub use triage::{PageTriage, PdfCategory, TriageConfig, BoundingBox as PdfBoundingBox};
+
+pub use pdf_ocr::{ocr_pdf_with_rasterizer, OcrPdfOptions, OcrTextBlock, PageOcr, RasterPage};
+#[cfg(feature = "ocr-pdf")]
+pub use pdf_ocr::ocr_pdf;
 
 pub use parser::{
     PdfParser,

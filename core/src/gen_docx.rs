@@ -14,10 +14,7 @@ pub struct DocxOutput {
 pub fn markdown_to_docx(markdown: &str) -> io::Result<DocxOutput> {
     use docx_rs::*;
 
-    let doc = Document::new()
-        .default_size(5950 * 2, 8420 * 2); // A4 at 2x scale for better resolution
-
-    let mut document = doc;
+    let mut document = Docx::new();
 
     for line in markdown.lines() {
         let trimmed = line.trim();
@@ -59,7 +56,11 @@ pub fn markdown_to_docx(markdown: &str) -> io::Result<DocxOutput> {
         }
     }
 
-    let bytes = document.build();
+    let mut bytes = Vec::new();
+    document
+        .build()
+        .pack(std::io::Cursor::new(&mut bytes))
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     Ok(DocxOutput { bytes })
 }
 
