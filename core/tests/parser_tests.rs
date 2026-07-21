@@ -247,6 +247,114 @@ mod docx_tests {
         };
         assert_eq!(run.to_markdown(), "~~deleted~~");
     }
+
+    /// Build a minimal in-memory DOCX with just `word/document.xml` +
+    /// `word/numbering.xml` — the other parts (`_rels`, `styles.xml`,
+    /// `[Content_Types].xml`) are all optional in `DocxParser` (missing
+    /// files degrade to `Ok(())`, not an error).
+    fn build_minimal_docx(document_xml: &str, numbering_xml: &str) -> Vec<u8> {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+        use zip::ZipWriter;
+
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        {
+            let mut zip = ZipWriter::new(&mut buf);
+            let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            zip.start_file("word/document.xml", opts).unwrap();
+            zip.write_all(document_xml.as_bytes()).unwrap();
+            zip.start_file("word/numbering.xml", opts).unwrap();
+            zip.write_all(numbering_xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    /// Regression (full round-trip): a docx list using non-decimal numFmts
+    /// (lowerLetter/lowerRoman) must render increasing markers per item —
+    /// not the same literal marker on every paragraph — and a nested
+    /// (deeper ilvl) sub-list must restart while the parent level's counter
+    /// keeps counting from where it left off.
+    #[test]
+    fn test_docx_list_ordinals_increment_via_full_parse() {
+        use mdm_core::docx::parser::DocxParser;
+
+        let numbering_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"><w:numFmt w:val="lowerLetter"/></w:lvl>
+    <w:lvl w:ilvl="1"><w:numFmt w:val="lowerRoman"/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>"#;
+
+        // Alpha(a) -> Roman1(i) -> Roman2(ii) -> Beta(b, parent continues)
+        // -> Roman3(i, child restarts under the new parent item)
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Alpha</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Roman1</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Roman2</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Beta</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Roman3</w:t></w:r></w:p>
+</w:body>
+</w:document>"#;
+
+        let bytes = build_minimal_docx(document_xml, numbering_xml);
+        let mut parser = DocxParser::from_bytes(bytes).expect("valid minimal docx");
+        let doc = parser.parse().expect("parse succeeds");
+
+        let markers: Vec<String> = doc.paragraphs.iter().map(|p| p.to_markdown()).collect();
+        assert_eq!(
+            markers,
+            vec![
+                "a) Alpha".to_string(),
+                "  i. Roman1".to_string(),
+                "  ii. Roman2".to_string(),
+                "b) Beta".to_string(),
+                "  i. Roman3".to_string(),
+            ]
+        );
+    }
+
+    /// Regression (codex P1): a malicious/corrupt `w:ilvl` value (e.g.
+    /// `u32::MAX`) used to flow straight into `indent_level` and from there
+    /// into a `Vec` resize/index for the per-level ordinal counters — a
+    /// multi-GB allocation attempt from a few bytes of XML. `w:ilvl` is now
+    /// clamped to `MAX_LIST_ILVL` (63) at parse time, so this must parse
+    /// quickly, without panicking or ballooning memory, and produce a
+    /// paragraph clamped to the max depth.
+    #[test]
+    fn test_docx_huge_ilvl_does_not_explode() {
+        use mdm_core::docx::parser::DocxParser;
+
+        let numbering_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>"#;
+
+        let document_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="4294967295"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Huge</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Normal</w:t></w:r></w:p>
+</w:body>
+</w:document>"#;
+
+        let bytes = build_minimal_docx(document_xml, numbering_xml);
+        let mut parser = DocxParser::from_bytes(bytes).expect("valid minimal docx");
+        let doc = parser.parse().expect("parse succeeds without panicking or hanging");
+
+        assert_eq!(doc.paragraphs.len(), 2);
+        assert_eq!(doc.paragraphs[0].indent_level, 63, "ilvl must clamp to MAX_LIST_ILVL");
+        assert_eq!(doc.paragraphs[0].list_ordinal, 1);
+        assert!(doc.paragraphs[0].to_markdown().ends_with("Huge"));
+        assert_eq!(doc.paragraphs[1].indent_level, 0);
+    }
 }
 
 // ============================================================================

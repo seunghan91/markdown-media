@@ -16,6 +16,16 @@ const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/rela
 #[allow(dead_code)]
 const DC_NS: &str = "http://purl.org/dc/elements/1.1/";
 
+/// Upper bound on `w:ilvl` (list nesting depth). Word's UI caps real lists at
+/// 9 levels; this is generous headroom. `ilvl` comes straight from the
+/// document's XML and is later used as a `Vec` index/resize length for
+/// per-level ordinal counters (see `list_counters` in `parse()`) and as a
+/// repeat count for indent strings in `Paragraph::to_markdown()` — an
+/// unclamped value (e.g. `u32::MAX`) would let a small malicious file trigger
+/// a multi-GB allocation. Clamped at parse time so every downstream use is
+/// automatically bounded.
+const MAX_LIST_ILVL: u32 = 63;
+
 /// Numbering level definition parsed from numbering.xml
 #[derive(Debug, Clone)]
 struct NumberingLevel {
@@ -137,6 +147,11 @@ pub struct Paragraph {
     pub indent_level: u32,
     pub is_list_item: bool,
     pub list_type: Option<String>, // "bullet", "number", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "ganada", "chosung"
+    /// 1-based position of this item within its list instance/level (numId+ilvl).
+    /// Drives the rendered marker for non-decimal list types (a/b/c, i/ii/iii, 가/나/다, …)
+    /// since only decimal benefits from markdown's own auto-renumbering.
+    #[serde(skip, default = "default_list_ordinal")]
+    pub list_ordinal: u32,
     /// Inline elements including hyperlinks and footnote refs
     #[serde(skip)]
     pub inlines: Vec<InlineElement>,
@@ -158,11 +173,16 @@ impl Default for Paragraph {
             indent_level: 0,
             is_list_item: false,
             list_type: None,
+            list_ordinal: default_list_ordinal(),
             inlines: Vec::new(),
             outline_level: None,
             is_blockquote: false,
         }
     }
+}
+
+fn default_list_ordinal() -> u32 {
+    1
 }
 
 impl Paragraph {
@@ -254,18 +274,22 @@ impl Paragraph {
         // Handle list items
         if self.is_list_item {
             let indent = "  ".repeat(self.indent_level as usize);
+            let ordinal = self.list_ordinal;
             return match self.list_type.as_deref() {
-                Some("number") | Some("decimal") => format!("{}1. {}", indent, content),
-                Some("lowerLetter") => format!("{}a) {}", indent, content),
-                Some("upperLetter") => format!("{}A) {}", indent, content),
-                Some("lowerRoman") => format!("{}i. {}", indent, content),
-                Some("upperRoman") => format!("{}I. {}", indent, content),
+                // markdown re-numbers decimal lists itself, so the literal
+                // value barely matters, but using the real ordinal keeps the
+                // raw source consistent with the other list types below.
+                Some("number") | Some("decimal") => format!("{}{}. {}", indent, ordinal, content),
+                Some("lowerLetter") => format!("{}{}) {}", indent, letter_marker(ordinal), content),
+                Some("upperLetter") => format!("{}{}) {}", indent, letter_marker(ordinal).to_uppercase(), content),
+                Some("lowerRoman") => format!("{}{}. {}", indent, roman_marker(ordinal).to_lowercase(), content),
+                Some("upperRoman") => format!("{}{}. {}", indent, roman_marker(ordinal), content),
                 Some("ganada") => {
-                    let marker = ganada_marker(self.indent_level);
+                    let marker = ganada_marker(ordinal.saturating_sub(1));
                     format!("{}{}) {}", indent, marker, content)
                 }
                 Some("chosung") => {
-                    let marker = chosung_marker(self.indent_level);
+                    let marker = chosung_marker(ordinal.saturating_sub(1));
                     format!("{}{}) {}", indent, marker, content)
                 }
                 _ => format!("{}- {}", indent, content),
@@ -283,7 +307,9 @@ fn ganada_marker(index: u32) -> char {
         '\u{BC14}', '\u{C0AC}', '\u{C544}', '\u{C790}', '\u{CC28}',
         '\u{CE74}', '\u{D0C0}', '\u{D30C}', '\u{D558}',
     ];
-    GANADA.get(index as usize).copied().unwrap_or('\u{AC00}')
+    // 14개를 넘는 항목은 처음부터 순환(한/글의 실제 다음 단계 표기와는
+    // 다르지만, 매 항목이 같은 마커로 깨지는 것보다는 낫다).
+    GANADA[index as usize % GANADA.len()]
 }
 
 /// Get Korean chosung marker: ㄱ, ㄴ, ㄷ, ㄹ, ㅁ, ㅂ, ㅅ, ㅇ, ㅈ, ㅊ, ㅋ, ㅌ, ㅍ, ㅎ
@@ -293,7 +319,38 @@ fn chosung_marker(index: u32) -> char {
         '\u{3142}', '\u{3145}', '\u{3147}', '\u{3148}', '\u{314A}',
         '\u{314B}', '\u{314C}', '\u{314D}', '\u{314E}',
     ];
-    CHOSUNG.get(index as usize).copied().unwrap_or('\u{3131}')
+    CHOSUNG[index as usize % CHOSUNG.len()]
+}
+
+/// 1-based ordinal → lowercase Latin list marker: 1→a, 2→b, …, 26→z, 27→aa, …
+/// (엑셀 열 이름과 동일한 base-26 변환 — Word 의 lowerLetter/upperLetter 순번 규칙)
+fn letter_marker(ordinal: u32) -> String {
+    let mut n = ordinal.max(1);
+    let mut out = Vec::new();
+    while n > 0 {
+        let rem = (n - 1) % 26;
+        out.push((b'a' + rem as u8) as char);
+        n = (n - 1) / 26;
+    }
+    out.iter().rev().collect()
+}
+
+/// 1-based ordinal → uppercase Roman numeral list marker: 1→I, 2→II, …
+fn roman_marker(ordinal: u32) -> String {
+    const VALUES: &[(u32, &str)] = &[
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
+        (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+        (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    ];
+    let mut n = ordinal.max(1);
+    let mut out = String::new();
+    for &(value, symbol) in VALUES {
+        while n >= value {
+            out.push_str(symbol);
+            n -= value;
+        }
+    }
+    out
 }
 
 /// Table cell
@@ -1046,6 +1103,12 @@ impl<R: Read + Seek> DocxParser<R> {
         // Track numId for deferred list type resolution
         let mut current_num_id: Option<String> = None;
 
+        // List ordinal tracking: key = numId (or "style:{styleId}" when a
+        // paragraph is list-detected purely from pStyle with no numPr) →
+        // per-ilvl counters. A shallower item resets any deeper counters,
+        // matching Word's default nested-list restart behavior.
+        let mut list_counters: HashMap<String, Vec<u32>> = HashMap::new();
+
         // vMerge tracking
         let mut current_cell_v_merge_continue = false;
 
@@ -1251,7 +1314,9 @@ impl<R: Read + Seek> DocxParser<R> {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"val" {
                                     if let Ok(level) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
-                                        current_para.indent_level = level;
+                                        // Clamp — see MAX_LIST_ILVL doc comment (untrusted
+                                        // XML value later drives a Vec resize/index).
+                                        current_para.indent_level = level.min(MAX_LIST_ILVL);
                                     }
                                 }
                             }
@@ -1385,7 +1450,9 @@ impl<R: Read + Seek> DocxParser<R> {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"val" {
                                     if let Ok(level) = String::from_utf8_lossy(&attr.value).parse::<u32>() {
-                                        current_para.indent_level = level;
+                                        // Clamp — see MAX_LIST_ILVL doc comment (untrusted
+                                        // XML value later drives a Vec resize/index).
+                                        current_para.indent_level = level.min(MAX_LIST_ILVL);
                                     }
                                 }
                             }
@@ -1547,6 +1614,25 @@ impl<R: Read + Seek> DocxParser<R> {
                                         current_para.list_type = Some("bullet".to_string());
                                     }
                                 }
+
+                                // Assign this item's ordinal within its list instance/level.
+                                let counter_key = current_num_id.clone().unwrap_or_else(|| {
+                                    format!("style:{}", current_para.style_id.as_deref().unwrap_or(""))
+                                });
+                                // Re-clamp defensively even though the `w:ilvl` parse site
+                                // already caps this — `ilvl` is used below as a Vec
+                                // resize length/index and must never come from an
+                                // unbounded untrusted value.
+                                let ilvl = current_para.indent_level.min(MAX_LIST_ILVL) as usize;
+                                let levels = list_counters.entry(counter_key).or_default();
+                                if levels.len() <= ilvl {
+                                    levels.resize(ilvl + 1, 0);
+                                } else {
+                                    // A shallower item restarts any deeper nested counters.
+                                    levels.truncate(ilvl + 1);
+                                }
+                                levels[ilvl] += 1;
+                                current_para.list_ordinal = levels[ilvl];
                             }
 
                             if !in_table_cell {
@@ -1985,6 +2071,51 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(lower.to_markdown(), "  a) item");
+    }
+
+    /// Regression: every list item used to render the same literal marker
+    /// ("a)", "i.", "가)", …) regardless of position — only `decimal` was
+    /// harmless because markdown auto-renumbers "1.". This checks that
+    /// `list_ordinal` actually drives the rendered marker for every
+    /// non-decimal type.
+    #[test]
+    fn test_list_ordinal_drives_marker_sequence() {
+        fn item(list_type: &str, ordinal: u32) -> String {
+            Paragraph {
+                runs: vec![TextRun { text: "x".to_string(), ..Default::default() }],
+                is_list_item: true,
+                list_type: Some(list_type.to_string()),
+                list_ordinal: ordinal,
+                ..Default::default()
+            }.to_markdown()
+        }
+
+        assert_eq!(item("lowerLetter", 1), "a) x");
+        assert_eq!(item("lowerLetter", 2), "b) x");
+        assert_eq!(item("lowerLetter", 27), "aa) x"); // base-26 rollover
+        assert_eq!(item("upperLetter", 2), "B) x");
+        assert_eq!(item("lowerRoman", 1), "i. x");
+        assert_eq!(item("lowerRoman", 4), "iv. x");
+        assert_eq!(item("upperRoman", 9), "IX. x");
+        assert_eq!(item("decimal", 3), "3. x");
+        assert_eq!(item("ganada", 1), "\u{AC00}) x"); // 가
+        assert_eq!(item("ganada", 2), "\u{B098}) x"); // 나
+        assert_eq!(item("chosung", 1), "\u{3131}) x"); // ㄱ
+        assert_eq!(item("chosung", 2), "\u{3134}) x"); // ㄴ
+    }
+
+    #[test]
+    fn test_letter_and_roman_markers() {
+        assert_eq!(letter_marker(1), "a");
+        assert_eq!(letter_marker(26), "z");
+        assert_eq!(letter_marker(27), "aa");
+        assert_eq!(letter_marker(28), "ab");
+        assert_eq!(roman_marker(1), "I");
+        assert_eq!(roman_marker(3), "III");
+        assert_eq!(roman_marker(4), "IV");
+        assert_eq!(roman_marker(9), "IX");
+        assert_eq!(roman_marker(14), "XIV");
+        assert_eq!(roman_marker(40), "XL");
     }
 
     #[test]
