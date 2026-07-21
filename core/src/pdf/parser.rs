@@ -430,7 +430,7 @@ impl PdfParser {
         // First, try loading with empty password (for owner-restricted, user-accessible PDFs)
         if let Ok(doc) = lopdf::Document::load_mem(&self.data) {
             // Check if we can access content
-            if doc.get_pages().len() > 0 {
+            if !doc.get_pages().is_empty() {
                 // Document loaded successfully, may already be decrypted
                 // or accessible without password
                 return Ok(PdfParser {
@@ -566,7 +566,7 @@ impl PdfParser {
         // elements in correct reading order (column-by-column for 2-column
         // layouts). Re-sorting by Y here would flatten columns back into
         // an interleaved mess and defeat `detect_column_split`.
-        all_elements.sort_by(|a, b| a.page.cmp(&b.page));
+        all_elements.sort_by_key(|a| a.page);
 
         all_elements
     }
@@ -698,7 +698,7 @@ impl PdfParser {
         if let Ok(page_dict) = doc.get_dictionary(page_id) {
             // Try MediaBox first, then CropBox
             for key in &[b"MediaBox".as_slice(), b"CropBox".as_slice()] {
-                if let Ok(box_obj) = page_dict.get(*key) {
+                if let Ok(box_obj) = page_dict.get(key) {
                     if let Ok(arr) = box_obj.as_array() {
                         if arr.len() >= 4 {
                             let width = extract_number(&arr[2]).unwrap_or(default_width);
@@ -821,7 +821,7 @@ impl PdfParser {
         for text in sorted_texts {
             // Detect bold/italic from font name
             let font_style = text.font_name.as_deref()
-                .map(|n| detect_font_style(n))
+                .map(detect_font_style)
                 .unwrap_or(FontStyle { is_bold: false, is_italic: false });
 
             match &mut current_block {
@@ -953,7 +953,7 @@ impl PdfParser {
         let mut image_count = 0;
 
         // Iterate through all objects looking for images
-        for (_object_id, object) in doc.objects.iter() {
+        for object in doc.objects.values() {
             if let Ok(stream) = object.as_stream() {
                 let dict = &stream.dict;
 
@@ -1031,7 +1031,7 @@ impl PdfParser {
         };
 
         // Iterate through all objects looking for Font dictionaries
-        for (_object_id, object) in doc.objects.iter() {
+        for object in doc.objects.values() {
             if let Ok(dict) = object.as_dict() {
                 // Check if this is a Font dictionary
                 let is_font = dict.get(b"Type")
@@ -1971,7 +1971,7 @@ fn collect_show_bytes(obj: &lopdf::Object) -> Option<Vec<u8>> {
 ///   3. Derives X tolerance dynamically from the minimum column spacing of the
 ///      anchor row instead of a hard-coded 20pt (robust across font sizes).
 ///   4. Accepts any region with ≥2 rows × ≥2 mode columns — no 50%-alignment gate.
-
+///
 /// Approximate right-edge X coordinate of a positioned text run.
 ///
 /// `PositionedText` only stores the start `x`, not the run width, so we
@@ -2064,8 +2064,8 @@ pub(crate) fn detect_column_split(texts: &[PositionedText]) -> Option<f64> {
     let lo_bin = ((gutter_lo - min_x) / BIN_WIDTH_PT).max(0.0) as usize;
     let hi_bin = (((gutter_hi - min_x) / BIN_WIDTH_PT) as usize).min(bin_count);
     let trough_max = ((c1.min(c2) as f64) * 0.25).round().max(1.0) as usize;
-    for b in lo_bin..hi_bin {
-        if hist[b] > trough_max {
+    for h in hist.iter().take(hi_bin).skip(lo_bin) {
+        if *h > trough_max {
             return None;
         }
     }
@@ -2350,7 +2350,7 @@ impl PdfTable {
             md.push_str(" |\n");
 
             // Separator row
-            md.push_str("|");
+            md.push('|');
             for _ in 0..self.column_count {
                 md.push_str(" --- |");
             }
@@ -2403,7 +2403,7 @@ fn is_list_item(content: &str) -> bool {
                     return false;
                 }
                 let rest = &bytes[i + 1..];
-                return rest.first().map_or(false, |c| c.is_ascii_alphabetic());
+                return rest.first().is_some_and(|c| c.is_ascii_alphabetic());
             }
             if !b.is_ascii_digit() {
                 return false;
@@ -2436,7 +2436,7 @@ fn normalize_list_item(content: &str) -> String {
             && prefix.bytes().all(|b| b.is_ascii_digit())
         {
             let rest = trimmed[space_pos + 1..].trim_start();
-            if rest.chars().next().map_or(false, |c| c.is_ascii_alphabetic()) {
+            if rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
                 return format!("{}. {}", prefix, rest);
             }
         }
@@ -2490,7 +2490,7 @@ fn normalize_cjk_spacing(s: &str) -> String {
         let c = chars[i];
         if c == ' ' {
             // Skip space directly after an opener
-            if out.chars().last().map_or(false, |p| is_open(p)) {
+            if out.chars().last().is_some_and(&is_open) {
                 continue;
             }
             // Skip space directly before a closer or trailing punctuation
@@ -2743,7 +2743,7 @@ impl PdfDocument {
                     && !content.starts_with(',')
                     && !content.starts_with('.')
                     && !content.ends_with(',')
-                    && content.chars().next().map_or(false, |c| c.is_uppercase() || !c.is_ascii())
+                    && content.chars().next().is_some_and(|c| c.is_uppercase() || !c.is_ascii())
                 {
                     // Bold text at ~body size: heading if starts with uppercase
                     // and doesn't look like a mid-sentence fragment
@@ -2804,7 +2804,7 @@ impl PdfDocument {
                 let starts_with_cjk_bullet = content
                     .chars()
                     .next()
-                    .map_or(false, starts_new_cjk_item);
+                    .is_some_and(starts_new_cjk_item);
                 // `force_new_paragraph` makes this block start a fresh
                 // paragraph even if Y-wise it would have been soft-joined
                 // (e.g., the text right after a heading that shares the
@@ -3061,8 +3061,7 @@ fn extract_text_with_fallback(
     // so downstream image extraction still runs. Only error when pdftotext
     // is unavailable/broken.
     if !pdftotext_available() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "PDF extraction failed: pdf-extract panicked (likely CJK CID font \
              such as Identity-V or UniKS-UTF16-H). Install Poppler to enable \
              the pdftotext fallback:\n  \

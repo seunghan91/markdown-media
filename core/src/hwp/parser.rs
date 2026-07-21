@@ -287,7 +287,7 @@ impl HwpParser {
     /// [`parse_section_records_to_blocks`]. Both walk the same HWP record
     /// stream with identical state machines but emit different
     /// representations. Phase 2c will collapse them into one path.
-
+    ///
     /// Parse one section's record stream into a `Vec<IRBlock>`.
     ///
     /// Primary IR-emitting walker. Preserves structural metadata that
@@ -546,11 +546,10 @@ impl HwpParser {
                         current_text_data = Some(record.data.clone());
                     }
                 }
-                HWPTAG_PARA_CHAR_SHAPE => {
-                    if !in_table {
+                HWPTAG_PARA_CHAR_SHAPE
+                    if !in_table => {
                         current_char_shape_mapping = parse_para_char_shape(&record.data);
                     }
-                }
                 _ => {}
             }
             i += 1;
@@ -866,11 +865,10 @@ impl HwpParser {
                         current_text_data = Some(record.data.clone());
                     }
                 }
-                HWPTAG_PARA_CHAR_SHAPE => {
-                    if !in_table {
+                HWPTAG_PARA_CHAR_SHAPE
+                    if !in_table => {
                         current_char_shape_mapping = parse_para_char_shape(&record.data);
                     }
-                }
                 // When we see a non-table-related top-level marker after cells,
                 // flush the table. CTRL_HEADER on a new top-level paragraph means
                 // the table block is complete.
@@ -1085,6 +1083,9 @@ impl HwpParser {
     /// headings, images, tables, footnotes are all preserved as typed IR
     /// blocks and rendered via `blocks_to_markdown`. Falls back to the
     /// legacy `extract_text` string path only when block extraction fails.
+    // `&mut self` is required (extract_* methods mutate parser state); renaming
+    // away from `to_*` would be a public API break, so silence the convention lint.
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_mdm(&mut self) -> io::Result<MdmDocument> {
         let content = match self.extract_blocks() {
             Ok(blocks) if !blocks.is_empty() => {
@@ -1199,8 +1200,8 @@ fn build_ir_blocks_from_cells(
         return Vec::new();
     }
 
-    let rows = rows.max(1).min(1024);
-    let cols = cols.max(1).min(256);
+    let rows = rows.clamp(1, 1024);
+    let cols = cols.clamp(1, 256);
 
     let mut grid: Vec<Vec<Option<String>>> = vec![vec![None; cols]; rows];
     let has_addr = cells.iter().any(|(s, _)| s.has_addr);
@@ -1445,7 +1446,7 @@ fn matches_n_marker(s: &str, markers: &[&str]) -> bool {
         return false;
     }
     let marker = chars[i];
-    markers.iter().any(|m| m.chars().next() == Some(marker))
+    markers.iter().any(|m| m.starts_with(marker))
 }
 
 /// Post-processing: infer headings by comparing paragraph font sizes
@@ -1457,7 +1458,7 @@ fn matches_n_marker(s: &str, markers: &[&str]) -> bool {
 /// 3. Level: 1.8x+=H1, 1.5x+=H2, 1.3x+=H3, else H4; bold → -1 level boost
 ///
 /// Only promotes IRBlock::Paragraph, never touches existing Heading or Table.
-fn infer_headings_by_font_size(blocks: &mut Vec<IRBlock>, char_shapes: &HashMap<u32, CharShape>) {
+fn infer_headings_by_font_size(blocks: &mut [IRBlock], char_shapes: &HashMap<u32, CharShape>) {
     if char_shapes.is_empty() {
         return;
     }
@@ -1744,8 +1745,7 @@ fn extract_subtree_equation_script(records: &[HwpRecord], ctrl_idx: usize, max_l
     let ctrl_level = records[ctrl_idx].level;
     let end = (ctrl_idx + max_lookahead + 1).min(records.len());
 
-    for j in (ctrl_idx + 1)..end {
-        let r = &records[j];
+    for r in records.iter().take(end).skip(ctrl_idx + 1) {
         if r.level <= ctrl_level {
             break;
         }
@@ -1781,8 +1781,7 @@ fn extract_subtree_image_id(records: &[HwpRecord], ctrl_idx: usize, max_lookahea
     let ctrl_level = records[ctrl_idx].level;
     let end = (ctrl_idx + max_lookahead + 1).min(records.len());
 
-    for j in (ctrl_idx + 1)..end {
-        let r = &records[j];
+    for r in records.iter().take(end).skip(ctrl_idx + 1) {
         if r.level <= ctrl_level {
             break;
         }
@@ -1810,8 +1809,8 @@ fn subtree_end(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> 
     let ctrl_level = records[ctrl_idx].level;
     let end = (ctrl_idx + max_lookahead + 1).min(records.len());
     let mut last = ctrl_idx;
-    for j in (ctrl_idx + 1)..end {
-        if records[j].level <= ctrl_level {
+    for (j, rec) in records.iter().enumerate().take(end).skip(ctrl_idx + 1) {
+        if rec.level <= ctrl_level {
             return j; // first sibling/parent — stop BEFORE it
         }
         last = j;
@@ -1901,8 +1900,8 @@ fn build_gfm_table(rows: usize, cols: usize, cells: &[(CellSpan, String)]) -> Op
     }
 
     // Bound rows/cols to avoid runaway allocation on malformed records
-    let rows = rows.max(1).min(1024);
-    let cols = cols.max(1).min(256);
+    let rows = rows.clamp(1, 1024);
+    let cols = cols.clamp(1, 256);
 
     // Initialize grid with None (no cell placed yet)
     let mut grid: Vec<Vec<Option<String>>> = vec![vec![None; cols]; rows];
@@ -2340,7 +2339,7 @@ impl TableData {
         let mut md = String::new();
 
         for (i, row) in self.cells.iter().enumerate() {
-            md.push_str("|");
+            md.push('|');
             for col in 0..actual_cols {
                 let cell = row.get(col).map(String::as_str).unwrap_or("");
                 // Trim FIRST, then convert remaining inner newlines to <br>

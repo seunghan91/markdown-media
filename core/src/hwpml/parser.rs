@@ -191,7 +191,7 @@ fn collect_attrs(e: &BytesStart) -> HashMap<String, String> {
     map
 }
 
-fn attach(stack: &mut Vec<Elem>, root: &mut Option<Elem>, elem: Elem) {
+fn attach(stack: &mut [Elem], root: &mut Option<Elem>, elem: Elem) {
     if let Some(parent) = stack.last_mut() {
         parent.children.push(Node::Element(elem));
     } else {

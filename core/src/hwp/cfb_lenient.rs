@@ -348,11 +348,11 @@ fn sector_offset(id: u32, sector_size: usize) -> usize {
     512 + (id as usize) * sector_size
 }
 
-fn read_sector_slice<'a>(
-    data: &'a [u8],
+fn read_sector_slice(
+    data: &[u8],
     id: u32,
     sector_size: usize,
-) -> &'a [u8] {
+) -> &[u8] {
     let off = sector_offset(id, sector_size);
     if off + sector_size > data.len() {
         &[]

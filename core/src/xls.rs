@@ -94,7 +94,7 @@ pub fn parse_xls(data: &[u8]) -> io::Result<XlsDocument> {
         }
 
         // Trim trailing empty rows
-        while rows.last().map_or(false, |r| r.iter().all(|c| c.is_empty())) {
+        while rows.last().is_some_and(|r| r.iter().all(|c| c.is_empty())) {
             rows.pop();
         }
 

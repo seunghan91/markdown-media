@@ -158,7 +158,10 @@ fn parse_container(xml: &str) -> io::Result<String> {
     Err(io::Error::new(io::ErrorKind::InvalidData, "no rootfile in container.xml"))
 }
 
-fn parse_opf(xml: &str) -> io::Result<(HashMap<String, String>, Vec<String>, HashMap<String, (String, String)>)> {
+/// (metadata, spine item ids, manifest id → (href, media-type))
+type OpfContents = (HashMap<String, String>, Vec<String>, HashMap<String, (String, String)>);
+
+fn parse_opf(xml: &str) -> io::Result<OpfContents> {
     let mut reader = Reader::from_reader(Cursor::new(xml.as_bytes()));
     let mut buf = Vec::new();
     let mut metadata: HashMap<String, String> = HashMap::new();
@@ -231,12 +234,12 @@ fn find_ncx<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     manifest: &HashMap<String, (String, String)>,
 ) -> io::Result<Option<String>> {
-    for (_id, (_href, media_type)) in manifest {
+    for (_href, media_type) in manifest.values() {
         if media_type == "application/x-dtbncx+xml" {
             return read_zip_entry(archive, _href).map(Some);
         }
     }
-    for (_id, (href, _)) in manifest {
+    for (href, _) in manifest.values() {
         if href.ends_with(".ncx") {
             return read_zip_entry(archive, href).map(Some);
         }

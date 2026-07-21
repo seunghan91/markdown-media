@@ -251,21 +251,21 @@ impl OmmlBuilder {
         };
         if attached { return; }
         // Fall back: append to a plain children buffer on the parent.
-        if let Some(parent) = self.stack.last_mut() {
-            match parent {
-                Frame::Root { children }
-                | Frame::E { children }
-                | Frame::Sub { children }
-                | Frame::Sup { children }
-                | Frame::Num { children }
-                | Frame::Den { children }
-                | Frame::Deg { children }
-                | Frame::Lim { children }
-                | Frame::FName { children }
-                | Frame::PassThrough { children }
-                | Frame::D { children, .. } => children.push_str(&rendered),
-                _ => {}
-            }
+        if let Some(
+            Frame::Root { children }
+            | Frame::E { children }
+            | Frame::Sub { children }
+            | Frame::Sup { children }
+            | Frame::Num { children }
+            | Frame::Den { children }
+            | Frame::Deg { children }
+            | Frame::Lim { children }
+            | Frame::FName { children }
+            | Frame::PassThrough { children }
+            | Frame::D { children, .. },
+        ) = self.stack.last_mut()
+        {
+            children.push_str(&rendered);
         }
     }
 
@@ -474,8 +474,10 @@ fn group_chr_tex(c: char) -> &'static str {
 mod tests {
     use super::*;
 
-    fn run(events: &[(&str, &str, &[(&str, &str)])]) -> String {
-        // events: ("start"|"end"|"text"|"empty", name, attrs)
+    // events: ("start"|"end"|"text"|"empty", name, attrs)
+    type Event<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
+
+    fn run(events: &[Event]) -> String {
         let mut b = OmmlBuilder::new(MathKind::Inline);
         for (kind, name, attrs) in events {
             let attr_vec: Vec<(Vec<u8>, String)> = attrs

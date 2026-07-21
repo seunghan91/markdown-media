@@ -445,13 +445,14 @@ fn ir_has_merged_cells(table: &IRTable) -> bool {
 /// Ported from kordoc `src/table/builder.ts:tableToHtml` (2026-04-09, f68e825).
 /// Unlike the HWPX/HWP 5.x pipelines, IRCell does not store shadow markers;
 /// shadow positions are computed on-the-fly from each origin cell's span.
-/// First row renders as `<th>` when `has_header`; otherwise `<td>`. Cell
+/// First row (row 0) always renders as `<th>`, matching kordoc v2.0; `has_header`
+/// is retained as a layout hint but does not currently gate this. Cell
 /// text is HTML-escaped and `\n` → `<br>`.
 fn render_table_html(table: &IRTable) -> String {
     let mut skip: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
     let mut out = String::from("<table>\n");
     for (r, row) in table.cells.iter().enumerate() {
-        let tag = if r == 0 && table.has_header { "th" } else if r == 0 { "th" } else { "td" };
+        let tag = if r == 0 { "th" } else { "td" };
         let mut row_html = String::new();
         for c in 0..table.cols {
             if skip.contains(&(r, c)) {
@@ -1488,7 +1489,7 @@ mod tests {
         // That's a conservative over-estimate which is fine because the
         // blocks are bucketed together — it just means we pair them and
         // then downstream text comparison decides modified vs unchanged.
-        assert!(s >= 0.0 && s <= 1.0);
+        assert!((0.0..=1.0).contains(&s));
     }
 
     // ── blocks_to_markdown ──

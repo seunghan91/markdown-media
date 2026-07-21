@@ -421,9 +421,9 @@ fn union_area_ratio(bboxes: &[BoundingBox], page_w: f64, page_h: f64) -> f32 {
         let y0 = (b.y / cell_h).floor().clamp(0.0, GRID as f64 - 1.0) as usize;
         let x1 = ((b.x + b.width) / cell_w).ceil().clamp(0.0, GRID as f64) as usize;
         let y1 = ((b.y + b.height) / cell_h).ceil().clamp(0.0, GRID as f64) as usize;
-        for r in y0..y1 {
-            for c in x0..x1 {
-                hits[r][c] = true;
+        for row in hits.iter_mut().take(y1).skip(y0) {
+            for cell in row.iter_mut().take(x1).skip(x0) {
+                *cell = true;
             }
         }
     }

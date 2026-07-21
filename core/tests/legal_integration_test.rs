@@ -60,7 +60,7 @@ fn test_parse_real_legal_markdown_files() {
                 // 마지막 청크 정보
                 if let Some(last) = chunks.last() {
                     println!("   마지막 조문: {}", last.metadata.article_number.as_deref().unwrap_or("-"));
-                    println!("   컨텍스트: {}", &last.context_path.chars().take(50).collect::<String>());
+                    println!("   컨텍스트: {}", last.context_path.chars().take(50).collect::<String>());
                 }
 
                 println!();
@@ -125,7 +125,7 @@ fn test_chunk_content_quality() {
         println!("제목: {}", chunk.metadata.article_title.as_deref().unwrap_or("-"));
         println!("경로: {}", chunk.context_path);
         println!("토큰: {}", chunk.token_count);
-        println!("내용 (100자): {}...", &chunk.content.chars().take(100).collect::<String>());
+        println!("내용 (100자): {}...", chunk.content.chars().take(100).collect::<String>());
         println!("참조 수: {}", chunk.metadata.references.len());
     }
 

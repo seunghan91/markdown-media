@@ -41,6 +41,7 @@ const DEFAULT_TEXT_COLOR: &str = "#000000";
 
 /// Visual theme applied during HWPX generation (all optional).
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct HwpxTheme {
     /// Heading text colors, levels 1..=4 (h5/h6 share h4).
     pub heading_colors: [Option<String>; 4],
@@ -50,17 +51,6 @@ pub struct HwpxTheme {
     pub table_header_bold: bool,
 }
 
-impl Default for HwpxTheme {
-    fn default() -> Self {
-        HwpxTheme {
-            heading_colors: [None, None, None, None],
-            body_color: None,
-            quote_color: None,
-            table_header_color: None,
-            table_header_bold: false,
-        }
-    }
-}
 
 /// Theme with all colors resolved to concrete values.
 #[derive(Debug, Clone)]

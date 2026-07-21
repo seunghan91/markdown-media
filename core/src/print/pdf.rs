@@ -670,11 +670,13 @@ mod tests {
 
     #[test]
     fn header_footer_watermark_page_numbers_do_not_panic() {
-        let mut options = RenderOptions::default();
-        options.header = Some("Report Header".into());
-        options.footer = Some("Confidential".into());
-        options.watermark = Some("DRAFT".into());
-        options.page_numbers = true;
+        let options = RenderOptions {
+            header: Some("Report Header".into()),
+            footer: Some("Confidential".into()),
+            watermark: Some("DRAFT".into()),
+            page_numbers: true,
+            ..Default::default()
+        };
         let blocks = vec![IRBlock::paragraph("content")];
         let bytes = pdf_bytes(&blocks, &options);
         assert!(bytes.starts_with(b"%PDF"));

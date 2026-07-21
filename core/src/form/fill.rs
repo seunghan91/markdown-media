@@ -137,7 +137,7 @@ fn fill_section(
                     let tt = t.trim();
                     !tt.is_empty() && tt.chars().count() <= 20 && is_label_cell(tt)
                 });
-            all_labels && rows[1].first().map_or(false, |d0| !is_label_cell(d0.text().trim()))
+            all_labels && rows[1].first().is_some_and(|d0| !is_label_cell(d0.text().trim()))
         };
 
         // strategy 1: adjacent label-value cells
@@ -191,8 +191,7 @@ fn fill_section(
                     !tt.is_empty() && tt.chars().count() <= 20 && is_label_cell(tt)
                 });
             if all_labels {
-                for ri in 1..rows.len() {
-                    let data = &rows[ri];
+                for (ri, data) in rows.iter().enumerate().skip(1) {
                     for ci in 0..header.len().min(data.len()) {
                         let hl = normalize_label(&header[ci].text());
                         let key = match find_matching_key(&hl, cursor) {

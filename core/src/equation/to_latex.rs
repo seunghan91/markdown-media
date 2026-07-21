@@ -24,8 +24,8 @@ fn find_brackets(chars: &[char], start_idx: usize, direction: u8) -> Option<(usi
     if direction == 1 {
         let start_cur = start_idx + chars[start_idx..].iter().position(|&c| c == '{')?;
         let mut bracket_count: i32 = 1;
-        for i in start_cur + 1..chars.len() {
-            match chars[i] {
+        for (i, &c) in chars.iter().enumerate().skip(start_cur + 1) {
+            match c {
                 '{' => bracket_count += 1,
                 '}' => bracket_count -= 1,
                 _ => {}
@@ -90,8 +90,8 @@ fn mask_literal_spans(chars: &[char]) -> Vec<char> {
         if chars[i] == '"' {
             if let Some(rel) = chars[i + 1..].iter().position(|&c| c == '"') {
                 let end = i + 1 + rel;
-                for j in i..=end {
-                    out[j] = '\u{ffff}';
+                for c in out.iter_mut().take(end + 1).skip(i) {
+                    *c = '\u{ffff}';
                 }
                 i = end + 1;
                 continue;
@@ -107,8 +107,8 @@ fn mask_literal_spans(chars: &[char]) -> Vec<char> {
             let body_start = i + text_prefix.len();
             if let Some(rel) = chars[body_start..].iter().position(|&c| c == '}') {
                 let end = body_start + rel;
-                for j in i..=end {
-                    out[j] = '\u{ffff}';
+                for c in out.iter_mut().take(end + 1).skip(i) {
+                    *c = '\u{ffff}';
                 }
                 i = end + 1;
                 continue;
@@ -146,9 +146,7 @@ fn find_keyword_token(chars: &[char], word: &str, from: usize) -> Option<usize> 
 /// `{1} over {2}` -> `\frac{1}{2}`
 fn replace_frac(mut chars: Vec<char>) -> Vec<char> {
     let hml_frac = "over";
-    loop {
-        let Some(cursor) = find_keyword_token(&chars, hml_frac, 0) else { break };
-
+    while let Some(cursor) = find_keyword_token(&chars, hml_frac, 0) {
         // The numerator is the token immediately preceding `over` (skipping
         // whitespace) — grabbing the nearest `}` group to the left avoids
         // silently deleting unrelated content between an earlier group and
@@ -201,8 +199,7 @@ fn replace_frac(mut chars: Vec<char>) -> Vec<char> {
 
 /// `root {1} of {2}` -> `\sqrt[1]{2}`
 fn replace_root_of(mut chars: Vec<char>) -> Vec<char> {
-    loop {
-        let Some(root_cursor) = find_keyword_token(&chars, "root", 0) else { break };
+    while let Some(root_cursor) = find_keyword_token(&chars, "root", 0) {
         let Some(elem1) = find_brackets(&chars, root_cursor, 1) else { return chars };
         // `of` is only valid after root's degree group — a global first match
         // would mistake a literal/preceding text for the keyword.
@@ -232,8 +229,7 @@ fn replace_elements(bracket_chars: &[char]) -> Vec<char> {
 }
 
 fn replace_matrix(mut input: Vec<char>, mat_str: &str, mat_elem: &MatrixMapping) -> Vec<char> {
-    loop {
-        let Some(cursor) = find_substring(&input, mat_str, 0) else { break };
+    while let Some(cursor) = find_substring(&input, mat_str, 0) {
         let Some((e_start, e_end)) = find_brackets(&input, cursor, 1) else { return input };
         let elem = replace_elements(&input[e_start..e_end]);
         let outer = if mat_elem.remove_outer_brackets { find_enclosing_brackets(&input, cursor) } else { None };
@@ -262,8 +258,7 @@ fn replace_all_matrix(mut eq: Vec<char>) -> Vec<char> {
 }
 
 fn replace_bar(mut input: Vec<char>, bar_str: &str, bar_elem: &str) -> Vec<char> {
-    loop {
-        let Some(cursor) = find_substring(&input, bar_str, 0) else { break };
+    while let Some(cursor) = find_substring(&input, bar_str, 0) {
         let Some((e_start, e_end)) = find_brackets(&input, cursor, 1) else { return input };
         let elem: Vec<char> = input[e_start..e_end].to_vec();
         let outer = find_enclosing_brackets(&input, cursor);
@@ -290,8 +285,7 @@ fn replace_all_bar(mut eq: Vec<char>) -> Vec<char> {
 }
 
 fn replace_brace(mut input: Vec<char>, brace_str: &str, brace_elem: &str) -> Vec<char> {
-    loop {
-        let Some(cursor) = find_substring(&input, brace_str, 0) else { break };
+    while let Some(cursor) = find_substring(&input, brace_str, 0) {
         let Some((e_start1, e_end1)) = find_brackets(&input, cursor, 1) else { return input };
         let Some((e_start2, e_end2)) = find_brackets(&input, e_end1, 1) else { return input };
         let elem1: Vec<char> = input[e_start1..e_end1].to_vec();

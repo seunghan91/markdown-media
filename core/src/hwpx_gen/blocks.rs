@@ -183,7 +183,7 @@ pub fn parse_markdown_to_blocks(md: &str) -> Vec<MdBlock> {
             let mut code_lines: Vec<String> = Vec::new();
             i += 1;
             while i < lines.len() {
-                let stripped = lines[i].trim_start_matches(|c| c == ' ');
+                let stripped = lines[i].trim_start_matches(' ');
                 // allow up to 3 leading spaces on closing fence
                 let lead = lines[i].len() - lines[i].trim_start_matches(' ').len();
                 if lead <= 3 && stripped.starts_with(&fence) {

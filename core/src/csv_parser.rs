@@ -51,7 +51,7 @@ impl CsvParser {
         }
 
         // Trim trailing empty rows.
-        while rows.last().map_or(false, |r| r.iter().all(|c| c.trim().is_empty())) {
+        while rows.last().is_some_and(|r| r.iter().all(|c| c.trim().is_empty())) {
             rows.pop();
         }
 
@@ -149,8 +149,7 @@ fn detect_delimiter(data: &[u8]) -> u8 {
 fn escape_pipe(s: &str) -> String {
     s.replace('|', "\\|")
         .replace("\r\n", " ")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\n', '\r'], " ")
 }
 
 #[cfg(test)]
