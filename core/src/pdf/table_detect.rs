@@ -431,7 +431,7 @@ fn drop_shading_stacks(lines: Vec<LineSegment>, horizontal: bool) -> Vec<LineSeg
     }
     let mut dropped = vec![false; lines.len()];
     let mut any_dropped = false;
-    for (_, idxs) in groups.iter() {
+    for idxs in groups.values() {
         if idxs.len() < STACK_MIN_LINES {
             continue;
         }
@@ -980,13 +980,13 @@ fn enforce_min(coords: &[f64], min_delta: f64, descending: bool) -> Vec<f64> {
     }
     let n = coords.len();
     let mut result = vec![coords[0]];
-    for i in 1..n {
+    for (i, &coord) in coords.iter().enumerate().skip(1) {
         let last = *result.last().unwrap();
-        let delta = if descending { last - coords[i] } else { coords[i] - last };
+        let delta = if descending { last - coord } else { coord - last };
         if delta < min_delta && i < n - 1 {
             continue; // merge into next
         }
-        result.push(coords[i]);
+        result.push(coord);
     }
     result
 }
@@ -1728,10 +1728,10 @@ fn cells_to_ir_table(grid: &TableGrid, cells: &[ExtractedCell], matrix: &mut [Ve
             }
         }
     }
-    for r in 0..num_rows {
+    for (r, covered_row) in covered.iter().enumerate().take(num_rows) {
         let mut row_cells: Vec<IRCell> = Vec::new();
-        for c in 0..num_cols {
-            if covered[r][c] {
+        for (c, &is_covered) in covered_row.iter().enumerate().take(num_cols) {
+            if is_covered {
                 continue; // spanned over by an anchor to the left/above
             }
             let (cspan, rspan) = anchor.get(&(r, c)).copied().unwrap_or((1, 1));
@@ -2039,25 +2039,27 @@ mod tests {
         // full-width boundary line at y=100. Outer borders sit at different x's
         // (no chaining) and interior columns don't align (x=70/120 vs x=100),
         // so the boundary is a valid cut → two grids from one connected group.
-        let mut h = Vec::new();
-        // top strip (narrow, x 30..170)
-        h.push(hseg(30.0, 170.0, 200.0));
-        h.push(hseg(30.0, 170.0, 150.0));
-        h.push(hseg(30.0, 170.0, 100.0));
-        // bottom table (wide, x 0..200) — its top edge (y=100) is the shared cut
-        h.push(hseg(0.0, 200.0, 100.0));
-        h.push(hseg(0.0, 200.0, 50.0));
-        h.push(hseg(0.0, 200.0, 0.0));
-        let mut v = Vec::new();
-        // top strip verticals (y 100..200): outer 30/170 + interior 70/120
-        v.push(vseg(100.0, 200.0, 30.0));
-        v.push(vseg(100.0, 200.0, 170.0));
-        v.push(vseg(100.0, 200.0, 70.0));
-        v.push(vseg(100.0, 200.0, 120.0));
-        // bottom verticals (y 0..100): outer 0/200 + interior 100
-        v.push(vseg(0.0, 100.0, 0.0));
-        v.push(vseg(0.0, 100.0, 200.0));
-        v.push(vseg(0.0, 100.0, 100.0));
+        let h = vec![
+            // top strip (narrow, x 30..170)
+            hseg(30.0, 170.0, 200.0),
+            hseg(30.0, 170.0, 150.0),
+            hseg(30.0, 170.0, 100.0),
+            // bottom table (wide, x 0..200) — its top edge (y=100) is the shared cut
+            hseg(0.0, 200.0, 100.0),
+            hseg(0.0, 200.0, 50.0),
+            hseg(0.0, 200.0, 0.0),
+        ];
+        let v = vec![
+            // top strip verticals (y 100..200): outer 30/170 + interior 70/120
+            vseg(100.0, 200.0, 30.0),
+            vseg(100.0, 200.0, 170.0),
+            vseg(100.0, 200.0, 70.0),
+            vseg(100.0, 200.0, 120.0),
+            // bottom verticals (y 0..100): outer 0/200 + interior 100
+            vseg(0.0, 100.0, 0.0),
+            vseg(0.0, 100.0, 200.0),
+            vseg(0.0, 100.0, 100.0),
+        ];
 
         // All lines are one connected component (strip verticals touch the wide
         // boundary line), so two grids can only arise from the stacked split.

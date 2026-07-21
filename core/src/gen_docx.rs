@@ -22,31 +22,31 @@ pub fn markdown_to_docx(markdown: &str) -> io::Result<DocxOutput> {
             continue;
         }
 
-        if trimmed.starts_with("# ") {
+        if let Some(stripped) = trimmed.strip_prefix("# ") {
             document = document.add_paragraph(
                 Paragraph::new()
-                    .add_run(Run::new().add_text(&trimmed[2..]).size(36).bold())
+                    .add_run(Run::new().add_text(stripped).size(36).bold())
             );
-        } else if trimmed.starts_with("## ") {
+        } else if let Some(stripped) = trimmed.strip_prefix("## ") {
             document = document.add_paragraph(
                 Paragraph::new()
-                    .add_run(Run::new().add_text(&trimmed[3..]).size(28).bold())
+                    .add_run(Run::new().add_text(stripped).size(28).bold())
             );
-        } else if trimmed.starts_with("### ") {
+        } else if let Some(stripped) = trimmed.strip_prefix("### ") {
             document = document.add_paragraph(
                 Paragraph::new()
-                    .add_run(Run::new().add_text(&trimmed[4..]).size(24).bold())
+                    .add_run(Run::new().add_text(stripped).size(24).bold())
             );
         } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
             let text = &trimmed[2..];
             document = document.add_paragraph(
                 Paragraph::new()
-                    .add_run(Run::new().add_text(&format!("  • {}", text)))
+                    .add_run(Run::new().add_text(format!("  • {}", text)))
             );
-        } else if trimmed.starts_with("> ") {
+        } else if let Some(stripped) = trimmed.strip_prefix("> ") {
             document = document.add_paragraph(
                 Paragraph::new()
-                    .add_run(Run::new().add_text(&trimmed[2..]).italic())
+                    .add_run(Run::new().add_text(stripped).italic())
             );
         } else {
             document = document.add_paragraph(
@@ -60,7 +60,7 @@ pub fn markdown_to_docx(markdown: &str) -> io::Result<DocxOutput> {
     document
         .build()
         .pack(std::io::Cursor::new(&mut bytes))
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
     Ok(DocxOutput { bytes })
 }
 

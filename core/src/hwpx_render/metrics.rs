@@ -262,14 +262,12 @@ pub fn simulate_wrap(
         }
         if line_w == 0.0 || w > cont_width + EPS {
             // 빈 줄이거나 다음 줄에도 안 들어가는 초장 유닛 — 글자 단위 강제 분해
-            let mut pos = us;
-            for &ch in &chars[us..ue] {
+            for (pos, &ch) in (us..).zip(chars[us..ue].iter()) {
                 let c = cw(ch);
                 if line_w + c > avail + EPS && line_w > 0.0 {
                     break_before(pos, 0.0, &mut starts, &mut line_w, &mut avail);
                 }
                 line_w += c;
-                pos += 1;
             }
             continue;
         }

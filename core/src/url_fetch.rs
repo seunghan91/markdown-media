@@ -19,22 +19,21 @@ pub fn fetch_url(url: &str) -> io::Result<UrlDocument> {
     let response = ureq::get(url)
         .set("User-Agent", "mdm-url-fetcher/1.0")
         .call()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     if response.status() >= 400 {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             format!("HTTP {}", response.status()),
         ));
     }
 
     let html = response
         .into_string()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     let title = extract_title(&html);
     let markdown = htmd::convert(&html)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
 
     Ok(UrlDocument {
         url: url.to_string(),

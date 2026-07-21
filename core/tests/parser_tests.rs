@@ -113,9 +113,9 @@ mod hwp_tests {
         use mdm_core::hwp::record::{RecordParser, HWPTAG_PARA_TEXT};
 
         // 테스트 레코드 헤더 생성
-        let header: u32 = 0x43 | (0 << 10) | (4 << 20);
+        let header: u32 = 0x43 | (4 << 20);
         let mut data = header.to_le_bytes().to_vec();
-        data.extend_from_slice(&[b'T', b'e', b's', b't']);
+        data.extend_from_slice(b"Test");
 
         let mut parser = RecordParser::new(&data);
         let record = parser.parse_next().expect("Failed to parse record");

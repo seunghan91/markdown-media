@@ -35,7 +35,7 @@ pub fn ctc_decode(data: &[f32], t: usize, c: usize, dict: &[String]) -> Option<(
             continue;
         }
         // Confidence: softmax prob of the max class if logits aren't probabilities.
-        let p = if best_v > 1.0001 || best_v < 0.0 {
+        let p = if !(0.0..=1.0001).contains(&best_v) {
             let mut denom = 0.0f64;
             for &v in row {
                 denom += ((v - best_v) as f64).exp();

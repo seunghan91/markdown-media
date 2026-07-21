@@ -312,8 +312,8 @@ mod tests {
     fn key_extraction_respects_offset() {
         let mut payload = [0u8; PAYLOAD_LEN];
         payload[0] = 0x05; // offset = 4 + 5 = 9
-        for i in 9..25 {
-            payload[i] = (i - 9) as u8;
+        for (i, b) in payload.iter_mut().enumerate().take(25).skip(9) {
+            *b = (i - 9) as u8;
         }
         let key = extract_aes_key(&payload).unwrap();
         for (i, b) in key.iter().enumerate() {

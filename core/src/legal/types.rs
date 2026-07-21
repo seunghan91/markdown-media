@@ -151,8 +151,10 @@ pub struct LegalMetadata {
 /// 청크 유형
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ChunkType {
     /// 조(Article) 단위 청크
+    #[default]
     Article,
     /// 항(Paragraph) 단위 청크 (큰 조문 분할 시)
     Paragraph,
@@ -160,11 +162,6 @@ pub enum ChunkType {
     Definition,
 }
 
-impl Default for ChunkType {
-    fn default() -> Self {
-        ChunkType::Article
-    }
-}
 
 /// 법률 청크 데이터 구조
 #[derive(Debug, Clone, Serialize, Deserialize)]

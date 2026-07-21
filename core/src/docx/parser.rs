@@ -53,6 +53,7 @@ struct StyleDef {
 
 /// Text run with formatting
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct TextRun {
     pub text: String,
     pub bold: bool,
@@ -64,20 +65,6 @@ pub struct TextRun {
     pub color: Option<String>,
 }
 
-impl Default for TextRun {
-    fn default() -> Self {
-        TextRun {
-            text: String::new(),
-            bold: false,
-            italic: false,
-            underline: false,
-            strike: false,
-            font_size: None,
-            font_name: None,
-            color: None,
-        }
-    }
-}
 
 impl TextRun {
     /// Convert to markdown formatted text
@@ -1731,8 +1718,8 @@ impl<R: Read + Seek> DocxParser<R> {
                lower_target.ends_with(".gif") ||
                lower_target.ends_with(".bmp") {
 
-                let path = if target.starts_with('/') {
-                    target[1..].to_string()
+                let path = if let Some(stripped) = target.strip_prefix('/') {
+                    stripped.to_string()
                 } else {
                     format!("word/{}", target)
                 };
@@ -1849,6 +1836,9 @@ impl<R: Read + Seek> DocxParser<R> {
     }
 
     /// Convert to MDX and save
+    // `&mut self` is required (`self.parse()` mutates parser state); renaming
+    // away from `to_*` would be a public API break, so silence the convention lint.
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_mdx(&mut self, output_dir: &Path) -> io::Result<PathBuf> {
         let doc = self.parse()?;
 
@@ -2210,6 +2200,6 @@ mod tests {
         let notes = DocxParser::<std::io::BufReader<std::fs::File>>::parse_notes_xml(xml);
         assert_eq!(notes.get("1").unwrap(), "First footnote text");
         assert_eq!(notes.get("2").unwrap(), "**Bold note**");
-        assert!(notes.get("0").is_none()); // separator skipped
+        assert!(!notes.contains_key("0")); // separator skipped
     }
 }

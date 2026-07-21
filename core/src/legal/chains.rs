@@ -19,6 +19,10 @@ pub enum ChainType {
 }
 
 impl ChainType {
+    // Inherent `from_str` (not `std::str::FromStr`) is part of the public API;
+    // switching to the trait would require callers to `use std::str::FromStr`,
+    // a breaking change — allow the naming-convention lint instead.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self, String> {
         match s {
             "full_research" | "FullResearch" => Ok(Self::FullResearch),

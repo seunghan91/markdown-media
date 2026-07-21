@@ -72,7 +72,7 @@ impl KoreanLegalChunker {
             "{}:{}:{}",
             metadata.law_name,
             metadata.article_number.as_deref().unwrap_or(""),
-            &content.chars().take(100).collect::<String>()
+            content.chars().take(100).collect::<String>()
         );
         
         let mut hasher = Sha256::new();
@@ -92,14 +92,14 @@ impl KoreanLegalChunker {
             let line = line.trim();
 
             // 제목 (# 법령명)
-            if line.starts_with("# ") {
-                metadata.law_name = line[2..].trim().to_string();
+            if let Some(stripped) = line.strip_prefix("# ") {
+                metadata.law_name = stripped.trim().to_string();
                 continue;
             }
 
             // 규정 ID
             if line.starts_with("- **규정 ID**:") {
-                if let Some(id) = line.split(':').last() {
+                if let Some(id) = line.split(':').next_back() {
                     metadata.law_id = id.trim().to_string();
                 }
                 continue;
@@ -107,7 +107,7 @@ impl KoreanLegalChunker {
 
             // 분류
             if line.starts_with("- **분류**:") {
-                if let Some(cat) = line.split(':').last() {
+                if let Some(cat) = line.split(':').next_back() {
                     metadata.category = cat.trim().to_string();
                 }
                 continue;

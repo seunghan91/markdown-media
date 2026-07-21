@@ -11,7 +11,7 @@ documentation = "https://docs.rs/mdm-core"
 keywords = ["markdown", "media", "hwp", "pdf", "docx", "converter"]
 categories = ["parsing", "text-processing", "encoding"]
 readme = "README.md"
-rust-version = "1.70"
+rust-version = "1.75"
 
 [features]
 default = ["hwp", "hwpx", "pdf", "docx", "xls", "rtf", "epub", "image-processing"]

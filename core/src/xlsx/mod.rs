@@ -81,7 +81,7 @@ impl XlsxParser {
             }
 
             // Trim trailing empty rows
-            while rows.last().map_or(false, |r| r.iter().all(|c| c.is_empty())) {
+            while rows.last().is_some_and(|r| r.iter().all(|c| c.is_empty())) {
                 rows.pop();
             }
 
@@ -280,6 +280,8 @@ mod tests {
     }
 
     #[test]
+    // 3.14 here is an arbitrary two-decimal test value, not an approximation of π.
+    #[allow(clippy::approx_constant)]
     fn test_format_float_integer() {
         assert_eq!(format_float(42.0), "42");
         assert_eq!(format_float(3.14), "3.14");

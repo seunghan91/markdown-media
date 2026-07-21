@@ -132,7 +132,7 @@ pub fn find_matching_key(cell_label: &str, cursor: &ValueCursor) -> Option<Strin
 pub fn is_keyword_label(text: &str) -> bool {
     let trimmed = text
         .trim()
-        .trim_end_matches(|c| matches!(c, '¹' | '²' | '³' | '⁴' | '⁵' | '⁶' | '⁷' | '⁸' | '⁹' | '⁰' | '*' | '※'))
+        .trim_end_matches(['¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹', '⁰', '*', '※'])
         .trim();
     if trimmed.is_empty() || trimmed.chars().count() > 15 {
         return false;

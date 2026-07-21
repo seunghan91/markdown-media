@@ -5,7 +5,7 @@
 pub fn to_int32(v: Option<&str>, fallback: f64) -> f64 {
     match v {
         None => fallback,
-        Some(s) if s.is_empty() => fallback,
+        Some("") => fallback,
         Some(s) => {
             // 정수 문자열을 f64로 파싱 후 uint32 음수 복원
             match s.trim().parse::<f64>() {

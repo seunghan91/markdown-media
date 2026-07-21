@@ -374,20 +374,19 @@ fn draw_para<'a, 'i>(p: Node<'a, 'i>, ox: f64, oy: f64, area_w: f64, ctx: &mut C
             warn_once(ctx, "no-lineseg", "조판 캐시 없는 문단 텍스트 생략 — reflow 옵션으로 합성 가능");
         }
         for o in &m.objs {
-            draw_object(o, ox, oy, 0.0, area_w, ctx, depth);
+            draw_object(o, ox, oy, ctx, depth);
         }
         return;
     }
     let plans = plan_lines(&m, ctx.styles);
     let base_v = m.segs[0].vertpos;
 
-    for li in 0..plans.len() {
+    for (li, plan) in plans.iter().enumerate() {
         if let Some(sp) = seg_pages {
             if let Some(&pg) = sp.get(li) {
                 ctx.page = pg;
             }
         }
-        let plan = &plans[li];
         let seg = plan.seg;
         let mut i = plan.start;
         let mut cursor = ox + seg.horzpos + plan.xoff;
@@ -480,7 +479,7 @@ fn draw_para<'a, 'i>(p: Node<'a, 'i>, ox: f64, oy: f64, area_w: f64, ctx: &mut C
             let plan = &plans[plan_idx];
             let x = ox + plan.seg.horzpos + plan.xoff + advance_to(&m, ctx.styles, plan, o.index);
             let y_top = oy + plan.seg.vertpos + (plan.seg.baseline - o.height).max(0.0);
-            draw_object(o, x, y_top, base_v, area_w, ctx, depth);
+            draw_object(o, x, y_top, ctx, depth);
         } else {
             if let Some(sp) = seg_pages {
                 if let Some(&pg) = sp.first() {
@@ -488,7 +487,7 @@ fn draw_para<'a, 'i>(p: Node<'a, 'i>, ox: f64, oy: f64, area_w: f64, ctx: &mut C
                 }
             }
             let (x, y) = anchor_object(o, ox, oy, base_v, area_w, ctx);
-            draw_object(o, x, y, base_v, area_w, ctx, depth);
+            draw_object(o, x, y, ctx, depth);
         }
     }
 }
@@ -661,7 +660,7 @@ fn anchor_object(o: &ParaObj, ox: f64, oy: f64, base_v: f64, area_w: f64, ctx: &
     (x, y)
 }
 
-fn draw_object<'a, 'i>(o: &ParaObj<'a, 'i>, x: f64, y: f64, base_v: f64, area_w: f64, ctx: &mut Ctx<'_>, depth: u32) {
+fn draw_object<'a, 'i>(o: &ParaObj<'a, 'i>, x: f64, y: f64, ctx: &mut Ctx<'_>, depth: u32) {
     match o.tag.as_str() {
         "tbl" => draw_table(o.el, x, y, ctx, depth + 1),
         "pic" => draw_pic(o.el, x, y, ctx),
@@ -681,7 +680,7 @@ fn draw_object<'a, 'i>(o: &ParaObj<'a, 'i>, x: f64, y: f64, base_v: f64, area_w:
                     width: num(sz, "width", 0.0),
                     height: num(sz, "height", 0.0),
                 };
-                draw_object(&sub, x + num(off, "x", 0.0), y + num(off, "y", 0.0), base_v, area_w, ctx, depth + 1);
+                draw_object(&sub, x + num(off, "x", 0.0), y + num(off, "y", 0.0), ctx, depth + 1);
             }
         }
         "equation" => warn_once(ctx, "equation", "수식 개체는 렌더 미지원 — 생략"),

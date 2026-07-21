@@ -311,9 +311,9 @@ fn parse_slide_xml(xml: &str) -> (Option<String>, Vec<String>) {
                     }
                     b"cNvPr" if in_pic => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"descr" {
-                                pic_alt = String::from_utf8_lossy(&attr.value).to_string();
-                            } else if pic_alt.is_empty() && attr.key.as_ref() == b"name" {
+                            if attr.key.as_ref() == b"descr"
+                                || (pic_alt.is_empty() && attr.key.as_ref() == b"name")
+                            {
                                 pic_alt = String::from_utf8_lossy(&attr.value).to_string();
                             }
                         }

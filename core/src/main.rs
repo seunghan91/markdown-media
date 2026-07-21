@@ -716,7 +716,7 @@ fn detect_zip_format(path: &Path) -> String {
 /// Save ManifestV2 JSON as `.mdm` and create the assets directory structure.
 fn save_manifest(manifest: &ManifestV2, output_dir: &Path, stem: &str) -> io::Result<()> {
     let mdm_path = output_dir.join(format!("{}.mdm", stem));
-    let json = manifest.to_json().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let json = manifest.to_json().map_err(io::Error::other)?;
     fs::write(&mdm_path, json)?;
     println!("  \u{2713} Created: {}", mdm_path.display());
     Ok(())
@@ -1332,7 +1332,7 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                     let mut saved_count = 0usize;
                     let mut image_map: Vec<(String, String)> = Vec::new();
                     for img in &doc.image_info {
-                        let filename = img.path.split('/').last().unwrap_or(&img.id);
+                        let filename = img.path.split('/').next_back().unwrap_or(&img.id);
                         let ext = Path::new(filename)
                             .extension()
                             .and_then(|e| e.to_str())
@@ -2206,16 +2206,18 @@ fn batch_convert(pattern: &str, output: &Path) {
     if let Ok(entries) = fs::read_dir(base_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "hwp") {
+            if path.extension().is_some_and(|e| e == "hwp") {
                 let file_name = path.file_name().unwrap_or_default().to_string_lossy();
                 
                 // Simple pattern matching
                 if pattern == "*.hwp" || file_name.contains(pattern.trim_start_matches('*').trim_end_matches("*.hwp")) {
                     println!("\n  Processing: {}", path.display());
                     
-                    if let Err(_) = std::panic::catch_unwind(|| {
+                    if std::panic::catch_unwind(|| {
                         convert_file(&path, output, "mdx", true, false, false);
-                    }) {
+                    })
+                    .is_err()
+                    {
                         errors += 1;
                     } else {
                         count += 1;
@@ -2558,7 +2560,7 @@ fn dump_layout(input: &Path, output: Option<&Path>, page: Option<usize>) -> std:
         None => elements,
     };
     let json = serde_json::to_string_pretty(&filtered)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     match output {
         Some(p) => std::fs::write(p, json)?,
         None => println!("{}", json),
@@ -2580,7 +2582,7 @@ fn triage_pdf(input: &Path, format: &str, output: Option<&Path>) -> std::io::Res
             let doc_str = input.to_string_lossy().into_owned();
             let manifest = build_manifest(&doc_str, &results);
             serde_json::to_string_pretty(&manifest)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                .map_err(std::io::Error::other)?
         }
         _ => {
             let mut buf = String::new();
@@ -3305,8 +3307,10 @@ fn cmd_render(input: &Path, output: &Path, png: bool, scale: f32, reflow: bool) 
 
     #[cfg(feature = "hwpx-render")]
     {
-        let mut opts = mdm_core::hwpx_render::RenderOptions::default();
-        opts.reflow = reflow;
+        let opts = mdm_core::hwpx_render::RenderOptions {
+            reflow,
+            ..Default::default()
+        };
         let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
         if png {
@@ -3363,15 +3367,17 @@ fn cmd_print(input: &Path, output: Option<&Path>, preset: &str, pdf: bool) {
         None => { eprintln!("\u{274c} Failed to read {}", input.display()); std::process::exit(1); }
     };
 
-    let mut opts = mdm_core::print::RenderOptions::default();
-    opts.preset = match preset.to_ascii_lowercase().as_str() {
-        "gov-formal" | "govformal" | "gov" => mdm_core::print::PrintPreset::GovFormal,
-        "compact" => mdm_core::print::PrintPreset::Compact,
-        "default" => mdm_core::print::PrintPreset::Default,
-        other => {
-            eprintln!("\u{26a0}\u{fe0f}  Unknown preset '{}', using 'default'. (default | gov-formal | compact)", other);
-            mdm_core::print::PrintPreset::Default
-        }
+    let opts = mdm_core::print::RenderOptions {
+        preset: match preset.to_ascii_lowercase().as_str() {
+            "gov-formal" | "govformal" | "gov" => mdm_core::print::PrintPreset::GovFormal,
+            "compact" => mdm_core::print::PrintPreset::Compact,
+            "default" => mdm_core::print::PrintPreset::Default,
+            other => {
+                eprintln!("\u{26a0}\u{fe0f}  Unknown preset '{}', using 'default'. (default | gov-formal | compact)", other);
+                mdm_core::print::PrintPreset::Default
+            }
+        },
+        ..Default::default()
     };
 
     if pdf {

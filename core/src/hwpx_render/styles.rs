@@ -225,7 +225,7 @@ fn collect_hangul_fonts(root: roxmltree::Node) -> HashMap<String, String> {
 
 /// "0.12 mm" → pt
 fn border_width_pt(v: Option<&str>) -> f64 {
-    let n: f64 = v.and_then(|s| s.trim().split_whitespace().next()).and_then(|s| s.parse().ok()).unwrap_or(f64::NAN);
+    let n: f64 = v.and_then(|s| s.split_whitespace().next()).and_then(|s| s.parse().ok()).unwrap_or(f64::NAN);
     if !n.is_finite() {
         return 0.34;
     }

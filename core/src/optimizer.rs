@@ -239,9 +239,11 @@ impl Optimizer {
 
     /// Create optimizer with custom quality (legacy compatibility)
     pub fn with_quality(quality: u8) -> Self {
-        let mut settings = OptimizeSettings::default();
-        settings.jpeg_quality = quality.min(100);
-        settings.webp_quality = quality.min(100);
+        let settings = OptimizeSettings {
+            jpeg_quality: quality.min(100),
+            webp_quality: quality.min(100),
+            ..Default::default()
+        };
         Self { settings }
     }
 

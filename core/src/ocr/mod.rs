@@ -8,9 +8,9 @@
 //!
 //! Pre/post-processing follow the official `inference.yml` spec verbatim:
 //!  - det: BGR, long side 960 (multiple of 32), mean/std [0.485,0.456,0.406]/[0.229,0.224,0.225],
-//!         DBPostProcess thresh 0.3 / box_thresh 0.6 / unclip_ratio 1.5
+//!    DBPostProcess thresh 0.3 / box_thresh 0.6 / unclip_ratio 1.5
 //!  - rec: BGR, height 48 aspect-preserving resize + right zero-pad, (x/255-0.5)/0.5,
-//!         CTC decode (blank=0, 1..N=dict, N+1=space), text_score 0.5
+//!    CTC decode (blank=0, 1..N=dict, N+1=space), text_score 0.5
 //!
 //! DB post-processing's contour+minAreaRect is approximated by axis-aligned
 //! connected-component bboxes (scanned government docs are dominated by horizontal

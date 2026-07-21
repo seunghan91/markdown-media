@@ -73,7 +73,7 @@ pub fn is_label_cell(text: &str) -> bool {
     if ENGLISH_LABEL_RE.is_match(&trimmed) && trimmed.chars().count() <= 20 {
         let words: Vec<String> = trimmed
             .to_lowercase()
-            .split(|c: char| c == ' ' || c == '/' || c == '&')
+            .split([' ', '/', '&'])
             .filter(|w| !w.is_empty() && !ENGLISH_STOPWORDS.contains(w))
             .map(|s| s.to_string())
             .collect();

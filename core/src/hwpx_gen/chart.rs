@@ -140,7 +140,7 @@ lazy_static! {
 }
 
 fn clamp_mm(n: f64) -> f64 {
-    n.max(10.0).min(500.0)
+    n.clamp(10.0, 500.0)
 }
 
 fn split_trim_nonempty(s: &str) -> Vec<String> {

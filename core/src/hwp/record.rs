@@ -11,7 +11,7 @@ use std::io::{self, Read, Cursor};
 /// HWPTAG constants - Document Info section
 /// HWP 5.0 tag IDs start at HWPTAG_BEGIN = 0x10 (16)
 pub const HWPTAG_BEGIN: u16 = 0x10;
-pub const HWPTAG_DOCUMENT_PROPERTIES: u16 = HWPTAG_BEGIN + 0; // 16
+pub const HWPTAG_DOCUMENT_PROPERTIES: u16 = HWPTAG_BEGIN; // 16
 pub const HWPTAG_ID_MAPPINGS: u16 = HWPTAG_BEGIN + 1;         // 17
 pub const HWPTAG_BIN_DATA: u16 = HWPTAG_BEGIN + 2;            // 18
 pub const HWPTAG_FACE_NAME: u16 = HWPTAG_BEGIN + 3;           // 19
@@ -94,13 +94,13 @@ pub const EXTENDED_CTRL_CHARS: [u16; 25] = [
 /// Check if character is a high surrogate (0xD800-0xDBFF)
 #[inline]
 pub fn is_high_surrogate(code: u16) -> bool {
-    code >= 0xD800 && code <= 0xDBFF
+    (0xD800..=0xDBFF).contains(&code)
 }
 
 /// Check if character is a low surrogate (0xDC00-0xDFFF)
 #[inline]
 pub fn is_low_surrogate(code: u16) -> bool {
-    code >= 0xDC00 && code <= 0xDFFF
+    (0xDC00..=0xDFFF).contains(&code)
 }
 
 /// Decode surrogate pair to Unicode code point
@@ -356,6 +356,7 @@ impl Default for TableCell {
 
 /// Parse table structure from TABLE record
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct TableInfo {
     pub rows: u16,
     pub cols: u16,
@@ -365,18 +366,6 @@ pub struct TableInfo {
     pub col_widths: Vec<u16>,
 }
 
-impl Default for TableInfo {
-    fn default() -> Self {
-        TableInfo {
-            rows: 0,
-            cols: 0,
-            cell_count: 0,
-            cell_spans: Vec::new(),
-            row_heights: Vec::new(),
-            col_widths: Vec::new(),
-        }
-    }
-}
 
 pub fn parse_table_info(data: &[u8]) -> Option<TableInfo> {
     if data.len() < 8 {
@@ -430,6 +419,7 @@ pub fn parse_table_info(data: &[u8]) -> Option<TableInfo> {
 /// - Height: 2 bytes
 /// - Left margin: 2 bytes
 /// - Right margin: 2 bytes
+///
 /// Parse cell LIST_HEADER. Returns position + span fields.
 ///
 /// HWP5 cell LIST_HEADER layout (offsets are bytes from start of record data):
@@ -1000,9 +990,9 @@ mod tests {
         // Create a simple record: tag=0x43 (PARA_TEXT), level=0, size=4
         // Header: tag_id | (level << 10) | (size << 20)
         // = 0x43 | 0 | (4 << 20) = 0x00400043
-        let header: u32 = 0x43 | (0 << 10) | (4 << 20);
+        let header: u32 = 0x43 | (4 << 20);
         let mut data = header.to_le_bytes().to_vec();
-        data.extend_from_slice(&[b'T', b'e', b's', b't']);
+        data.extend_from_slice(b"Test");
 
         let mut parser = RecordParser::new(&data);
         let record = parser.parse_next().unwrap();

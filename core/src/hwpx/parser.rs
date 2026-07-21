@@ -142,7 +142,7 @@ impl Table {
     pub fn to_html(&self) -> String {
         let mut out = String::from("<table>\n");
         for (r, row) in self.cells.iter().enumerate() {
-            let tag = if r == 0 && self.has_header { "th" } else if r == 0 { "th" } else { "td" };
+            let tag = if r == 0 { "th" } else { "td" };
             let mut row_html = String::new();
             for (c, text) in row.iter().enumerate() {
                 // Default to (1,1) if spans grid is short (defensive)
@@ -479,13 +479,12 @@ fn parse_char_properties(header_xml: &str) -> HashMap<u32, CharStyle> {
             // Extract id
             if let Some(id) = extract_attr(char_pr_xml, "id") {
                 if let Ok(id_num) = id.parse::<u32>() {
-                    let mut style = CharStyle::default();
-
-                    // Check for bold
-                    style.bold = char_pr_xml.contains("<hh:bold") || char_pr_xml.contains("<hh:bold/>");
-
-                    // Check for italic
-                    style.italic = char_pr_xml.contains("<hh:italic") || char_pr_xml.contains("<hh:italic/>");
+                    // Check for bold / italic
+                    let mut style = CharStyle {
+                        bold: char_pr_xml.contains("<hh:bold") || char_pr_xml.contains("<hh:bold/>"),
+                        italic: char_pr_xml.contains("<hh:italic") || char_pr_xml.contains("<hh:italic/>"),
+                        ..Default::default()
+                    };
 
                     // Check for underline. Whitelist OWPML position values.
                     // Symmetric to the strikeout whitelist: unknown / future
@@ -686,7 +685,7 @@ fn parse_section_xml(
                     for nested in hoisted {
                         let marker_n = tables.len(); // rough — real N is in marker text
                         let _ = marker_n;
-                        result.push_str("\n");
+                        result.push('\n');
                         result.push_str(&nested.to_markdown());
                         result.push('\n');
                         tables.push(nested);
@@ -1032,7 +1031,7 @@ fn parse_table_ctx(
 
     // Drop fully-empty rows (information-free shadow noise) — but ONLY when
     // no merged cells exist, otherwise span indices would drift.
-    let (cells, spans): (Vec<Vec<String>>, Vec<Vec<(u16, u16)>>) = if has_merged {
+    let (cells, spans) = if has_merged {
         let cells: Vec<Vec<String>> = grid
             .into_iter()
             .map(|row| {
@@ -2755,8 +2754,8 @@ mod tests {
         assert_eq!(map.get(&2), Some(&1));
         assert_eq!(map.get(&3), Some(&2));
         assert_eq!(map.get(&8), Some(&7));
-        assert!(map.get(&0).is_none());
-        assert!(map.get(&10).is_none());
+        assert!(!map.contains_key(&0));
+        assert!(!map.contains_key(&10));
     }
 
     #[test]

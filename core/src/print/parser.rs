@@ -18,7 +18,7 @@
 //! judgment call: if full CommonMark fidelity (nested emphasis, inline
 //! code, blockquotes, fenced code blocks, HTML passthrough) is needed
 //! later, swap this for `pulldown-cmark` — that's a Cargo.toml addition
-//! + reimplementing `markdown_to_ir` on top of its event stream, not a
+//! plus reimplementing `markdown_to_ir` on top of its event stream, not a
 //! source-compatible change to today's signature.
 
 use crate::ir::{IRBlock, IRCell, IRTable, ListItem};

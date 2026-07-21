@@ -182,6 +182,9 @@ fn row_height(cells: &[String], widths: &[i32], char_height: u32, preset: bool) 
     max_lines * ((char_height as f64 * 1.6).round() as i32) + 282
 }
 
+// Each parameter maps 1:1 to a distinct OWPML `<hp:tc>` attribute/child; bundling
+// them into a params struct wouldn't reduce complexity, just relocate it — allow.
+#[allow(clippy::too_many_arguments)]
 fn tc_xml(
     cell: &str,
     col_addr: usize,
@@ -538,8 +541,8 @@ fn layout_html_rows(rows: &[Vec<HtmlCell>]) -> (Vec<PlacedCell>, usize, usize) {
             while occupied.contains(&(r, c)) {
                 c += 1;
             }
-            let col_span = cell.col_span.min(64).max(1);
-            let row_span = cell.row_span.min(256).max(1);
+            let col_span = cell.col_span.clamp(1, 64);
+            let row_span = cell.row_span.clamp(1, 256);
             placed.push(PlacedCell {
                 r,
                 c,
@@ -559,7 +562,7 @@ fn layout_html_rows(rows: &[Vec<HtmlCell>]) -> (Vec<PlacedCell>, usize, usize) {
     }
     let row_cnt = rows.len();
     // Fill holes so every row's cell widths sum to the table width.
-    for r in 0..row_cnt {
+    for (r, row) in rows.iter().enumerate() {
         for c in 0..col_cnt {
             if !occupied.contains(&(r, c)) {
                 placed.push(PlacedCell {
@@ -568,7 +571,7 @@ fn layout_html_rows(rows: &[Vec<HtmlCell>]) -> (Vec<PlacedCell>, usize, usize) {
                     col_span: 1,
                     row_span: 1,
                     inner: String::new(),
-                    is_header: rows[r].first().map(|_| false).unwrap_or(false),
+                    is_header: row.first().map(|_| false).unwrap_or(false),
                 });
                 occupied.insert((r, c));
             }
@@ -654,9 +657,13 @@ pub fn generate_html_table_xml(
         }
         let content_h = (wrap_lines.max(1)) * line_h + 282;
         let per_row = (content_h + cell.row_span as i32 - 1) / cell.row_span as i32;
-        for r in cell.r..(cell.r + cell.row_span).min(row_cnt) {
-            if per_row > row_heights[r] {
-                row_heights[r] = per_row;
+        for h in row_heights
+            .iter_mut()
+            .take((cell.r + cell.row_span).min(row_cnt))
+            .skip(cell.r)
+        {
+            if per_row > *h {
+                *h = per_row;
             }
         }
     }
@@ -714,8 +721,8 @@ pub fn generate_html_table_xml(
     }
 
     let mut tr_elems = String::new();
-    for r in 0..row_cnt {
-        tr_elems.push_str(&format!("<hp:tr>{}</hp:tr>", tc_by_row[r].join("")));
+    for row in &tc_by_row {
+        tr_elems.push_str(&format!("<hp:tr>{}</hp:tr>", row.join("")));
     }
     let tbl_w: i32 = col_widths.iter().sum();
     let tbl_h: i32 = row_heights.iter().sum();

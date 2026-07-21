@@ -135,8 +135,7 @@ fn extract_from_table(table: &Table) -> Vec<FormField> {
                 !tt.is_empty() && tt.chars().count() <= 20
             });
         if all_labels {
-            for ri in 1..rows.len() {
-                let data = &rows[ri];
+            for (ri, data) in rows.iter().enumerate().skip(1) {
                 for ci in 0..header.len().min(data.len()) {
                     let label = header[ci].text().trim().to_string();
                     let value = data[ci].text().trim().to_string();

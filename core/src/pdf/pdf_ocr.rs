@@ -295,11 +295,11 @@ pub fn ocr_pdf(bytes: &[u8], opts: &OcrPdfOptions) -> io::Result<Vec<PageOcr>> {
     let pdfium = Pdfium::new(
         Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
             .or_else(|_| Pdfium::bind_to_system_library())
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("pdfium bind failed: {e}")))?,
+            .map_err(|e| io::Error::other(format!("pdfium bind failed: {e}")))?,
     );
     let document = pdfium
         .load_pdf_from_byte_slice(bytes, None)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("pdfium load failed: {e}")))?;
+        .map_err(|e| io::Error::other(format!("pdfium load failed: {e}")))?;
 
     // pdfium renders at 72dpi by default (1 point == 1 pixel), so
     // scale_page_by_factor(dpi / 72) gets us the target DPI.
@@ -311,11 +311,11 @@ pub fn ocr_pdf(bytes: &[u8], opts: &OcrPdfOptions) -> io::Result<Vec<PageOcr>> {
             let page = document
                 .pages()
                 .get(page_idx as PdfPageIndex)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("pdfium page {page_idx}: {e}")))?;
+                .map_err(|e| io::Error::other(format!("pdfium page {page_idx}: {e}")))?;
             let config = PdfRenderConfig::new().scale_page_by_factor(dpi / 72.0);
             let bitmap = page
                 .render_with_config(&config)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("pdfium render page {page_idx}: {e}")))?;
+                .map_err(|e| io::Error::other(format!("pdfium render page {page_idx}: {e}")))?;
             let width = bitmap.width() as u32;
             let height = bitmap.height() as u32;
             Ok(RasterPage { rgba: bitmap.as_rgba_bytes(), width, height })

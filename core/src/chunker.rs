@@ -64,23 +64,21 @@ lazy_static::lazy_static! {
 /// How consecutive blocks are grouped into chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Granularity {
     /// One [`IRBlock`] == one chunk.
     Block,
     /// Consecutive non-heading/non-table blocks that share the same
     /// breadcrumb are merged into one chunk. Matches kkdoc's `"section"`
     /// mode (the default there and here).
+    #[default]
     Section,
 }
 
-impl Default for Granularity {
-    fn default() -> Self {
-        Granularity::Section
-    }
-}
 
 /// Chunking policy.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ChunkOptions {
     /// Soft character budget per chunk. `None` (default) disables
     /// splitting entirely — matches kkdoc's "no cutting policy" stance.
@@ -93,16 +91,6 @@ pub struct ChunkOptions {
     pub granularity: Granularity,
 }
 
-impl Default for ChunkOptions {
-    fn default() -> Self {
-        Self {
-            max_chars: None,
-            overlap: 0,
-            include_table_cells: false,
-            granularity: Granularity::default(),
-        }
-    }
-}
 
 /// Chunk kind — mirrors kkdoc `DocChunk.type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

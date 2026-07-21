@@ -238,7 +238,7 @@ pub(crate) fn take_profile<'a>(
 }
 
 /// `charPrBase` for [`build_profile_remap`] — static charPr 0..=10 (11 kinds)
-/// + the preset auto-ratio variant channel (`ratio_variant_count * 4`, not
+/// plus the preset auto-ratio variant channel (`ratio_variant_count * 4`, not
 /// ported here — always 0 in this port, see module docs).
 pub(crate) fn profile_char_pr_base(ratio_variant_count: u32) -> u32 {
     11 + ratio_variant_count * 4
