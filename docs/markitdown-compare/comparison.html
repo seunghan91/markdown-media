@@ -4,7 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MDM × MarkItDown — Document-to-Markdown 비교 분석</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/sun-typeface/SUIT@2/fonts/variable/woff2/SUIT-Variable.css">
+<style>
+  @font-face {
+    font-family: 'SUIT Variable';
+    font-weight: 100 900;
+    font-style: normal;
+    /* SUIT 가 배포하는 CSS 에는 font-display 가 없어 기본값 auto 로 동작한다.
+       auto 는 폰트를 받을 때까지 텍스트를 최대 3초 숨겨 LCP 를 그만큼 늦춘다. */
+    font-display: swap;
+    src: url('https://cdn.jsdelivr.net/gh/sun-typeface/SUIT@2/fonts/variable/woff2/SUIT-Variable.woff2') format('woff2-variations');
+  }
+</style>
 <style>
   :root {
     --bg: #0f1115;
