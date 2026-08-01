@@ -732,6 +732,30 @@ fn save_asset_file(output_dir: &Path, asset: &manifest::Asset, data: &[u8]) -> i
     Ok(())
 }
 
+/// Count leftover `(assets/image{N})` references that a rewrite pass failed
+/// to resolve to a manifest asset path.
+///
+/// Resolved refs use `(assets/images/{hash}.{ext})` — the `s` right after
+/// `image` means the digit scan below finds zero digits and skips them, so
+/// this only counts genuinely unrewritten `image{N}` placeholders.
+fn count_unresolved_image_refs(content: &str) -> usize {
+    let marker = "(assets/image";
+    let mut count = 0;
+    let mut search_from = 0;
+    while let Some(rel_pos) = content[search_from..].find(marker) {
+        let after_marker = search_from + rel_pos + marker.len();
+        let rest = &content[after_marker..];
+        let digit_len = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digit_len > 0 && rest[digit_len..].starts_with(')') {
+            count += 1;
+        }
+        search_from = after_marker;
+    }
+    count
+}
+
 /// RAII guard that redirects stdout to /dev/null for its lifetime.
 ///
 /// Used by `stream_convert` so that the heavily-println-heavy `convert_*`
@@ -1026,7 +1050,12 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
 
             // Register and save images via ManifestV2
             let mut image_map: Vec<(String, String)> = Vec::new();
-            for img in &mdm.images {
+            // Maps the body text's `image{bin_id}` reference (bin_id = the
+            // record's raw BinData ID, see hwp::record::parse_picture_component)
+            // to the manifest's content-hash filename, so the mdx rewrite pass
+            // below can resolve `![imageN](assets/imageN)` to a real asset path.
+            let mut bin_id_map: HashMap<u16, String> = HashMap::new();
+            for (fallback_idx, img) in mdm.images.iter().enumerate() {
                 let ext = Path::new(&img.name)
                     .extension()
                     .and_then(|e| e.to_str())
@@ -1036,7 +1065,25 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                     ..Default::default()
                 };
                 let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, meta);
-                image_map.push((img.name.clone(), hash_filename));
+                image_map.push((img.name.clone(), hash_filename.clone()));
+
+                match hwp::ole::parse_bin_data_id(&img.original_name) {
+                    Some(bin_id) => {
+                        bin_id_map.insert(bin_id, hash_filename);
+                    }
+                    None => {
+                        // Not a `BIN{hex}` stream name — fall back to
+                        // enumeration order (1-indexed, matching HWP's own
+                        // BinData numbering convention) and surface it so a
+                        // silent mismatch doesn't hide as a broken reference.
+                        let fallback_id = (fallback_idx + 1) as u16;
+                        eprintln!(
+                            "  \u{26a0}\u{fe0f}  BinData stream '{}' doesn't match BIN{{hex}} naming — falling back to sequence order (image{})",
+                            img.original_name, fallback_id
+                        );
+                        bin_id_map.insert(fallback_id, hash_filename);
+                    }
+                }
             }
 
             // Save images to disk (always when present, not just with --extract-images)
@@ -1092,12 +1139,25 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                     println!("  \u{2713} Created: {}", json_path.display());
                 }
                 _ => {
-                    // Default: MDX format with @[[]] media references
+                    // Default: MDX format. `mdm.to_mdx()` renders body images as
+                    // `![imageN](assets/imageN)` (ir.rs's IRBlock::Image, where N
+                    // is the raw BinData ID) — rewrite each to the manifest's
+                    // real content-hash asset path via `bin_id_map`.
                     let mut mdx_content = mdm.to_mdx();
-                    for (orig_name, _hash_fn) in &image_map {
-                        let md_img = format!("![{}](assets/{})", orig_name, orig_name);
-                        let replacement = format!("@[[{}]]", orig_name);
-                        mdx_content = mdx_content.replace(&md_img, &replacement);
+                    for (bin_id, hash_filename) in &bin_id_map {
+                        if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                            let alt = format!("image{}", bin_id);
+                            let md_img = format!("![{}](assets/{})", alt, alt);
+                            let replacement = format!("![{}]({})", alt, asset.src);
+                            mdx_content = mdx_content.replace(&md_img, &replacement);
+                        }
+                    }
+                    let unresolved = count_unresolved_image_refs(&mdx_content);
+                    if unresolved > 0 {
+                        eprintln!(
+                            "  \u{26a0}\u{fe0f}  {} image reference(s) in {} could not be resolved to a manifest asset",
+                            unresolved, stem
+                        );
                     }
                     let mdx_path = output.join(format!("{}.mdx", stem));
                     fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");

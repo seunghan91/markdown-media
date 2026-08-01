@@ -562,34 +562,25 @@ pub fn parse_shape_component(data: &[u8], shape_type: ShapeType) -> Option<Shape
 
 /// Parse SHAPE_COMPONENT_PICTURE record
 ///
-/// Additional picture-specific data after SHAPE_COMPONENT:
-/// - Border color: 4 bytes
-/// - Border thickness: 4 bytes
-/// - Border properties: 4 bytes
-/// - Image clip left: 4 bytes
-/// - Image clip top: 4 bytes
-/// - Image clip right: 4 bytes
-/// - Image clip bottom: 4 bytes
-/// - Brightness: 1 byte
-/// - Contrast: 1 byte
-/// - Effect: 1 byte
-/// - BinData ID: 2 bytes (reference to BinData record)
+/// Additional picture-specific data after SHAPE_COMPONENT (border color,
+/// thickness, clip rect, brightness/contrast/effect, ...) precedes a
+/// trailing BinData ID (2 bytes) that closes out the record.
+///
+/// [C2 finding] A fixed `offset 24 + 28 = 52` read (the original
+/// implementation here) does NOT hold: every SHAPE_COMPONENT_PICTURE record
+/// observed across samples/input/ (sample-5017.hwp, sample-5017-pics.hwp,
+/// shapecontainer-2.hwp, shapepict-scaled.hwp) is 73 bytes long, and offset
+/// 52 decodes to implausible values (37500, 27464, 1200, ...) while the
+/// *trailing* 2 bytes decode to small IDs (1, 2) consistent with each
+/// document's actual BinData item count. The BinData ID is read from the end
+/// of the record instead.
 pub fn parse_picture_component(data: &[u8]) -> Option<(ShapeComponent, u16)> {
     // First parse the shape component base
     let mut shape = parse_shape_component(data, ShapeType::Picture)?;
 
-    // Picture-specific data starts at offset 24
-    // BinData ID is typically at offset 24 + 28 = 52
-    let bin_data_offset = 52;
-    if data.len() >= bin_data_offset + 2 {
-        let bin_data_id = u16::from_le_bytes([data[bin_data_offset], data[bin_data_offset + 1]]);
-        shape.bin_data_id = Some(bin_data_id);
-        return Some((shape, bin_data_id));
-    }
-
-    // Try alternative offset (some HWP versions use different layouts)
+    // BinData ID is the last 2 bytes of the picture-specific payload.
     if data.len() >= 26 {
-        let bin_data_id = u16::from_le_bytes([data[24], data[25]]);
+        let bin_data_id = u16::from_le_bytes([data[data.len() - 2], data[data.len() - 1]]);
         shape.bin_data_id = Some(bin_data_id);
         return Some((shape, bin_data_id));
     }
@@ -1000,6 +991,26 @@ mod tests {
         assert_eq!(record.tag_id, HWPTAG_PARA_TEXT);
         assert_eq!(record.level, 0);
         assert_eq!(record.size, 4);
+    }
+
+    #[test]
+    fn test_parse_picture_component_reads_trailing_bin_data_id() {
+        // Real SHAPE_COMPONENT_PICTURE payload captured from
+        // sample-5017-pics.hwp (see [C2] investigation) — 73 bytes, with the
+        // BinData ID (2) in the trailing 2 bytes, not at the old offset-52
+        // assumption (which decodes those same bytes to the implausible 37500).
+        let data: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x38, 0x31, 0x00, 0x00, 0x88, 0x1d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x1d,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7c, 0x92, 0x00, 0x00,
+            0xe4, 0x57, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x02, 0x00,
+        ];
+        assert_eq!(data.len(), 73);
+        let (shape, bin_id) = parse_picture_component(&data).expect("parses");
+        assert_eq!(bin_id, 2);
+        assert_eq!(shape.bin_data_id, Some(2));
     }
 
     #[test]

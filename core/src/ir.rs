@@ -385,6 +385,13 @@ pub fn blocks_to_markdown(blocks: &[IRBlock]) -> String {
                 }
             }
             IRBlock::Image { alt } => {
+                // Contract: `alt` is `"image{bin_id}"` (bin_id = the raw
+                // BinData ID from the source record, e.g. HWP's
+                // SHAPE_COMPONENT_PICTURE). Callers post-process this exact
+                // `![imageN](assets/imageN)` placeholder — rewriting it to the
+                // manifest's content-hash asset path (see main.rs's HWP mdx
+                // rewrite pass) — so don't change this shape without updating
+                // that rewrite.
                 out.push_str(&format!("![{}](assets/{})", alt, alt));
             }
             IRBlock::Separator => {

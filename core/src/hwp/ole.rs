@@ -415,6 +415,26 @@ impl OleReader {
     }
 }
 
+/// Parse the decimal BinData ID encoded in a `BinData/` stream name.
+///
+/// HWP writers name BinData streams `BIN{:04X}.{ext}` — the digits are the
+/// same BinData ID referenced (as a plain `u16`) by `SHAPE_COMPONENT_PICTURE`
+/// records (see `record::parse_picture_component`), just hex-formatted for
+/// the on-disk stream name. `"BIN000A.jpg"` therefore maps to bin_id `10`,
+/// not `10` read as decimal digits. Returns `None` when `stream_name` doesn't
+/// start with `"BIN"` followed by at least one hex digit.
+pub fn parse_bin_data_id(stream_name: &str) -> Option<u16> {
+    let hex_part: String = stream_name
+        .strip_prefix("BIN")?
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit())
+        .collect();
+    if hex_part.is_empty() {
+        return None;
+    }
+    u16::from_str_radix(&hex_part, 16).ok()
+}
+
 /// Decompress zlib-compressed data with a hard output ceiling.
 ///
 /// HWP files use raw deflate (equivalent to Python's `zlib.decompress(data, -15)`).
@@ -469,5 +489,16 @@ mod tests {
         let flags = HwpFlags::from_bytes(&data);
         assert!(flags.compressed);
         assert!(flags.encrypted);
+    }
+
+    #[test]
+    fn test_parse_bin_data_id() {
+        assert_eq!(parse_bin_data_id("BIN0001.jpg"), Some(1));
+        // Hex, not decimal: 0x0A = 10, not "000A" misread as 4-digit decimal.
+        assert_eq!(parse_bin_data_id("BIN000A.jpg"), Some(10));
+        assert_eq!(parse_bin_data_id("BIN0010.png"), Some(16));
+        assert_eq!(parse_bin_data_id("BIN0001"), Some(1)); // no extension
+        assert_eq!(parse_bin_data_id("NotBinData.jpg"), None);
+        assert_eq!(parse_bin_data_id("BIN"), None);
     }
 }
