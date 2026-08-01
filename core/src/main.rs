@@ -1836,18 +1836,71 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                             println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
-                            // MDX format — replace image refs with @[[]] syntax
+                            // MDX format — the parser (docx/parser.rs's
+                            // InlineElement::ImageRef via DocxDocument::to_markdown())
+                            // already emits `![{alt}]({filename})` directly at the
+                            // image's real position in the body, where `filename` is
+                            // the relationship-resolved bare name (e.g. "image1.png").
+                            // Rewrite just the path portion to the manifest's
+                            // content-hash asset path so body refs and saved files
+                            // line up — alt text (real or filename-fallback) is left
+                            // untouched.
                             let mut mdx_content = doc.to_mdx(&source_name);
-                            for (orig_id, _hash_fn) in &image_map {
-                                let md_img = format!("![{}](assets/{})", orig_id, _hash_fn);
-                                let replacement = format!("@[[{}]]", orig_id);
-                                mdx_content = mdx_content.replace(&md_img, &replacement);
-                                // Also handle original filename references
+                            let mut referenced_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                            for (orig_id, hash_filename) in &image_map {
                                 if let Some(img) = doc.images.iter().find(|i| i.id == *orig_id) {
-                                    let orig_ref = format!("![{}](assets/{})", orig_id, img.filename);
-                                    mdx_content = mdx_content.replace(&orig_ref, &replacement);
+                                    let md_pattern = format!("]({})", img.filename);
+                                    if mdx_content.contains(&md_pattern) {
+                                        if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                                            let replacement = format!("]({})", asset.src);
+                                            mdx_content = mdx_content.replace(&md_pattern, &replacement);
+                                            referenced_ids.insert(orig_id.as_str());
+                                        }
+                                    }
                                 }
                             }
+
+                            // Any embedded image whose filename never appeared as a
+                            // body `![alt](filename)` reference (e.g. a legacy
+                            // w:pict/VML image the w:drawing-only parser doesn't emit
+                            // into the body, or a simply-unused relationship) would
+                            // otherwise be silently dropped from the document — list
+                            // it in a trailing section instead (mirrors HWPX's
+                            // `## 이미지` convention).
+                            let unreferenced: Vec<_> = doc.images.iter()
+                                .filter(|img| !referenced_ids.contains(img.id.as_str()))
+                                .collect();
+                            if !unreferenced.is_empty() {
+                                mdx_content.push_str("\n\n## 이미지\n\n");
+                                for img in &unreferenced {
+                                    if let Some((_, hash_filename)) = image_map.iter().find(|(id, _)| id == &img.id) {
+                                        if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                                            mdx_content.push_str(&format!(
+                                                "- ![{}]({}) ({} bytes)\n",
+                                                img.alt_text.clone().unwrap_or_else(|| img.filename.clone()),
+                                                asset.src,
+                                                img.data.as_ref().map(|d| d.len()).unwrap_or(0)
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Leftover raw `![alt](original_filename)` refs — happens
+                            // only if a drawing was parsed into the body but its byte
+                            // data couldn't be read (so it never reached image_map/the
+                            // manifest at all).
+                            let unresolved = doc.images.iter()
+                                .filter(|img| img.data.is_none())
+                                .filter(|img| mdx_content.contains(&format!("]({})", img.filename)))
+                                .count();
+                            if unresolved > 0 {
+                                eprintln!(
+                                    "  \u{26a0}\u{fe0f}  {} image reference(s) in {} could not be resolved to a manifest asset",
+                                    unresolved, stem
+                                );
+                            }
+
                             let mdx_path = output.join(format!("{}.mdx", stem));
                             fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");
                             println!("  \u{2713} Created: {}", mdx_path.display());

@@ -105,6 +105,19 @@ pub enum InlineElement {
     EndnoteRef {
         id: String,
     },
+    /// Inline (`wp:inline`) or floating (`wp:anchor`) image reference from `w:drawing`.
+    ImageRef {
+        /// Relationship id from `a:blip` `r:embed` (e.g. "rId1")
+        rel_id: String,
+        /// Filename resolved via word/_rels/document.xml.rels (e.g. "image1.png")
+        filename: String,
+        /// Alt text from `wp:docPr` @descr
+        alt: Option<String>,
+        /// Width in pixels, derived from `wp:extent` @cx (EMU ÷ 9525)
+        width_px: Option<u32>,
+        /// Height in pixels, derived from `wp:extent` @cy (EMU ÷ 9525)
+        height_px: Option<u32>,
+    },
 }
 
 impl InlineElement {
@@ -120,6 +133,10 @@ impl InlineElement {
             }
             InlineElement::FootnoteRef { id } => format!("[^{}]", id),
             InlineElement::EndnoteRef { id } => format!("[^en{}]", id),
+            InlineElement::ImageRef { filename, alt, .. } => {
+                let alt_text = alt.clone().unwrap_or_else(|| filename.clone());
+                format!("![{}]({})", alt_text, filename)
+            }
         }
     }
 }
@@ -172,6 +189,16 @@ fn default_list_ordinal() -> u32 {
     1
 }
 
+/// Convert a DrawingML EMU length (`wp:extent` @cx/@cy) to pixels.
+/// 914400 EMU = 1 inch = 96px at the standard 96dpi Office uses, i.e. 9525 EMU/px.
+fn emu_to_px(emu: u32) -> u32 {
+    emu / 9525
+}
+
+/// rel_id -> (alt, width_px, height_px), collected from `w:drawing` elements in the
+/// body while parsing, then used to backfill `DocxImage` metadata in `extract_images()`.
+type BodyImageInfo = HashMap<String, (Option<String>, Option<u32>, Option<u32>)>;
+
 impl Paragraph {
     /// Get plain text content
     pub fn text(&self) -> String {
@@ -196,17 +223,22 @@ impl Paragraph {
                     // Footnote/endnote refs should attach directly to preceding text (no space)
                     let is_note_ref = matches!(&self.inlines[idx],
                         InlineElement::FootnoteRef { .. } | InlineElement::EndnoteRef { .. });
+                    // Image refs render as `![alt](file)` — leading '!' would otherwise be
+                    // caught by the "no space before punctuation" rule below (next_is_punct
+                    // treats '!' as an exclamation mark), so it needs its own bypass rather
+                    // than relying on first_char alone.
+                    let is_image_ref = matches!(&self.inlines[idx], InlineElement::ImageRef { .. });
 
                     // Need space if: prev ends with word char and next starts with markdown/word char
                     let needs_space = !is_note_ref &&
                         (last_char.is_alphanumeric() || last_char == '*' || last_char == '~' || last_char == ']' || last_char == ')') &&
                         (first_char == '[' || first_char == '*' || first_char == '~' ||
-                         first_char.is_alphanumeric());
+                         first_char.is_alphanumeric() || is_image_ref);
 
                     // But don't add space if prev already ends with space or next starts with punctuation
                     let already_spaced = last_char == ' ' || first_char == ' ';
-                    let next_is_punct = first_char == ',' || first_char == '.' || first_char == ';' ||
-                                        first_char == ':' || first_char == '!' || first_char == '?';
+                    let next_is_punct = !is_image_ref && (first_char == ',' || first_char == '.' || first_char == ';' ||
+                                        first_char == ':' || first_char == '!' || first_char == '?');
 
                     if needs_space && !already_spaced && !next_is_punct {
                         result.push(' ');
@@ -1087,6 +1119,17 @@ impl<R: Read + Seek> DocxParser<R> {
         let mut hyperlink_url = String::new();
         let mut hyperlink_runs: Vec<TextRun> = Vec::new();
 
+        // w:drawing state — covers both wp:inline and wp:anchor (floating) images.
+        // wp:docPr/wp:extent/a:blip are self-closing in practice, so the actual
+        // capture happens in the Event::Empty branch; Event::Start is handled too
+        // for robustness, matching the pStyle/ilvl/numId dual-branch pattern below.
+        let mut in_drawing = false;
+        let mut drawing_rel_id: Option<String> = None;
+        let mut drawing_alt: Option<String> = None;
+        let mut drawing_cx: Option<u32> = None;
+        let mut drawing_cy: Option<u32> = None;
+        let mut body_image_info: BodyImageInfo = HashMap::new();
+
         // Track numId for deferred list type resolution
         let mut current_num_id: Option<String> = None;
 
@@ -1163,6 +1206,39 @@ impl<R: Read + Seek> DocxParser<R> {
                         b"r" if in_paragraph => {
                             in_run = true;
                             current_run = TextRun::default();
+                        }
+                        b"drawing" if in_run => {
+                            in_drawing = true;
+                            drawing_rel_id = None;
+                            drawing_alt = None;
+                            drawing_cx = None;
+                            drawing_cy = None;
+                        }
+                        b"docPr" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"descr" {
+                                    let descr = String::from_utf8_lossy(&attr.value).to_string();
+                                    if !descr.is_empty() {
+                                        drawing_alt = Some(descr);
+                                    }
+                                }
+                            }
+                        }
+                        b"extent" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"cx" => drawing_cx = String::from_utf8_lossy(&attr.value).parse::<u32>().ok(),
+                                    b"cy" => drawing_cy = String::from_utf8_lossy(&attr.value).parse::<u32>().ok(),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        b"blip" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"embed" {
+                                    drawing_rel_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
                         }
                         b"t" if in_run => {
                             in_text = true;
@@ -1394,6 +1470,35 @@ impl<R: Read + Seek> DocxParser<R> {
                         b"strike" if in_run => {
                             current_run.strike = true;
                         }
+                        // wp:docPr / wp:extent / a:blip are almost always self-closing —
+                        // this Empty branch is the primary path for image metadata (see
+                        // the Event::Start arms above for the defensive Start-form dupe).
+                        b"docPr" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"descr" {
+                                    let descr = String::from_utf8_lossy(&attr.value).to_string();
+                                    if !descr.is_empty() {
+                                        drawing_alt = Some(descr);
+                                    }
+                                }
+                            }
+                        }
+                        b"extent" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                match attr.key.local_name().as_ref() {
+                                    b"cx" => drawing_cx = String::from_utf8_lossy(&attr.value).parse::<u32>().ok(),
+                                    b"cy" => drawing_cy = String::from_utf8_lossy(&attr.value).parse::<u32>().ok(),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        b"blip" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"embed" {
+                                    drawing_rel_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
                         b"pStyle" if in_paragraph => {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"val" {
@@ -1548,6 +1653,41 @@ impl<R: Read + Seek> DocxParser<R> {
                         b"t" => {
                             in_text = false;
                         }
+                        b"drawing" => {
+                            if in_drawing {
+                                if let Some(rel_id) = drawing_rel_id.take() {
+                                    let filename = self.relationships.get(&rel_id)
+                                        .map(|target| {
+                                            Path::new(target)
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| target.clone())
+                                        })
+                                        .unwrap_or_else(|| rel_id.clone());
+                                    let width_px = drawing_cx.map(emu_to_px);
+                                    let height_px = drawing_cy.map(emu_to_px);
+
+                                    body_image_info.insert(rel_id.clone(), (drawing_alt.clone(), width_px, height_px));
+
+                                    let elem = InlineElement::ImageRef {
+                                        rel_id,
+                                        filename,
+                                        alt: drawing_alt.clone(),
+                                        width_px,
+                                        height_px,
+                                    };
+                                    current_para.inlines.push(elem.clone());
+                                    if in_table_cell {
+                                        cell_inlines.push(elem);
+                                    }
+                                }
+                                in_drawing = false;
+                                drawing_rel_id = None;
+                                drawing_alt = None;
+                                drawing_cx = None;
+                                drawing_cy = None;
+                            }
+                        }
                         b"r" => {
                             if !current_run.text.is_empty() {
                                 if in_hyperlink {
@@ -1682,8 +1822,20 @@ impl<R: Read + Seek> DocxParser<R> {
             }
         }
 
-        // Extract images
-        let images = self.extract_images()?;
+        // Extract images, backfilling alt/width/height parsed from the body's
+        // w:drawing elements (extract_images() itself only sees the raw
+        // word/_rels relationship list, which carries no alt/size info).
+        let images: Vec<DocxImage> = self.extract_images()?
+            .into_iter()
+            .map(|mut img| {
+                if let Some((alt, width, height)) = body_image_info.get(&img.id) {
+                    img.alt_text = alt.clone();
+                    img.width = *width;
+                    img.height = *height;
+                }
+                img
+            })
+            .collect();
 
         // Extract metadata
         let metadata = self.extract_metadata()?;
@@ -2201,5 +2353,139 @@ mod tests {
         assert_eq!(notes.get("1").unwrap(), "First footnote text");
         assert_eq!(notes.get("2").unwrap(), "**Bold note**");
         assert!(!notes.contains_key("0")); // separator skipped
+    }
+
+    // ─── C4: w:drawing (inline/anchor image) parsing ──────────────────────
+
+    fn fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    /// Collect every `InlineElement::ImageRef` across all paragraphs, in order.
+    fn collect_image_refs(doc: &DocxDocument) -> Vec<&InlineElement> {
+        doc.paragraphs.iter()
+            .flat_map(|p| p.inlines.iter())
+            .filter(|inline| matches!(inline, InlineElement::ImageRef { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn test_docx_inline_images_basic_fixture() {
+        let mut parser = DocxParser::open(fixture_path("images_basic.docx"))
+            .expect("images_basic.docx should open");
+        let doc = parser.parse().expect("images_basic.docx should parse");
+
+        let image_refs = collect_image_refs(&doc);
+        assert_eq!(image_refs.len(), 2, "expected 2 inline ImageRef, got {:?}", image_refs);
+
+        let (alt1, w1, h1, file1) = match image_refs[0] {
+            InlineElement::ImageRef { alt, width_px, height_px, filename, .. } =>
+                (alt.clone(), *width_px, *height_px, filename.clone()),
+            _ => unreachable!(),
+        };
+        assert_eq!(alt1.as_deref(), Some("첫 번째 그림"));
+        assert_eq!(w1, Some(32)); // 304800 EMU / 9525 = 32px
+        assert_eq!(h1, Some(32));
+        assert_eq!(file1, "image1.png");
+
+        let (alt2, w2, h2) = match image_refs[1] {
+            InlineElement::ImageRef { alt, width_px, height_px, .. } =>
+                (alt.clone(), *width_px, *height_px),
+            _ => unreachable!(),
+        };
+        assert_eq!(alt2.as_deref(), Some("중복 그림"));
+        assert_eq!(w2, Some(24)); // 228600 EMU / 9525 = 24px
+        assert_eq!(h2, Some(24));
+
+        // The paragraph containing the first image renders as a markdown image ref.
+        let rendered = doc.paragraphs.iter()
+            .map(|p| p.to_markdown())
+            .find(|md| md.contains("image1.png"))
+            .expect("a paragraph should render the first image");
+        assert_eq!(rendered, "![첫 번째 그림](image1.png)");
+
+        // extract_images() (called from parse()) is backfilled with the same
+        // alt/width/height parsed from the body — not left null like before C4.
+        assert_eq!(doc.images.len(), 2, "relationship-based extraction still finds both entries");
+        let img1 = doc.images.iter().find(|i| i.filename == "image1.png").expect("image1.png extracted");
+        assert_eq!(img1.alt_text.as_deref(), Some("첫 번째 그림"));
+        assert_eq!(img1.width, Some(32));
+        assert_eq!(img1.height, Some(32));
+    }
+
+    #[test]
+    fn test_docx_floating_anchor_image_fixture() {
+        let mut parser = DocxParser::open(fixture_path("images_anchor.docx"))
+            .expect("images_anchor.docx should open");
+        let doc = parser.parse().expect("images_anchor.docx should parse");
+
+        let image_refs = collect_image_refs(&doc);
+        assert_eq!(image_refs.len(), 1, "wp:anchor (floating) image should be recognized just like wp:inline");
+
+        match image_refs[0] {
+            InlineElement::ImageRef { alt, width_px, height_px, filename, .. } => {
+                assert_eq!(alt.as_deref(), Some("플로팅 이미지"));
+                assert_eq!(*width_px, Some(48)); // 457200 EMU / 9525 = 48px
+                assert_eq!(*height_px, Some(48));
+                assert_eq!(filename, "image1.png");
+            }
+            _ => unreachable!(),
+        }
+
+        // The drawing-free paragraphs carry plain text and no ImageRef.
+        let text_paragraphs: Vec<String> = doc.paragraphs.iter()
+            .map(|p| p.text())
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert!(text_paragraphs.iter().any(|t| t.contains("순수 텍스트 문단")));
+        assert!(text_paragraphs.iter().any(|t| t.contains("이어지는 문단")));
+
+        assert_eq!(doc.images.len(), 1);
+    }
+
+    #[test]
+    fn test_image_ref_to_markdown() {
+        let with_alt = InlineElement::ImageRef {
+            rel_id: "rId1".to_string(),
+            filename: "img.png".to_string(),
+            alt: Some("설명".to_string()),
+            width_px: Some(32),
+            height_px: Some(32),
+        };
+        assert_eq!(with_alt.to_markdown(), "![설명](img.png)");
+
+        // No alt text: filename doubles as the alt text (never emit `![]`).
+        let without_alt = InlineElement::ImageRef {
+            rel_id: "rId2".to_string(),
+            filename: "img.png".to_string(),
+            alt: None,
+            width_px: None,
+            height_px: None,
+        };
+        assert_eq!(without_alt.to_markdown(), "![img.png](img.png)");
+    }
+
+    /// Regression guard for the smart-spacing gap this ticket closes: a word-char
+    /// run immediately followed by an image ref used to render with no space
+    /// (`텍스트![alt](file)`) because '!' wasn't in the "needs a space" charset —
+    /// unlike hyperlinks, which already trigger on their leading '['.
+    #[test]
+    fn test_smart_spacing_inserts_space_before_image_ref() {
+        let para = Paragraph {
+            inlines: vec![
+                InlineElement::Run(TextRun { text: "안녕하세요".to_string(), ..Default::default() }),
+                InlineElement::ImageRef {
+                    rel_id: "rId1".to_string(),
+                    filename: "img.png".to_string(),
+                    alt: Some("사진".to_string()),
+                    width_px: Some(32),
+                    height_px: Some(32),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(para.to_markdown(), "안녕하세요 ![사진](img.png)");
     }
 }
