@@ -53,6 +53,7 @@ pub mod cache;
 pub mod legal;
 pub mod form;
 pub mod manifest;
+pub mod shape_svg;
 pub mod utils;
 pub mod pii;
 pub mod lint;

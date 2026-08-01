@@ -37,10 +37,12 @@ ocr = ["dep:ort", "dep:image"]
 # plain `ocr` without this feature.
 ocr-pdf = ["ocr", "pdf", "dep:pdfium-render"]
 url-fetch = ["dep:ureq", "dep:htmd"]
-# HWPX layout-preserving SVG renderer (port of kkdoc src/render). roxmltree =
-# read-only DOM for section/header XML. PNG rasterization reuses the existing
-# resvg dep (feature `hwpx-render-png`).
-hwpx-render = ["dep:roxmltree"]
+# HWPX layout-preserving SVG renderer (port of kkdoc src/render). PNG
+# rasterization reuses the existing resvg dep (feature `hwpx-render-png`).
+# roxmltree itself is a normal (non-optional) dependency — `shape_svg`
+# (always-on, part of the default HWPX conversion path per the P2 plan) also
+# needs it, so it can't stay behind this opt-in feature.
+hwpx-render = []
 hwpx-render-png = ["hwpx-render", "dep:resvg"]
 # print module (IRBlock[] -> print HTML, always on) + optional printpdf-based
 # best-effort PDF path (port of kkdoc src/print, see core/src/print/mod.rs).
@@ -73,7 +75,9 @@ ort = { version = "2.0.0-rc.10", optional = true }
 # libpdfium at runtime (no bundled binary) — see `ocr_pdf` in pdf/pdf_ocr.rs.
 pdfium-render = { version = "0.8", optional = true }
 quick-xml = "0.31"
-roxmltree = { version = "0.20", optional = true }
+# Used by shape_svg (always-on) and hwpx_render (feature `hwpx-render`) for
+# read-only DOM parsing of HWPX shape/section XML fragments.
+roxmltree = "0.20"
 thiserror = "2.0"
 regex = "1.10"
 fancy-regex = "0.18"
