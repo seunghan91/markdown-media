@@ -25,8 +25,21 @@ export class Renderer {
       return token.value;
     } else if (token.type === 'mdm-reference') {
       return this.renderMDMReference(token);
+    } else if (token.type === 'image-reference') {
+      return this.renderStandardImage(token);
     }
     return '';
+  }
+
+  /**
+   * 표준 마크다운 이미지(![alt](src))를 HTML로 렌더링합니다.
+   * MDM 매니페스트 리소스 조회 없이 src/alt를 그대로 사용 — CLI 산출물의
+   * `assets/images/{hash}.{ext}` 상대경로가 그대로 img.src 로 들어간다.
+   * @param {Object} token - 표준 이미지 토큰
+   * @returns {string} HTML 문자열
+   */
+  renderStandardImage(token) {
+    return this.renderImage({ src: token.src, alt: token.alt });
   }
 
   /**

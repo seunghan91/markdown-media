@@ -476,7 +476,10 @@
 
 class Tokenizer {
   constructor() {
-    this.mdmPattern = /!\[\[([^\]]+)\]\]/g;
+    // MDM bracket syntax `![[name|attrs]]` (group 1) OR standard CommonMark
+    // image `![alt](src)` (groups 2/3) — the CLI's real output syntax since
+    // the 문법 단일화 pass. Mirrors packages/viewer-js/src/tokenizer.js.
+    this.referencePattern = /!\[\[([^\]]+)\]\]|!\[([^\]]*)\]\(([^)]+)\)/g;
     this.refParts = /^([^:|]+)(?::([^|]+))?(?:\s*\|\s*(.+))?$/;
     this.attrPattern = /(\w[\w-]*)(?:=(?:"([^"]*)"|'([^']*)'|([^\s]+)))?/g;
   }
@@ -485,17 +488,21 @@ class Tokenizer {
     const tokens = [];
     let lastIndex = 0;
     let match;
-    this.mdmPattern.lastIndex = 0;
+    this.referencePattern.lastIndex = 0;
 
-    while ((match = this.mdmPattern.exec(text)) !== null) {
+    while ((match = this.referencePattern.exec(text)) !== null) {
       if (match.index > lastIndex) {
         tokens.push({ type: 'text', value: text.slice(lastIndex, match.index) });
       }
-      try {
-        const parsed = this.parseReference(match[1]);
-        tokens.push({ type: 'mdm-reference', raw: match[0], ...parsed });
-      } catch (e) {
-        tokens.push({ type: 'text', value: match[0] });
+      if (match[1] !== undefined) {
+        try {
+          const parsed = this.parseReference(match[1]);
+          tokens.push({ type: 'mdm-reference', raw: match[0], ...parsed });
+        } catch (e) {
+          tokens.push({ type: 'text', value: match[0] });
+        }
+      } else {
+        tokens.push({ type: 'image-reference', raw: match[0], alt: match[2] || '', src: (match[3] || '').trim() });
       }
       lastIndex = match.index + match[0].length;
     }
@@ -543,6 +550,7 @@ class Renderer {
   renderToken(t) {
     if (t.type === 'text') return t.value;
     if (t.type === 'mdm-reference') return this.renderMDMRef(t);
+    if (t.type === 'image-reference') return this.renderImage({ src: t.src, alt: t.alt });
     return '';
   }
 

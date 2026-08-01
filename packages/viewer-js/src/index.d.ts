@@ -18,7 +18,19 @@ export interface MDMReferenceToken {
   attributes: Record<string, string | number | boolean>;
 }
 
-export type Token = TextToken | MDMReferenceToken;
+/**
+ * A tokenized standard CommonMark image (`![alt](src)`) — the syntax CLI
+ * output actually uses (e.g. `assets/images/{hash}.{ext}` relative paths).
+ * Rendered directly via src/alt, with no MDM manifest resource lookup.
+ */
+export interface ImageReferenceToken {
+  type: 'image-reference';
+  raw: string;
+  alt: string;
+  src: string;
+}
+
+export type Token = TextToken | MDMReferenceToken | ImageReferenceToken;
 
 /** MDM resource definition (stored in .mdm sidecar files) */
 export interface MDMResource {
@@ -88,6 +100,8 @@ export declare class Renderer {
   renderToken(token: Token): string;
   /** Render an MDM reference token using resource lookup and preset resolution */
   renderMDMReference(token: MDMReferenceToken): string;
+  /** Render a standard CommonMark image token directly via src/alt (no manifest lookup) */
+  renderStandardImage(token: ImageReferenceToken): string;
   /** Render a file by inferring type from its extension */
   renderDirectFile(filename: string, attrs: Record<string, unknown>): string;
 }

@@ -183,3 +183,60 @@ test('Integration: edge cases', async (t) => {
     assert.strictEqual(count, 2);
   });
 });
+
+// ─── CLI 산출 mdx 계약: 표준 ![](assets/images/…) 참조 (문법 단일화, codex P1) ──
+// core/src/main.rs 의 convert_hwp/hwpx/docx/pdf 가 실제로 emit하는 형태를
+// 그대로 재현한다 — MDM 브래킷 문법(![[ ]])이 아니라 표준 CommonMark 이미지.
+// 뷰어가 이 문법을 <img> 로 렌더링하지 못하면 CLI 산출물이 뷰어에서 안 보이는
+// 회귀가 발생한다 (tokenizer.js 가 ![[ ]] 만 인식하던 상태에서 확인된 갭).
+test('Integration: CLI-style standard markdown image references', async (t) => {
+  await t.test('single standard image ref renders as <img> with real src/alt', async () => {
+    const parser = new MDMParser();
+    const html = await parser.parse('![첫 번째 그림](assets/images/635dec1fdfc6.png)');
+    assert.ok(html.includes('<img'));
+    assert.ok(html.includes('src="assets/images/635dec1fdfc6.png"'));
+    assert.ok(html.includes('alt="첫 번째 그림"'));
+  });
+
+  await t.test('full CLI-shaped mdx body (text + heading + inline image + dedup pair)', async () => {
+    const parser = new MDMParser();
+    const mdx = [
+      '이미지 삽입 테스트 문서입니다.',
+      '',
+      '![첫 번째 그림](assets/images/3cf87ebd8dae.png)',
+      '',
+      '두 그림 사이에 위치한 본문 문단입니다.',
+      '',
+      '![중복 그림](assets/images/3cf87ebd8dae.png)',
+      '',
+      '문서의 마지막 문단입니다.',
+    ].join('\n');
+    const html = await parser.parse(mdx);
+
+    const imgCount = (html.match(/<img/g) || []).length;
+    assert.strictEqual(imgCount, 2, 'both refs (same dedup hash) should render as <img>');
+    assert.ok(html.includes('src="assets/images/3cf87ebd8dae.png"'));
+    assert.ok(html.includes('alt="첫 번째 그림"'));
+    assert.ok(html.includes('alt="중복 그림"'));
+    assert.ok(html.includes('이미지 삽입 테스트 문서입니다.'));
+    assert.ok(html.includes('문서의 마지막 문단입니다.'));
+  });
+
+  await t.test('standard image ref does not require an .mdm manifest', async () => {
+    // No setMDMData() call — CLI output is self-contained; the viewer must not
+    // need a sidecar resource lookup to render a path-based image reference.
+    const parser = new MDMParser();
+    const html = await parser.parse('![alt](assets/images/hash12.jpg)');
+    assert.ok(html.includes('<img'));
+    assert.ok(!html.includes('<!--'));
+  });
+
+  await t.test('standard and MDM bracket syntax coexist without cross-contamination', async () => {
+    const parser = makeParser({ logo: { type: 'image', src: '/logo.png', alt: 'Logo' } });
+    const html = await parser.parse('![[logo]] and ![photo](assets/images/x.png)');
+    assert.ok(html.includes('src="/logo.png"'));
+    assert.ok(html.includes('src="assets/images/x.png"'));
+    const count = (html.match(/<img/g) || []).length;
+    assert.strictEqual(count, 2);
+  });
+});

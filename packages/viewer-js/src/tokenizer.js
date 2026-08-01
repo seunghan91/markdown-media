@@ -3,16 +3,19 @@
  */
 export class Tokenizer {
   constructor() {
-    // MDM 참조 패턴: ![[name:preset | attributes]]
+    // 참조 패턴: MDM 브래킷 문법 ![[name:preset | attributes]] (그룹 1) 또는
+    // 표준 CommonMark 이미지 ![alt](src) (그룹 2/3) — CLI 정본 산출물이 실제로
+    // emit하는 문법(문법 단일화 이후). 하나의 정규식으로 같이 스캔해 문서 내
+    // 등장 순서를 그대로 보존한다.
     this.patterns = {
-      mdmReference: /!\[\[([^\]]+)\]\]/g,
+      reference: /!\[\[([^\]]+)\]\]|!\[([^\]]*)\]\(([^)]+)\)/g,
       resourceParts: /^([^:|]+)(?::([^|]+))?(?:\s*\|\s*(.+))?$/,
       attribute: /(\w+)(?:=(?:"([^"]*)"|'([^']*)'|([^\s]+)))?/g
     };
   }
 
   /**
-   * 텍스트에서 MDM 참조를 찾아 토큰화합니다
+   * 텍스트에서 MDM 참조와 표준 마크다운 이미지를 찾아 토큰화합니다
    * @param {string} text - 파싱할 텍스트
    * @returns {Array} 토큰 배열
    */
@@ -21,8 +24,7 @@ export class Tokenizer {
     let lastIndex = 0;
     let match;
 
-    // MDM 참조 찾기
-    while ((match = this.patterns.mdmReference.exec(text)) !== null) {
+    while ((match = this.patterns.reference.exec(text)) !== null) {
       // 이전 텍스트 추가
       if (match.index > lastIndex) {
         tokens.push({
@@ -31,15 +33,23 @@ export class Tokenizer {
         });
       }
 
-      // MDM 참조 파싱
-      const reference = match[1];
-      const parsed = this.parseReference(reference);
-      
-      tokens.push({
-        type: 'mdm-reference',
-        raw: match[0],
-        ...parsed
-      });
+      if (match[1] !== undefined) {
+        // MDM 브래킷 참조: ![[name:preset | attrs]]
+        const parsed = this.parseReference(match[1]);
+        tokens.push({
+          type: 'mdm-reference',
+          raw: match[0],
+          ...parsed
+        });
+      } else {
+        // 표준 마크다운 이미지: ![alt](src) — 속성/프리셋 없이 src를 그대로 사용
+        tokens.push({
+          type: 'image-reference',
+          raw: match[0],
+          alt: match[2] || '',
+          src: (match[3] || '').trim()
+        });
+      }
 
       lastIndex = match.index + match[0].length;
     }
@@ -117,7 +127,7 @@ export class Tokenizer {
     return tokens.map(token => {
       if (token.type === 'text') {
         return token.value;
-      } else if (token.type === 'mdm-reference') {
+      } else if (token.type === 'mdm-reference' || token.type === 'image-reference') {
         return token.raw;
       }
       return '';

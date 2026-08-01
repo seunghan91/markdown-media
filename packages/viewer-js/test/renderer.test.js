@@ -214,4 +214,32 @@ test('Renderer', async (t) => {
     const tokens = [{ type: 'mdm-reference', name: 'x', preset: null, attributes: {} }];
     assert.ok(renderer.render(tokens).includes('<!--'));
   });
+
+  // ─── 표준 마크다운 이미지 토큰 (문법 단일화 — CLI 정본 산출물) ──────────────
+  await t.test('image-reference token renders <img> directly via src/alt', () => {
+    const renderer = new Renderer();
+    const tokens = [{ type: 'image-reference', raw: '![alt](assets/images/hash.png)', alt: '설명', src: 'assets/images/hash.png' }];
+    const html = renderer.render(tokens);
+    assert.ok(html.includes('<img'));
+    assert.ok(html.includes('src="assets/images/hash.png"'));
+    assert.ok(html.includes('alt="설명"'));
+  });
+
+  await t.test('image-reference token with empty alt omits alt attribute', () => {
+    const renderer = new Renderer();
+    const tokens = [{ type: 'image-reference', raw: '![](x.png)', alt: '', src: 'x.png' }];
+    const html = renderer.render(tokens);
+    assert.ok(html.includes('<img'));
+    assert.ok(!html.includes('alt='));
+  });
+
+  await t.test('image-reference does not consult MDM manifest resources', () => {
+    // src is a literal path, not a resource name — no lookup into mdmData.resources.
+    const mdmData = { resources: { 'assets/images/hash.png': { type: 'video', src: 'wrong.mp4' } } };
+    const renderer = new Renderer(mdmData);
+    const tokens = [{ type: 'image-reference', raw: '![x](assets/images/hash.png)', alt: 'x', src: 'assets/images/hash.png' }];
+    const html = renderer.render(tokens);
+    assert.ok(html.includes('<img'));
+    assert.ok(!html.includes('<video'));
+  });
 });

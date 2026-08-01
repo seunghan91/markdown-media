@@ -1621,17 +1621,19 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
                             println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
-                            // MDX format — replace image refs with @[[]] syntax
+                            // MDX format — `doc.to_mdx()`'s layout-aware body already
+                            // emits `![id](id)` at the image's real position
+                            // (pdf/parser.rs's to_markdown_with_layout, keyed by
+                            // LayoutElementType::Image's ref_id, which matches
+                            // image.id 1:1). Rewrite the path portion to the
+                            // manifest's content-hash asset path.
                             let mut mdx_content = doc.to_mdx();
-                            for (orig_id, _hash_fn) in &image_map {
-                                // Replace ![image_N](image_N) or similar with @[[image_N]]
-                                let md_pattern = format!("![{}]({})", orig_id, orig_id);
-                                let replacement = format!("@[[{}]]", orig_id);
-                                mdx_content = mdx_content.replace(&md_pattern, &replacement);
-                                // Also replace plain - image_id references in ## Images section
-                                let list_pattern = format!("- {} (", orig_id);
-                                let list_replacement = format!("- @[[{}]] (", orig_id);
-                                mdx_content = mdx_content.replace(&list_pattern, &list_replacement);
+                            for (orig_id, hash_filename) in &image_map {
+                                if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                                    let md_pattern = format!("![{}]({})", orig_id, orig_id);
+                                    let replacement = format!("![{}]({})", orig_id, asset.src);
+                                    mdx_content = mdx_content.replace(&md_pattern, &replacement);
+                                }
                             }
                             let mdx_path = output.join(format!("{}.mdx", stem));
                             fs::write(&mdx_path, &mdx_content).expect("Failed to write MDX");

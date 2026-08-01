@@ -58,8 +58,8 @@ _HWP_NO_TEXT_SENTINEL = "No text extracted. File may be encrypted or have unsupp
 # ---------------------------------------------------------------------------
 
 def _build_image_markdown(image_names: list[str]) -> str:
-    """Return MDM-syntax image embeds for a list of filenames."""
-    return "\n\n".join(f"![[{name} | width=auto]]" for name in image_names)
+    """Return standard CommonMark image embeds for a list of filenames."""
+    return "\n\n".join(f"![{name}]({name})" for name in image_names)
 
 
 def _convert(data: bytes, filename: str) -> tuple[str, dict[str, str]]:
@@ -92,9 +92,9 @@ def _convert(data: bytes, filename: str) -> tuple[str, dict[str, str]]:
         for name, payload in raw_images.items()
     }
 
-    # Append MDM embed syntax for extracted images — preserves pre-2.0 behavior
-    # where the markdown references images the client then resolves from the
-    # `images` dict.
+    # Append standard markdown image refs for extracted images — the markdown
+    # references each image by its filename, which the client resolves from
+    # the `images` dict (base64).
     if images:
         lines = [markdown.strip()] if markdown.strip() else []
         lines.append(_build_image_markdown(list(images.keys())))
