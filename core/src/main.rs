@@ -1422,13 +1422,63 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                     }
 
                     // Use sections (with embedded tables) instead of preview text
-                    let content = if doc.sections.iter().any(|s| !s.is_empty()) {
+                    let mut content = if doc.sections.iter().any(|s| !s.is_empty()) {
                         doc.sections.join("\n\n---\n\n")
                     } else if !doc.preview_text.is_empty() {
                         doc.preview_text.clone()
                     } else {
                         String::new()
                     };
+
+                    // Rewrite `[이미지: {id}]` markers (hwpx/parser.rs's walk_run_body,
+                    // emitted for both inline runs and table cell text) to the
+                    // manifest's content-hash asset path. Done on the shared
+                    // `content` before format branching so both JSON and MDX
+                    // outputs see resolved references. Unlike HWP's bin_id
+                    // (C2), HWPX's marker `id` already matches `image_map`'s
+                    // key directly (`binaryItemIDRef`), so no id-decoding is
+                    // needed here.
+                    let mut referenced_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                    for (id, hash_filename) in &image_map {
+                        let marker = format!("[이미지: {}]", id);
+                        if content.contains(&marker) {
+                            if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                                let replacement = format!("![{}]({})", id, asset.src);
+                                content = content.replace(&marker, &replacement);
+                                referenced_ids.insert(id.as_str());
+                            }
+                        }
+                    }
+
+                    // Any embedded image whose id never appeared as an inline
+                    // `[이미지: id]` marker (e.g. a decorative/background shape)
+                    // would otherwise be silently dropped from the document —
+                    // list it in a trailing section instead (mirrors the PDF
+                    // converter's `## Images` convention).
+                    let unreferenced: Vec<_> = doc.image_info.iter()
+                        .filter(|img| !referenced_ids.contains(img.id.as_str()))
+                        .collect();
+                    if !unreferenced.is_empty() {
+                        content.push_str("\n\n## 이미지\n\n");
+                        for img in &unreferenced {
+                            if let Some((_, hash_filename)) = image_map.iter().find(|(id, _)| id == &img.id) {
+                                if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                                    content.push_str(&format!(
+                                        "- ![{}]({}) ({}, {} bytes)\n",
+                                        img.id, asset.src, img.media_type, img.data.len()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    let remaining_markers = content.matches("[이미지:").count();
+                    if remaining_markers > 0 {
+                        eprintln!(
+                            "  \u{26a0}\u{fe0f}  {} image marker(s) in {} could not be resolved to a manifest asset",
+                            remaining_markers, stem
+                        );
+                    }
 
                     match format {
                         "json" => {
@@ -1454,7 +1504,8 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                             println!("  \u{2713} Created: {}", json_path.display());
                         }
                         _ => {
-                            // MDX format with @[[]] image references
+                            // MDX format — `content` already carries resolved
+                            // `![id](assets/images/...)` image references.
                             let mdx_path = output.join(format!("{}.mdx", stem));
 
                             let mdx_content = format!(
