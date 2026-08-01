@@ -29,6 +29,12 @@ pub struct ImageInfo {
     pub path: String,         // BinData/image1.bmp
     pub media_type: String,   // image/bmp, image/png
     pub data: Vec<u8>,        // actual binary data
+    /// Display size read from the body's `<hp:pic><hp:sz>` (C7), in pixels
+    /// @ 96dpi. `None` when the image's `<hp:pic>` wasn't found (e.g. it's
+    /// a BinData item never actually placed in the body) or `<hp:sz>` was
+    /// absent/unparseable. AssetMetadata-only — never enters body markdown.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 /// A pure vector drawing object (`hp:rect`/`ellipse`/`line`/`polygon`/`curv`/
@@ -430,21 +436,94 @@ impl<R: Read + Seek> HwpxParser<R> {
         }
         
         // Now extract the actual image data
+        let dims = self.extract_image_dimensions();
         let mut result = Vec::new();
         for (id, path, media_type) in image_list {
             if let Ok(mut file) = self.archive.by_name(&path) {
                 let data = read_limited(&mut file, MAX_HWPX_BINDATA)?;
+                let (width, height) = dims.get(&id).copied().unzip();
                 result.push(ImageInfo {
                     id,
                     path,
                     media_type,
                     data,
+                    width,
+                    height,
                 });
             }
         }
         
         Ok(result)
     }
+
+    /// Read each `<hp:pic>`'s displayed size and index by its
+    /// `binaryItemIDRef` (C7 — AssetMetadata-only). Real HWPX output (unlike
+    /// the `hp:sz`-bearing element `hwpx_render::svg::draw_pic` reads for a
+    /// different pic-adjacent element) carries the reference on a child
+    /// `<hc:img binaryItemIDRef="..."/>` and the display size on
+    /// `<hp:curSz width=".." height="..">` (falling back to `<hp:orgSz>`,
+    /// the un-scaled source size, when `curSz` is absent) — confirmed
+    /// against a real converted sample's section XML.
+    ///
+    /// Values are HWPUNIT (1/7200 inch, HWPX's standard unit throughout);
+    /// converted to px @ 96dpi (`hwpunit / 7200 * 96`).
+    /// Independent of [`Self::extract_sections_with_tables`]'s text/table
+    /// walker and its `ShapeCollector` — re-reads section XML on its own so
+    /// it can't interfere with that pass's state.
+    fn extract_image_dimensions(&mut self) -> HashMap<String, (u32, u32)> {
+        let mut dims = HashMap::new();
+        let mut section_idx = 0;
+
+        loop {
+            let section_name = format!("Contents/section{}.xml", section_idx);
+            let content = match self.archive.by_name(&section_name) {
+                Ok(mut file) => match read_limited_to_string(&mut file, MAX_HWPX_XML) {
+                    Ok(c) => c,
+                    Err(_) => break,
+                },
+                Err(_) => break,
+            };
+
+            let mut pos = 0;
+            while let Some(rel_start) = content[pos..].find("<hp:pic") {
+                let start = pos + rel_start;
+                let Some(rel_end) = content[start..].find("</hp:pic>") else { break };
+                let pic_xml = &content[start..start + rel_end];
+                pos = start + rel_end + "</hp:pic>".len();
+
+                if let Some((id, w, h)) = parse_pic_dimension(pic_xml) {
+                    dims.insert(id, (w, h));
+                }
+            }
+
+            section_idx += 1;
+        }
+
+        dims
+    }
+}
+
+/// Parse a single `<hp:pic ...>...</hp:pic>` block (without its closing tag,
+/// as sliced by [`HwpxParser::extract_image_dimensions`]) into
+/// `(binaryItemIDRef, width_px, height_px)`. Pure/standalone so it's
+/// testable with raw XML snippets — see the `#[cfg(test)]` cases below,
+/// which pin the real element names/prefixes found in a converted sample.
+fn parse_pic_dimension(pic_xml: &str) -> Option<(String, u32, u32)> {
+    let id = extract_attr(pic_xml, "binaryItemIDRef")?;
+
+    let sz_start = pic_xml.find("<hp:curSz").or_else(|| pic_xml.find("<hp:orgSz"))?;
+    let sz_end = pic_xml[sz_start..]
+        .find('>')
+        .map(|e| sz_start + e + 1)
+        .unwrap_or(pic_xml.len());
+    let sz_xml = &pic_xml[sz_start..sz_end];
+
+    let w = extract_attr(sz_xml, "width").and_then(|s| s.parse::<f64>().ok())?;
+    let h = extract_attr(sz_xml, "height").and_then(|s| s.parse::<f64>().ok())?;
+
+    let w_px = (w / 7200.0 * 96.0).round() as u32;
+    let h_px = (h / 7200.0 * 96.0).round() as u32;
+    (w_px > 0 && h_px > 0).then_some((id, w_px, h_px))
 }
 
 /// Determine whether a `<hh:strikeout shape="...">` value represents a real
@@ -2445,6 +2524,36 @@ mod tests {
         let xml = r#"<hp:tbl rowCnt="5" colCnt="3">"#;
         assert_eq!(extract_attr(xml, "rowCnt"), Some("5".to_string()));
         assert_eq!(extract_attr(xml, "colCnt"), Some("3".to_string()));
+    }
+
+    /// C7 regression: real HWPX output carries the binary ref on a child
+    /// `<hc:img>` (not `<hp:img>`, which this parser wrongly assumed at
+    /// first) and the display size on `<hp:curSz>`/`<hp:orgSz>` (not a
+    /// `<hp:sz>` element, which doesn't exist on `hp:pic`). Snippet trimmed
+    /// from a real converted sample's section1.xml.
+    #[test]
+    fn test_parse_pic_dimension_real_shape() {
+        let pic_xml = r#"<hp:pic id="1879575657" zOrder="27"><hp:offset x="0" y="0"/><hp:orgSz width="140460" height="67860"/><hp:curSz width="48190" height="23280"/><hc:img binaryItemIDRef="image1" bright="0"/>"#;
+        let (id, w, h) = parse_pic_dimension(pic_xml).expect("should parse id + curSz");
+        assert_eq!(id, "image1");
+        // 48190 / 7200 * 96 ≈ 642.5 → 643 ; 23280 / 7200 * 96 ≈ 310.4 → 310
+        assert_eq!(w, 643);
+        assert_eq!(h, 310);
+    }
+
+    #[test]
+    fn test_parse_pic_dimension_falls_back_to_orgsz() {
+        let pic_xml = r#"<hp:pic id="1"><hp:orgSz width="7200" height="14400"/><hc:img binaryItemIDRef="image2"/>"#;
+        let (id, w, h) = parse_pic_dimension(pic_xml).expect("should fall back to orgSz");
+        assert_eq!(id, "image2");
+        assert_eq!(w, 96); // 7200 / 7200 * 96 = 96 (1 inch)
+        assert_eq!(h, 192);
+    }
+
+    #[test]
+    fn test_parse_pic_dimension_missing_ref_returns_none() {
+        let pic_xml = r#"<hp:pic id="1"><hp:curSz width="7200" height="7200"/>"#;
+        assert_eq!(parse_pic_dimension(pic_xml), None);
     }
 
     #[test]

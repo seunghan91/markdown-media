@@ -176,12 +176,59 @@ pub enum IRBlock {
     /// Image placeholder. `alt` is the rendered text (e.g. `image12`).
     Image {
         alt: String,
+        /// Media classification. `Shape`/`Chart` let P2's native SVG
+        /// extraction reuse this node instead of a separate IR variant —
+        /// defaults to `Image` so every existing raster-photo call site
+        /// (and markdown round-tripping) is unaffected.
+        kind: MediaKind,
+        /// Resolved asset path, when known at IR-build time. Most parsers
+        /// don't know this yet (the CLI layer resolves body refs to the
+        /// manifest's content-hash path after the fact — see the emission
+        /// contract on [`blocks_to_markdown`]'s `Image` arm), so this is
+        /// mainly populated by markdown round-tripping (`![alt](src)`).
+        src: Option<String>,
+        width: Option<u32>,
+        height: Option<u32>,
+        /// Original filename/id before content-addressing, if known.
+        original_name: Option<String>,
+        caption: Option<String>,
+        /// Inline (within paragraph flow) vs. floating/anchored at the source.
+        inline: bool,
     },
     /// Horizontal separator (`---` in Markdown).
     Separator,
 }
 
+/// Media classification for [`IRBlock::Image`]. `Shape`/`Chart` distinguish
+/// P2's natively-extracted SVG assets (vector shapes, charts) from ordinary
+/// raster photos without needing a separate `IRBlock` variant — see the P2
+/// interface contract in the P0/P1 plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaKind {
+    #[default]
+    Image,
+    Shape,
+    Chart,
+}
+
 impl IRBlock {
+    /// Build an `Image` block with just alt text — the common case for
+    /// markdown round-tripping and any caller that doesn't yet know
+    /// size/kind/original name. Every other field defaults to "unknown".
+    pub fn image<S: Into<String>>(alt: S) -> Self {
+        IRBlock::Image {
+            alt: alt.into(),
+            kind: MediaKind::default(),
+            src: None,
+            width: None,
+            height: None,
+            original_name: None,
+            caption: None,
+            inline: true,
+        }
+    }
+
     pub fn paragraph<S: Into<String>>(text: S) -> Self {
         IRBlock::Paragraph {
             text: text.into(),
@@ -225,7 +272,7 @@ impl IRBlock {
                     .collect::<Vec<_>>()
                     .join(" "),
             ),
-            IRBlock::Image { alt } => Some(alt.clone()),
+            IRBlock::Image { alt, .. } => Some(alt.clone()),
             IRBlock::Table(_) => None,
             IRBlock::Separator => None,
         }
@@ -384,14 +431,17 @@ pub fn blocks_to_markdown(blocks: &[IRBlock]) -> String {
                     }
                 }
             }
-            IRBlock::Image { alt } => {
+            IRBlock::Image { alt, .. } => {
                 // Contract: `alt` is `"image{bin_id}"` (bin_id = the raw
                 // BinData ID from the source record, e.g. HWP's
                 // SHAPE_COMPONENT_PICTURE). Callers post-process this exact
                 // `![imageN](assets/imageN)` placeholder — rewriting it to the
                 // manifest's content-hash asset path (see main.rs's HWP mdx
                 // rewrite pass) — so don't change this shape without updating
-                // that rewrite.
+                // that rewrite. C7 adds kind/src/width/height/original_name/
+                // caption/inline metadata to the node, but body emission stays
+                // alt-only by design — size/caption/original name live in the
+                // .mdm manifest instead (see AssetMetadata), not the markdown body.
                 out.push_str(&format!("![{}](assets/{})", alt, alt));
             }
             IRBlock::Separator => {

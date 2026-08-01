@@ -515,6 +515,12 @@ enum Commands {
         /// Emit PDF instead of HTML (requires `print-pdf` feature)
         #[arg(long)]
         pdf: bool,
+
+        /// Emit `width`/`height` attributes on `<img>` when known (C7).
+        /// Off by default — body markdown stays alt-only; this only affects
+        /// this command's HTML/PDF output.
+        #[arg(long = "html-img")]
+        html_img: bool,
     },
 
     /// Extract a fillable-form schema from an HWPX file, or apply literal text patches.
@@ -633,8 +639,8 @@ fn main() {
         Some(Commands::Render { input, output, png, scale, reflow }) => {
             cmd_render(&input, &output, png, scale, reflow);
         }
-        Some(Commands::Print { input, output, preset, pdf }) => {
-            cmd_print(&input, output.as_deref(), &preset, pdf);
+        Some(Commands::Print { input, output, preset, pdf, html_img }) => {
+            cmd_print(&input, output.as_deref(), &preset, pdf, html_img);
         }
         Some(Commands::Form { input, extract, patch, output }) => {
             cmd_form(&input, extract, patch.as_deref(), output.as_deref());
@@ -1062,9 +1068,11 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                     .unwrap_or("bin");
                 let meta = AssetMetadata {
                     format: Some(img.format.clone()),
+                    width: img.width,
+                    height: img.height,
                     ..Default::default()
                 };
-                let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, meta);
+                let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, Some(&img.name), meta);
                 image_map.push((img.name.clone(), hash_filename.clone()));
 
                 match hwp::ole::parse_bin_data_id(&img.original_name) {
@@ -1401,9 +1409,11 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                             .unwrap_or("bin");
                         let meta = AssetMetadata {
                             format: Some(ext.to_string()),
+                            width: img.width,
+                            height: img.height,
                             ..Default::default()
                         };
-                        let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, meta);
+                        let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, Some(filename), meta);
                         image_map.push((img.id.clone(), hash_filename.clone()));
 
                         if let Some(asset) = asset_by_filename(&mv2, &hash_filename) {
@@ -1577,7 +1587,8 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
                             format: Some(ext.to_string()),
                             ..Default::default()
                         };
-                        let hash_filename = mv2.add_asset(&image.data, MediaType::Image, ext, meta);
+                        let orig_filename = image.filename();
+                        let hash_filename = mv2.add_asset(&image.data, MediaType::Image, ext, Some(orig_filename.as_str()), meta);
                         image_map.push((image.id.clone(), hash_filename));
                     }
 
@@ -1789,7 +1800,7 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                                 alt_text: image.alt_text.clone(),
                                 ..Default::default()
                             };
-                            let hash_filename = mv2.add_asset(data, MediaType::Image, ext, meta);
+                            let hash_filename = mv2.add_asset(data, MediaType::Image, ext, Some(&image.filename), meta);
                             image_map.push((image.id.clone(), hash_filename.clone()));
 
                             // Save image using manifest asset path
@@ -3531,7 +3542,7 @@ fn cmd_render(input: &Path, output: &Path, png: bool, scale: f32, reflow: bool) 
 }
 
 /// `print` — Markdown/any document → print-ready HTML (or PDF with `--pdf`).
-fn cmd_print(input: &Path, output: Option<&Path>, preset: &str, pdf: bool) {
+fn cmd_print(input: &Path, output: Option<&Path>, preset: &str, pdf: bool, html_img: bool) {
     let md = match input_to_text(input) {
         Some(t) => t,
         None => { eprintln!("\u{274c} Failed to read {}", input.display()); std::process::exit(1); }
@@ -3547,6 +3558,7 @@ fn cmd_print(input: &Path, output: Option<&Path>, preset: &str, pdf: bool) {
                 mdm_core::print::PrintPreset::Default
             }
         },
+        html_img,
         ..Default::default()
     };
 

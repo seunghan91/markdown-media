@@ -109,6 +109,10 @@ pub struct RenderOptions {
     /// Raw CSS appended after the preset + generated rules, so callers can
     /// override anything above it.
     pub extra_css: Option<String>,
+    /// Opt-in: emit `width`/`height` attributes on `<img>` when the source
+    /// [`IRBlock::Image`] has them (C7). Off by default — body markdown
+    /// stays alt-only, so this only affects the HTML/PDF print renderers.
+    pub html_img: bool,
 }
 
 /// Preset default margin, matching kkdoc's hardcoded per-preset `@page`
@@ -259,7 +263,7 @@ pub fn render_ir_to_html(blocks: &[IRBlock], options: &RenderOptions) -> String 
     };
 
     let extra_css = options.extra_css.as_deref().unwrap_or("");
-    let body_html = render_blocks(blocks);
+    let body_html = render_blocks(blocks, options.html_img);
 
     format!(
         "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<meta charset=\"utf-8\">\n<style>{page_css}{preset_css}{header_footer_css}{watermark_css}{extra_css}</style>\n</head>\n<body>\n{header_html}{watermark_html}\n{body_html}\n{footer_html}\n</body>\n</html>"
@@ -267,15 +271,15 @@ pub fn render_ir_to_html(blocks: &[IRBlock], options: &RenderOptions) -> String 
 }
 
 /// Render the `<body>` content: one HTML element per [`IRBlock`].
-fn render_blocks(blocks: &[IRBlock]) -> String {
+fn render_blocks(blocks: &[IRBlock], html_img: bool) -> String {
     let mut out = String::new();
     for block in blocks {
-        render_block(block, &mut out);
+        render_block(block, html_img, &mut out);
     }
     out
 }
 
-fn render_block(block: &IRBlock, out: &mut String) {
+fn render_block(block: &IRBlock, html_img: bool, out: &mut String) {
     match block {
         IRBlock::Paragraph { text, footnote, href } => {
             out.push_str("<p>");
@@ -348,11 +352,21 @@ fn render_block(block: &IRBlock, out: &mut String) {
                 out.push_str(&format!("</{tag}>\n"));
             }
         }
-        IRBlock::Image { alt } => {
+        IRBlock::Image { alt, width, height, .. } => {
             let safe_alt = html_escape_attr(&sanitize_asset_name(alt));
-            out.push_str(&format!(
-                r#"<img src="assets/{safe_alt}" alt="{safe_alt}">"#
-            ));
+            let mut img = format!(r#"<img src="assets/{safe_alt}" alt="{safe_alt}""#);
+            // --html-img opt-in (C7): body markdown stays alt-only, but the
+            // HTML print renderer can surface known dimensions on request.
+            if html_img {
+                if let Some(w) = width {
+                    img.push_str(&format!(r#" width="{w}""#));
+                }
+                if let Some(h) = height {
+                    img.push_str(&format!(r#" height="{h}""#));
+                }
+            }
+            img.push('>');
+            out.push_str(&img);
             out.push('\n');
         }
         IRBlock::Separator => {
@@ -645,18 +659,48 @@ mod tests {
 
     #[test]
     fn image_renders_img_tag() {
-        let blocks = vec![IRBlock::Image { alt: "image12".into() }];
+        let blocks = vec![IRBlock::image("image12")];
         let html = render_ir_to_html(&blocks, &opts());
         assert!(html.contains(r#"<img src="assets/image12" alt="image12">"#));
+    }
+
+    // ── C7: --html-img opt-in width/height ──
+
+    fn image_with_size(alt: &str, width: u32, height: u32) -> IRBlock {
+        IRBlock::Image {
+            alt: alt.to_string(),
+            kind: crate::ir::MediaKind::Image,
+            src: None,
+            width: Some(width),
+            height: Some(height),
+            original_name: None,
+            caption: None,
+            inline: true,
+        }
+    }
+
+    #[test]
+    fn html_img_off_by_default_omits_dimensions() {
+        let blocks = vec![image_with_size("photo.png", 800, 600)];
+        let html = render_ir_to_html(&blocks, &opts());
+        assert!(!html.contains("width="), "html_img defaults to false: {html}");
+    }
+
+    #[test]
+    fn html_img_opt_in_emits_width_and_height() {
+        let blocks = vec![image_with_size("photo.png", 800, 600)];
+        let mut o = opts();
+        o.html_img = true;
+        let html = render_ir_to_html(&blocks, &o);
+        assert!(html.contains(r#"width="800""#));
+        assert!(html.contains(r#"height="600""#));
     }
 
     // ── Path traversal via image alt (codex P1 finding) ──
 
     #[test]
     fn image_alt_path_traversal_is_sanitized() {
-        let blocks = vec![IRBlock::Image {
-            alt: "../../private.png".into(),
-        }];
+        let blocks = vec![IRBlock::image("../../private.png")];
         let html = render_ir_to_html(&blocks, &opts());
         assert!(!html.contains(".."), "traversal survived sanitization: {html}");
         assert!(html.contains(r#"src="assets/private.png""#));
@@ -667,9 +711,7 @@ mod tests {
         // Windows-style separators must be blocked even when this renderer
         // runs on a non-Windows host (std::path::Path only special-cases
         // `\` as a separator on Windows).
-        let blocks = vec![IRBlock::Image {
-            alt: "..\\..\\windows\\system32\\config".into(),
-        }];
+        let blocks = vec![IRBlock::image("..\\..\\windows\\system32\\config")];
         let html = render_ir_to_html(&blocks, &opts());
         assert!(!html.contains(".."), "traversal survived sanitization: {html}");
         assert!(html.contains(r#"src="assets/config""#));
@@ -677,16 +719,14 @@ mod tests {
 
     #[test]
     fn image_alt_absolute_path_is_sanitized_to_basename() {
-        let blocks = vec![IRBlock::Image {
-            alt: "/etc/passwd".into(),
-        }];
+        let blocks = vec![IRBlock::image("/etc/passwd")];
         let html = render_ir_to_html(&blocks, &opts());
         assert!(html.contains(r#"src="assets/passwd""#));
     }
 
     #[test]
     fn image_alt_dot_dot_only_falls_back_to_placeholder() {
-        let blocks = vec![IRBlock::Image { alt: "..".into() }];
+        let blocks = vec![IRBlock::image("..")];
         let html = render_ir_to_html(&blocks, &opts());
         assert!(html.contains(r#"src="assets/image""#));
     }

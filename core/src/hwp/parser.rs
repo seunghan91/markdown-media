@@ -338,9 +338,16 @@ impl HwpParser {
                                 push_paragraph(&mut blocks, text);
                                 current_char_shape_mapping = None;
                             }
-                            if let Some(bin_id) = extract_subtree_image_id(&records, i, 200) {
+                            if let Some(img) = extract_subtree_image_id(&records, i, 200) {
                                 blocks.push(IRBlock::Image {
-                                    alt: format!("image{}", bin_id),
+                                    alt: format!("image{}", img.bin_id),
+                                    kind: crate::ir::MediaKind::Image,
+                                    src: None,
+                                    width: img.width,
+                                    height: img.height,
+                                    original_name: None,
+                                    caption: None,
+                                    inline: true,
                                 });
                             } else if let Some(box_text) =
                                 extract_subtree_text(&records, i, 200, "\n")
@@ -633,8 +640,8 @@ impl HwpParser {
                             // First check if this gso wraps an image (SHAPE_COMPONENT_PICTURE
                             // child with binDataId). If so, emit a [이미지: imageN] placeholder
                             // — matches kordoc behavior. Otherwise fall through to textbox text.
-                            if let Some(bin_id) = extract_subtree_image_id(&records, i, 200) {
-                                blocks.push(format!("[이미지: image{}]", bin_id));
+                            if let Some(img) = extract_subtree_image_id(&records, i, 200) {
+                                blocks.push(format!("[이미지: image{}]", img.bin_id));
                             } else if let Some(box_text) = extract_subtree_text(&records, i, 200, "\n") {
                                 if !box_text.trim().is_empty() {
                                     blocks.push(box_text);
@@ -914,10 +921,11 @@ impl HwpParser {
     /// 이미지를 추출합니다
     pub fn extract_images(&mut self) -> io::Result<Vec<ImageData>> {
         let mut images = Vec::new();
-        
+        let dims = self.collect_picture_dimensions();
+
         // Get list of BinData streams
         let bin_data_names = self.ole_reader.list_bin_data();
-        
+
         for name in bin_data_names {
             if let Ok(data) = self.ole_reader.read_bin_data(&name) {
                 // Detect image format from magic bytes
@@ -929,18 +937,71 @@ impl HwpParser {
                     } else {
                         format!("{}.{}", name, format)
                     };
-                    
+
+                    let (width, height) = crate::hwp::ole::parse_bin_data_id(&name)
+                        .and_then(|bin_id| dims.get(&bin_id).copied())
+                        .unzip();
+
                     images.push(ImageData {
                         name: filename,
                         original_name: name,
                         format,
                         data,
+                        width,
+                        height,
                     });
                 }
             }
         }
-        
+
         Ok(images)
+    }
+
+    /// `bin_id -> (width_px, height_px)` for every SHAPE_COMPONENT_PICTURE
+    /// found across all sections (C7 — feeds [`ImageData`]'s width/height
+    /// for the `.mdm` manifest). Independent of
+    /// [`Self::parse_section_records_to_blocks`]'s paragraph/block walk —
+    /// this only needs the picture geometry, not the surrounding text, so
+    /// it re-walks records on its own rather than threading a side-channel
+    /// map through the block builder.
+    fn collect_picture_dimensions(&mut self) -> HashMap<u16, (u32, u32)> {
+        let mut dims = HashMap::new();
+        let section_count = self.ole_reader.section_count();
+
+        for section_num in 0..section_count {
+            let Ok(data) = self.ole_reader.read_body_text(section_num) else { continue };
+            let mut parser = RecordParser::new(&data);
+            let records = parser.parse_all();
+
+            for (i, record) in records.iter().enumerate() {
+                if record.tag_id != HWPTAG_CTRL_HEADER || record.data.len() < 4 {
+                    continue;
+                }
+                let id = &record.data[0..4];
+                if id != b" osg" && id != b"gso " {
+                    continue;
+                }
+                if let Some(img) = extract_subtree_image_id(&records, i, 200) {
+                    if img.bin_id > 0 {
+                        if let (Some(w), Some(h)) = (img.width, img.height) {
+                            // [C7 finding] `parse_shape_component`'s width/height byte
+                            // offsets don't reliably hold across real records — unlike
+                            // C2's bin_data_id fix, this was never load-bearing before
+                            // (nothing consumed it), so implausible reads (real samples
+                            // observed >800,000,000 "px") went unnoticed. Guard against
+                            // shipping garbage into the manifest rather than fixing the
+                            // parse itself here; see the C7 report for the follow-up.
+                            const MAX_PLAUSIBLE_PX: u32 = 20_000;
+                            if w <= MAX_PLAUSIBLE_PX && h <= MAX_PLAUSIBLE_PX {
+                                dims.insert(img.bin_id, (w, h));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        dims
     }
 
     /// 표 구조를 추출합니다
@@ -1774,7 +1835,17 @@ fn extract_subtree_equation_script(records: &[HwpRecord], ctrl_idx: usize, max_l
     None
 }
 
-fn extract_subtree_image_id(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> Option<u16> {
+/// `(bin_id, width, height)` for the picture at/under `ctrl_idx`. `width`/
+/// `height` are `None` when the record parsed to a `0x0` size (treated as
+/// "unknown" rather than a real zero-size image) — see [`ShapeComponent`]'s
+/// `width`/`height` fields, populated by [`parse_picture_component`].
+struct SubtreeImage {
+    bin_id: u16,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+fn extract_subtree_image_id(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> Option<SubtreeImage> {
     if ctrl_idx >= records.len() {
         return None;
     }
@@ -1786,14 +1857,19 @@ fn extract_subtree_image_id(records: &[HwpRecord], ctrl_idx: usize, max_lookahea
             break;
         }
         if r.tag_id == HWPTAG_SHAPE_COMPONENT_PICTURE {
-            if let Some((_, bin_id)) = parse_picture_component(&r.data) {
+            if let Some((shape, bin_id)) = parse_picture_component(&r.data) {
+                let width = (shape.width > 0).then_some(shape.width);
+                let height = (shape.height > 0).then_some(shape.height);
                 if bin_id > 0 {
-                    return Some(bin_id);
+                    return Some(SubtreeImage { bin_id, width, height });
                 }
+                // Parsed but bin_id is 0 — still a real picture node, so keep
+                // whatever size we got even though the id is a sentinel.
+                return Some(SubtreeImage { bin_id: 0, width, height });
             }
             // Even if parsing fails, this is definitely a picture node — return a
             // sentinel that the caller can interpret as "image present, id unknown".
-            return Some(0);
+            return Some(SubtreeImage { bin_id: 0, width: None, height: None });
         }
     }
     None
@@ -2297,6 +2373,12 @@ pub struct ImageData {
     pub original_name: String,
     pub format: String,
     pub data: Vec<u8>,
+    /// Display size read from the owning SHAPE_COMPONENT_PICTURE record
+    /// (C7), in pixels. `None` when no picture record referenced this
+    /// bin_data_id with a positive width/height (e.g. an orphaned BinData
+    /// item never actually placed in the body).
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 /// 표 데이터

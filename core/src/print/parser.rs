@@ -50,8 +50,17 @@ pub fn markdown_to_ir(markdown: &str) -> Vec<IRBlock> {
             continue;
         }
 
-        if let Some(alt) = parse_image(trimmed) {
-            blocks.push(IRBlock::Image { alt });
+        if let Some((alt, src)) = parse_image(trimmed) {
+            blocks.push(IRBlock::Image {
+                alt,
+                kind: crate::ir::MediaKind::Image,
+                src: Some(src),
+                width: None,
+                height: None,
+                original_name: None,
+                caption: None,
+                inline: true,
+            });
             i += 1;
             continue;
         }
@@ -131,14 +140,13 @@ fn is_separator(line: &str) -> bool {
     (first == '-' || first == '*' || first == '_') && compact.chars().all(|c| c == first)
 }
 
-fn parse_image(line: &str) -> Option<String> {
+/// Parse `![alt](src)` into `(alt, src)`.
+fn parse_image(line: &str) -> Option<(String, String)> {
     let rest = line.strip_prefix("![")?;
     let (alt, rest) = rest.split_once(']')?;
     let rest = rest.strip_prefix('(')?;
-    if !rest.ends_with(')') {
-        return None;
-    }
-    Some(alt.to_string())
+    let src = rest.strip_suffix(')')?;
+    Some((alt.to_string(), src.to_string()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,7 +382,8 @@ mod tests {
     #[test]
     fn image_placeholder_parses() {
         let blocks = markdown_to_ir("![image12](assets/image12)");
-        assert!(matches!(&blocks[0], IRBlock::Image { alt } if alt == "image12"));
+        assert!(matches!(&blocks[0], IRBlock::Image { alt, .. } if alt == "image12"));
+        assert!(matches!(&blocks[0], IRBlock::Image { src: Some(s), .. } if s == "assets/image12"));
     }
 
     #[test]

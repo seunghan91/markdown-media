@@ -152,6 +152,7 @@ impl ManifestV2 {
         data: &[u8],
         media_type: MediaType,
         ext: &str,
+        original_name: Option<&str>,
         metadata: AssetMetadata,
     ) -> String {
         let hash = compute_hash(data);
@@ -186,7 +187,7 @@ impl ManifestV2 {
             media_type: media_type.clone(),
             src: format!("assets/{subdir}/{filename}"),
             content_hash: hash,
-            original_name: None,
+            original_name: original_name.map(|s| s.to_string()),
             metadata,
         });
 
@@ -268,7 +269,7 @@ mod tests {
     #[test]
     fn test_add_asset_returns_content_addressed_filename() {
         let mut m = make_test_manifest();
-        let fname = m.add_asset(b"img data", MediaType::Image, "png", AssetMetadata::default());
+        let fname = m.add_asset(b"img data", MediaType::Image, "png", None, AssetMetadata::default());
         assert!(fname.ends_with(".png"));
         assert_eq!(fname.len(), 12 + 1 + 3); // 12-char hash + '.' + ext
     }
@@ -278,8 +279,8 @@ mod tests {
         let mut m = make_test_manifest();
         let data = b"duplicate image bytes";
 
-        let f1 = m.add_asset(data, MediaType::Image, "png", AssetMetadata::default());
-        let f2 = m.add_asset(data, MediaType::Image, "png", AssetMetadata::default());
+        let f1 = m.add_asset(data, MediaType::Image, "png", None, AssetMetadata::default());
+        let f2 = m.add_asset(data, MediaType::Image, "png", None, AssetMetadata::default());
 
         assert_eq!(f1, f2);
         assert_eq!(m.assets.len(), 1);
@@ -291,10 +292,10 @@ mod tests {
     fn test_add_different_assets_increments_stats() {
         let mut m = make_test_manifest();
 
-        m.add_asset(b"img1", MediaType::Image, "png", AssetMetadata::default());
-        m.add_asset(b"img2", MediaType::Image, "jpg", AssetMetadata::default());
-        m.add_asset(b"tbl1", MediaType::Table, "html", AssetMetadata::default());
-        m.add_asset(b"eq1", MediaType::Equation, "svg", AssetMetadata::default());
+        m.add_asset(b"img1", MediaType::Image, "png", None, AssetMetadata::default());
+        m.add_asset(b"img2", MediaType::Image, "jpg", None, AssetMetadata::default());
+        m.add_asset(b"tbl1", MediaType::Table, "html", None, AssetMetadata::default());
+        m.add_asset(b"eq1", MediaType::Equation, "svg", None, AssetMetadata::default());
 
         assert_eq!(m.stats.total_assets, 4);
         assert_eq!(m.stats.images, 2);
@@ -307,8 +308,8 @@ mod tests {
     fn test_asset_ids_are_sequential() {
         let mut m = make_test_manifest();
 
-        m.add_asset(b"a", MediaType::Image, "png", AssetMetadata::default());
-        m.add_asset(b"b", MediaType::Image, "png", AssetMetadata::default());
+        m.add_asset(b"a", MediaType::Image, "png", None, AssetMetadata::default());
+        m.add_asset(b"b", MediaType::Image, "png", None, AssetMetadata::default());
 
         assert_eq!(m.assets[0].id, "image_001");
         assert_eq!(m.assets[1].id, "image_002");
@@ -318,16 +319,16 @@ mod tests {
     fn test_asset_src_paths() {
         let mut m = make_test_manifest();
 
-        m.add_asset(b"img", MediaType::Image, "png", AssetMetadata::default());
+        m.add_asset(b"img", MediaType::Image, "png", None, AssetMetadata::default());
         assert!(m.assets[0].src.starts_with("assets/images/"));
 
-        m.add_asset(b"tbl", MediaType::Table, "html", AssetMetadata::default());
+        m.add_asset(b"tbl", MediaType::Table, "html", None, AssetMetadata::default());
         assert!(m.assets[1].src.starts_with("assets/tables/"));
 
-        m.add_asset(b"eq", MediaType::Equation, "svg", AssetMetadata::default());
+        m.add_asset(b"eq", MediaType::Equation, "svg", None, AssetMetadata::default());
         assert!(m.assets[2].src.starts_with("assets/equations/"));
 
-        m.add_asset(b"vid", MediaType::Video, "mp4", AssetMetadata::default());
+        m.add_asset(b"vid", MediaType::Video, "mp4", None, AssetMetadata::default());
         assert!(m.assets[3].src.starts_with("assets/other/"));
     }
 
@@ -338,6 +339,7 @@ mod tests {
             b"roundtrip test",
             MediaType::Image,
             "png",
+            Some("original.png"),
             AssetMetadata {
                 page: Some(1),
                 width: Some(800),
@@ -356,6 +358,7 @@ mod tests {
         assert_eq!(restored.assets.len(), 1);
         assert_eq!(restored.assets[0].media_type, MediaType::Image);
         assert_eq!(restored.assets[0].metadata.page, Some(1));
+        assert_eq!(restored.assets[0].original_name, Some("original.png".to_string()));
         assert_eq!(restored.stats.images, 1);
     }
 
@@ -364,7 +367,7 @@ mod tests {
         let mut m = make_test_manifest();
         let data = b"searchable";
         let hash = compute_hash(data);
-        m.add_asset(data, MediaType::Image, "png", AssetMetadata::default());
+        m.add_asset(data, MediaType::Image, "png", None, AssetMetadata::default());
 
         assert!(m.find_by_hash(&hash).is_some());
         assert!(m.find_by_hash("nonexistent").is_none());

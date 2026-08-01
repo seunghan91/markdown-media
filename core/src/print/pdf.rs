@@ -472,7 +472,7 @@ impl Layout {
                     );
                 }
             }
-            IRBlock::Image { alt } => {
+            IRBlock::Image { alt, .. } => {
                 self.text_line(
                     page,
                     pages,
@@ -651,7 +651,7 @@ mod tests {
                 ordered: false,
                 items: vec!["one".into(), "two".into()],
             },
-            IRBlock::Image { alt: "img1".into() },
+            IRBlock::image("img1"),
             IRBlock::Separator,
         ];
         let bytes = pdf_bytes(&blocks, &RenderOptions::default());
