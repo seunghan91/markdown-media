@@ -156,6 +156,7 @@ impl ManifestV2 {
     ) -> String {
         let hash = compute_hash(data);
         let short_hash = &hash[..12];
+        let ext = ext.to_ascii_lowercase();
         let filename = format!("{short_hash}.{ext}");
 
         // Deduplicate: skip if this exact content already tracked
@@ -215,6 +216,16 @@ impl ManifestV2 {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }
+}
+
+/// Look up an asset by its content-addressed filename (e.g. "a1b2c3d4e5f6.png").
+///
+/// Content-hash filenames are unique per manifest (dedup guarantees this), so
+/// matching on `src.ends_with(filename)` safely identifies the asset even
+/// when the caller's iteration order or index no longer lines up with
+/// `manifest.assets` (e.g. after dedup skips an entry).
+pub fn asset_by_filename<'a>(manifest: &'a ManifestV2, filename: &str) -> Option<&'a Asset> {
+    manifest.assets.iter().rev().find(|a| a.src.ends_with(filename))
 }
 
 /// Compute the SHA-256 hex digest of a byte slice.

@@ -45,7 +45,7 @@ use std::io::Write as _;
 use docx::DocxParser;
 use hwp::HwpParser;
 use hwpx::HwpxParser;
-use manifest::{ManifestV2, MediaType, AssetMetadata};
+use manifest::{ManifestV2, MediaType, AssetMetadata, asset_by_filename};
 use pdf::PdfParser;
 use xlsx::XlsxParser;
 use pptx::PptxParser;
@@ -1043,13 +1043,15 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
             if !mdm.images.is_empty() {
                 let mut saved = 0usize;
                 for (idx, img) in mdm.images.iter().enumerate() {
-                    if let Some(asset) = mv2.assets.get(idx) {
-                        if let Err(e) = save_asset_file(output, asset, &img.data) {
-                            eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", img.name, e);
-                        } else {
-                            saved += 1;
-                            if verbose {
-                                println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, img.data.len());
+                    if let Some((_, hash_filename)) = image_map.get(idx) {
+                        if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                            if let Err(e) = save_asset_file(output, asset, &img.data) {
+                                eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", img.name, e);
+                            } else {
+                                saved += 1;
+                                if verbose {
+                                    println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, img.data.len());
+                                }
                             }
                         }
                     }
@@ -1344,7 +1346,7 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                         let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, meta);
                         image_map.push((img.id.clone(), hash_filename.clone()));
 
-                        if let Some(asset) = mv2.assets.iter().rev().find(|a| a.src.ends_with(&hash_filename)) {
+                        if let Some(asset) = asset_by_filename(&mv2, &hash_filename) {
                             if let Err(e) = save_asset_file(output, asset, &img.data) {
                                 eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", filename, e);
                             } else {
@@ -1470,11 +1472,13 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
 
                     // Save image files to disk
                     for (idx, image) in doc.images.iter().enumerate() {
-                        if let Some(asset) = mv2.assets.get(idx) {
-                            if let Err(e) = save_asset_file(output, asset, &image.data) {
-                                eprintln!("  \u{26a0}\u{fe0f}  Failed to save image {}: {}", image.id, e);
-                            } else if verbose {
-                                println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, image.data.len());
+                        if let Some((_, hash_filename)) = image_map.get(idx) {
+                            if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
+                                if let Err(e) = save_asset_file(output, asset, &image.data) {
+                                    eprintln!("  \u{26a0}\u{fe0f}  Failed to save image {}: {}", image.id, e);
+                                } else if verbose {
+                                    println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, image.data.len());
+                                }
                             }
                         }
                     }
@@ -1676,7 +1680,7 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                             image_map.push((image.id.clone(), hash_filename.clone()));
 
                             // Save image using manifest asset path
-                            if let Some(asset) = mv2.assets.iter().rev().find(|a| a.src.ends_with(&hash_filename)) {
+                            if let Some(asset) = asset_by_filename(&mv2, &hash_filename) {
                                 if let Err(e) = save_asset_file(output, asset, data) {
                                     eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", image.filename, e);
                                 } else {
