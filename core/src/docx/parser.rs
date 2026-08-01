@@ -1868,7 +1868,15 @@ impl<R: Read + Seek> DocxParser<R> {
                lower_target.ends_with(".jpg") ||
                lower_target.ends_with(".jpeg") ||
                lower_target.ends_with(".gif") ||
-               lower_target.ends_with(".bmp") {
+               lower_target.ends_with(".bmp") ||
+               // Metafiles: no conversion (WMF→SVG is P2-M2, EMF has no
+               // Rust conversion path at all — see the P2 plan) — preserve
+               // the original bytes/extension so they aren't silently
+               // dropped from the document.
+               lower_target.ends_with(".emf") ||
+               lower_target.ends_with(".wmf") ||
+               lower_target.ends_with(".tiff") ||
+               lower_target.ends_with(".tif") {
 
                 let path = if let Some(stripped) = target.strip_prefix('/') {
                     stripped.to_string()
@@ -2364,6 +2372,56 @@ mod tests {
         assert!(text_paragraphs.iter().any(|t| t.contains("이어지는 문단")));
 
         assert_eq!(doc.images.len(), 1);
+    }
+
+    // ─── P2-M1: WMF/EMF metafile whitelist (no conversion — preserve as-is) ──
+
+    #[test]
+    fn test_docx_metafile_whitelist_fixture() {
+        let mut parser = DocxParser::open(fixture_path("images_metafile.docx"))
+            .expect("images_metafile.docx should open");
+        let doc = parser.parse().expect("images_metafile.docx should parse");
+
+        // Both the referenced WMF and the relationship-only EMF must survive
+        // extract_images()'s extension whitelist — neither is png/jpg/gif/bmp.
+        assert_eq!(doc.images.len(), 2, "expected both .wmf and .emf to pass the whitelist: {:?}",
+            doc.images.iter().map(|i| &i.filename).collect::<Vec<_>>());
+
+        let wmf = doc.images.iter().find(|i| i.filename == "image1.wmf")
+            .expect("image1.wmf should be extracted");
+        let emf = doc.images.iter().find(|i| i.filename == "image2.emf")
+            .expect("image2.emf should be extracted (relationship-only, unreferenced in body)");
+
+        // No conversion: bytes preserved exactly as embedded (WMF→SVG is
+        // P2-M2; EMF has no Rust conversion path — see the P2 plan).
+        let wmf_bytes = wmf.data.as_ref().expect("wmf data read from archive");
+        let emf_bytes = emf.data.as_ref().expect("emf data read from archive");
+        assert_eq!(&wmf_bytes[0..2], &[1, 0], "WMF mtType should be untouched (memory metafile)");
+        assert_eq!(&emf_bytes[40..44], b" EMF", "EMF dSignature at offset 40 should be untouched");
+
+        // The WMF is referenced inline in the body; the EMF is NOT (it only
+        // exists as a relationship) — matching HWPX's unreferenced-image
+        // '## 이미지' list convention this fixture is meant to exercise
+        // once main.rs wires DOCX the same way.
+        let image_refs = collect_image_refs(&doc);
+        assert_eq!(image_refs.len(), 1, "only the WMF has a body <w:drawing> reference");
+        match image_refs[0] {
+            InlineElement::ImageRef { filename, .. } => assert_eq!(filename, "image1.wmf"),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_extract_images_whitelist_extensions() {
+        // Direct regression guard on the whitelist itself (not just via a
+        // fixture round-trip): every currently-supported extension must
+        // still pass, and the new metafile extensions are now included.
+        let mut parser = DocxParser::open(fixture_path("images_basic.docx"))
+            .expect("images_basic.docx should open");
+        let images = parser.extract_images().expect("extract_images should succeed");
+        assert!(images.iter().all(|i| i.filename.ends_with(".png")),
+            "images_basic.docx regression: all entries should still be .png");
+        assert_eq!(images.len(), 2);
     }
 
     #[test]

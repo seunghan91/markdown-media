@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-DOCX 테스트 픽스처 제작 스크립트 (C4: 이미지 앵커 파싱 검증용)
+DOCX 테스트 픽스처 제작 스크립트 (C4: 이미지 앵커 파싱 검증용 / P2-M1: 메타파일 보존 검증용)
 
-core/tests/fixtures/ 에 아래 두 개의 최소 OOXML .docx 를 생성한다.
+core/tests/fixtures/ 에 아래 세 개의 최소 OOXML .docx 를 생성한다.
 python-docx 등 외부 의존성 없이 stdlib(zipfile/zlib/struct)만으로 조립하며,
 이미지 바이트도 이 스크립트 안에서 직접 생성한다 — 재현 가능성 확보.
 
-- images_basic.docx  : 인라인(wp:inline) 이미지 2개, 동일 바이트(dedup 케이스),
-                       이미지 앞뒤로 한국어 문단.
-- images_anchor.docx : 플로팅(wp:anchor) 이미지 1개 + drawing 없는 순수 텍스트 문단
-                       (앵커 vs 인라인 구분 검증용).
+- images_basic.docx    : 인라인(wp:inline) 이미지 2개, 동일 바이트(dedup 케이스),
+                         이미지 앞뒤로 한국어 문단.
+- images_anchor.docx   : 플로팅(wp:anchor) 이미지 1개 + drawing 없는 순수 텍스트 문단
+                         (앵커 vs 인라인 구분 검증용).
+- images_metafile.docx : WMF 1개(본문 wp:inline 참조) + EMF 1개(관계만 등록,
+                         본문 미참조 — '## 이미지' 목록행 케이스 검증용).
+                         변환 없이 원본 확장자 그대로 보존되는지 확인하는 용도.
 
 실행: python3 core/tests/fixtures/make_docx_fixtures.py
 """
@@ -48,12 +51,54 @@ def make_solid_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
     return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
+def make_minimal_wmf() -> bytes:
+    """Standard (non-placeable) WMF: a bare METAHEADER + a single META_EOF
+    record — no D7CDC69A placeable-header magic (that's a separate,
+    Windows-added wrapper the parser's WMF sniff doesn't require).
+
+    METAHEADER (18 bytes): mtType(WORD) mtHeaderSize(WORD) mtVersion(WORD)
+    mtSize(DWORD, in WORDs) mtNoObjects(WORD) mtMaxRecord(DWORD, in WORDs)
+    mtNoParameters(WORD). META_EOF record (6 bytes): rdSize(DWORD)=3 (WORDs)
+    + rdFunction(WORD)=0x0000.
+    """
+    eof_record = struct.pack("<IH", 3, 0x0000)
+    total_words = 9 + len(eof_record) // 2
+    header = struct.pack(
+        "<HHHIHIH",
+        1,            # mtType = memory metafile
+        9,            # mtHeaderSize (WORDs)
+        0x0300,       # mtVersion = Windows 3.0
+        total_words,  # mtSize (WORDs)
+        0,            # mtNoObjects
+        3,            # mtMaxRecord (WORDs) — the EOF record itself
+        0,            # mtNoParameters (reserved)
+    )
+    return header + eof_record
+
+
+def make_minimal_emf() -> bytes:
+    """Minimal ENHMETAHEADER: iType=1 (EMR_HEADER) at offset 0, dSignature
+    (" EMF") at offset 40 — iType(4)+nSize(4)+rclBounds(16)+rclFrame(16)=40.
+    Matches core/src/hwp/parser.rs's detect_image_format offset-40 check
+    (added in this same P2-M1 change) so this fixture also doubles as an
+    EMF-detection regression input.
+    """
+    buf = bytearray(88)  # minimal ENHMETAHEADER size
+    struct.pack_into("<I", buf, 0, 1)  # iType = EMR_HEADER
+    struct.pack_into("<I", buf, 4, len(buf))  # nSize
+    buf[40:44] = b" EMF"  # dSignature
+    struct.pack_into("<I", buf, 44, 0x00010000)  # nVersion
+    return bytes(buf)
+
+
 def content_types_xml() -> str:
     return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Default Extension="png" ContentType="image/png"/>
+  <Default Extension="wmf" ContentType="image/x-wmf"/>
+  <Default Extension="emf" ContentType="image/x-emf"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
@@ -264,8 +309,37 @@ def build_images_anchor() -> None:
     )
 
 
+def build_images_metafile() -> None:
+    """WMF(본문 wp:inline 참조) + EMF(관계만 등록, 본문 미참조) 조합.
+
+    EMF는 어떤 <w:drawing>에서도 r:embed="rId2"를 참조하지 않는다 — 본문에
+    등장하지 않는 임베디드 이미지가 여전히 매니페스트/'## 이미지' 목록으로
+    보존되는지 확인하는 케이스 (HWPX의 미참조-이미지 목록 관례와 동형).
+    """
+    wmf = make_minimal_wmf()
+    emf = make_minimal_emf()
+
+    paragraphs = [
+        text_paragraph("메타파일(WMF/EMF) 보존 테스트 문서입니다."),
+        inline_drawing_paragraph(
+            rid="rId1", doc_pr_id=1, name="image1.wmf",
+            descr="WMF 그림", cx=304800, cy=304800,
+        ),
+        text_paragraph("EMF는 본문에 참조되지 않고 관계로만 존재합니다."),
+    ]
+
+    write_docx(
+        FIXTURES_DIR / "images_metafile.docx",
+        paragraphs,
+        media={"image1.wmf": wmf, "image2.emf": emf},
+        image_rels=[("rId1", "image1.wmf"), ("rId2", "image2.emf")],
+    )
+
+
 if __name__ == "__main__":
     build_images_basic()
     build_images_anchor()
+    build_images_metafile()
     print(f"생성됨: {FIXTURES_DIR / 'images_basic.docx'}")
     print(f"생성됨: {FIXTURES_DIR / 'images_anchor.docx'}")
+    print(f"생성됨: {FIXTURES_DIR / 'images_metafile.docx'}")
