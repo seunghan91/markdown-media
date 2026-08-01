@@ -62,6 +62,9 @@ pub struct Asset {
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {
     Image,
+    /// Natively-extracted vector drawing object (see `crate::shape_svg`) —
+    /// stored as an SVG asset alongside raster images (`assets/images/`).
+    Shape,
     Table,
     Chart,
     Equation,
@@ -102,6 +105,7 @@ pub struct Position {
 pub struct ConversionStats {
     pub total_assets: usize,
     pub images: usize,
+    pub shapes: usize,
     pub tables: usize,
     pub charts: usize,
     pub equations: usize,
@@ -167,6 +171,7 @@ impl ManifestV2 {
 
         let id = match media_type {
             MediaType::Image => format!("image_{:03}", self.stats.images + 1),
+            MediaType::Shape => format!("shape_{:03}", self.stats.shapes + 1),
             MediaType::Table => format!("table_{:03}", self.stats.tables + 1),
             MediaType::Chart => format!("chart_{:03}", self.stats.charts + 1),
             MediaType::Equation => format!("eq_{:03}", self.stats.equations + 1),
@@ -176,7 +181,9 @@ impl ManifestV2 {
         };
 
         let subdir = match media_type {
-            MediaType::Image => "images",
+            // Shapes are consumer-facing images too (SVG instead of raster) —
+            // same directory as photos, distinguished by media_type/id prefix.
+            MediaType::Image | MediaType::Shape => "images",
             MediaType::Table | MediaType::Chart => "tables",
             MediaType::Equation => "equations",
             MediaType::Video | MediaType::Audio | MediaType::Embed => "other",
@@ -194,6 +201,7 @@ impl ManifestV2 {
         self.stats.total_assets += 1;
         match media_type {
             MediaType::Image => self.stats.images += 1,
+            MediaType::Shape => self.stats.shapes += 1,
             MediaType::Table => self.stats.tables += 1,
             MediaType::Chart => self.stats.charts += 1,
             MediaType::Equation => self.stats.equations += 1,
@@ -330,6 +338,24 @@ mod tests {
 
         m.add_asset(b"vid", MediaType::Video, "mp4", None, AssetMetadata::default());
         assert!(m.assets[3].src.starts_with("assets/other/"));
+    }
+
+    #[test]
+    fn test_shape_asset_id_and_subdir() {
+        let mut m = make_test_manifest();
+
+        let fname = m.add_asset(b"shape1", MediaType::Shape, "svg", None, AssetMetadata::default());
+        assert!(fname.ends_with(".svg"));
+        assert_eq!(m.assets[0].id, "shape_001");
+        // Same directory as raster images — svg vs. photo is distinguished
+        // by media_type/id prefix, not by a separate top-level folder.
+        assert!(m.assets[0].src.starts_with("assets/images/"));
+        assert_eq!(m.stats.shapes, 1);
+        assert_eq!(m.stats.images, 0, "shapes must not bump the image counter");
+
+        m.add_asset(b"shape2", MediaType::Shape, "svg", None, AssetMetadata::default());
+        assert_eq!(m.assets[1].id, "shape_002");
+        assert_eq!(m.stats.shapes, 2);
     }
 
     #[test]

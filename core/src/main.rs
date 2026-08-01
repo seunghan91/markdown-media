@@ -18,6 +18,7 @@ mod legal;
 mod watch;
 mod ocr;
 mod manifest;
+mod shape_svg;
 mod pdf;
 mod xlsx;
 #[cfg(feature = "xls")]
@@ -1487,6 +1488,72 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                         eprintln!(
                             "  \u{26a0}\u{fe0f}  {} image marker(s) in {} could not be resolved to a manifest asset",
                             remaining_markers, stem
+                        );
+                    }
+
+                    // Rewrite `[도형: shapeN]` markers (hwpx/parser.rs's
+                    // walk_run_body, P2-M1) to real SVG assets. `doc.shapes`
+                    // carries raw shape subtree XML rather than pre-rendered
+                    // SVG — hwpx/parser.rs is compiled into both the
+                    // `mdm_core` lib and this binary's own module tree, and
+                    // `shape_svg` was only reachable from the lib side until
+                    // this wiring pass, so rendering was deferred here.
+                    // `[차트: chartN]`/`[개체: oleN]` markers are left as-is
+                    // for now (original-byte collection needs a real sample
+                    // corpus — see the P2 plan; the corpus currently has 0
+                    // hwpx files with charts/OLE objects).
+                    let mut shape_saved = 0usize;
+                    for shape in &doc.shapes {
+                        let marker = format!("[도형: {}]", shape.id);
+                        if !content.contains(&marker) {
+                            continue;
+                        }
+                        match shape_svg::shape_to_svg(&shape.xml) {
+                            Some(svg) => {
+                                let meta = AssetMetadata {
+                                    // pt -> px at 96dpi, matching the
+                                    // EMU/9525 conversion DOCX images already
+                                    // use elsewhere in this file (1pt =
+                                    // 12700 EMU / 9525 EMU-per-px = 1.333px).
+                                    width: Some((svg.width_pt * 96.0 / 72.0).round() as u32),
+                                    height: Some((svg.height_pt * 96.0 / 72.0).round() as u32),
+                                    alt_text: Some(svg.alt.clone()),
+                                    format: Some("svg".to_string()),
+                                    ..Default::default()
+                                };
+                                let hash_filename = mv2.add_asset(svg.svg.as_bytes(), MediaType::Shape, "svg", None, meta);
+                                if let Some(asset) = asset_by_filename(&mv2, &hash_filename) {
+                                    if let Err(e) = save_asset_file(output, asset, svg.svg.as_bytes()) {
+                                        eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", shape.id, e);
+                                    } else {
+                                        shape_saved += 1;
+                                        if verbose {
+                                            println!("  \u{1f4d0} Saved: {} ({} bytes)", asset.src, svg.svg.len());
+                                        }
+                                    }
+                                    let replacement = format!("![{}]({})", svg.alt, asset.src);
+                                    content = content.replace(&marker, &replacement);
+                                }
+                            }
+                            None => {
+                                eprintln!(
+                                    "  \u{26a0}\u{fe0f}  Shape '{}' in {} could not be rendered to SVG \u{2014} marker left unresolved",
+                                    shape.id, stem
+                                );
+                            }
+                        }
+                    }
+                    if shape_saved > 0 {
+                        println!("  \u{2713} Extracted {} shapes to assets/images/", shape_saved);
+                    }
+
+                    let remaining_shape_markers = content.matches("[도형:").count();
+                    let remaining_chart_markers = content.matches("[차트:").count();
+                    let remaining_ole_markers = content.matches("[개체:").count();
+                    if remaining_shape_markers + remaining_chart_markers + remaining_ole_markers > 0 {
+                        eprintln!(
+                            "  \u{26a0}\u{fe0f}  {} shape / {} chart / {} ole reference(s) in {} could not be resolved to a manifest asset",
+                            remaining_shape_markers, remaining_chart_markers, remaining_ole_markers, stem
                         );
                     }
 
