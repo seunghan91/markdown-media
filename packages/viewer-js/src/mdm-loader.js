@@ -49,11 +49,63 @@ export class MDMLoader {
   parse(content, ext) {
     if (ext === '.json') {
       return JSON.parse(content);
-    } else if (ext === '.yaml' || ext === '.yml' || ext === '.mdm') {
+    } else if (ext === '.mdm') {
+      // .mdm 정본 포맷은 CLI(Rust)가 생산하는 ManifestV2 JSON (core/src/manifest.rs).
+      // JSON 우선 시도 후, ManifestV2 구조로 판별되면 resources 맵으로 변환한다.
+      try {
+        const data = JSON.parse(content);
+        return this.isManifestV2(data) ? this.adaptManifestV2(data) : data;
+      } catch (jsonError) {
+        // deprecated: 구버전 수기 작성 .mdm(YAML) 호환용 폴백
+        return yaml.load(content);
+      }
+    } else if (ext === '.yaml' || ext === '.yml') {
       return yaml.load(content);
     } else {
       throw new Error(`Unsupported MDM file extension: ${ext}`);
     }
+  }
+
+  /**
+   * 데이터가 ManifestV2 구조인지 판별합니다
+   * @param {Object} data - 파싱된 데이터
+   * @returns {boolean}
+   */
+  isManifestV2(data) {
+    return Boolean(data) && typeof data === 'object' &&
+      data.version === '2.0' && Array.isArray(data.assets);
+  }
+
+  /**
+   * ManifestV2(assets 배열)를 뷰어 내부 스키마(resources 맵)로 변환합니다
+   * @param {Object} data - ManifestV2 데이터
+   * @returns {Object} resources 맵을 가진 데이터
+   */
+  adaptManifestV2(data) {
+    const resources = {};
+
+    for (const asset of data.assets) {
+      const resource = {
+        // whitelist 없이 pass-through — 신규 MediaType 추가 시 로더 무수정
+        type: asset.media_type,
+        src: asset.src,
+      };
+
+      const meta = asset.metadata || {};
+      if (meta.alt_text) resource.alt = meta.alt_text;
+      if (meta.caption) resource.caption = meta.caption;
+      if (meta.width) resource.width = meta.width;
+      if (meta.height) resource.height = meta.height;
+
+      resources[asset.id] = resource;
+    }
+
+    return {
+      version: data.version,
+      resources,
+      source: data.source,
+      stats: data.stats,
+    };
   }
 
   /**

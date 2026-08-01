@@ -1,0 +1,69 @@
+{
+  "version": "2.0",
+  "source": {
+    "filename": "보도_125091_0.hwpx",
+    "format": "hwpx",
+    "size_bytes": 114990,
+    "hash": "c756716ad6d334454c2bd66194d936f524584b661b00c15bfc9f6faeb4a06922",
+    "title": null,
+    "author": null,
+    "pages": null
+  },
+  "assets": [
+    {
+      "id": "image_001",
+      "media_type": "image",
+      "src": "assets/images/635dec1fdfc6.PNG",
+      "content_hash": "635dec1fdfc6c1e55523093392b02dd010b7e20bcdd45b831b641ddf0bb8e584",
+      "original_name": null,
+      "metadata": {
+        "page": null,
+        "width": null,
+        "height": null,
+        "format": "PNG",
+        "caption": null,
+        "alt_text": null
+      }
+    },
+    {
+      "id": "image_002",
+      "media_type": "image",
+      "src": "assets/images/f8e0c88413ce.JPG",
+      "content_hash": "f8e0c88413ceea877df8ded27d868cbf449b7652677a026a74bf7b0325e327e6",
+      "original_name": null,
+      "metadata": {
+        "page": null,
+        "width": null,
+        "height": null,
+        "format": "JPG",
+        "caption": null,
+        "alt_text": null
+      }
+    },
+    {
+      "id": "image_003",
+      "media_type": "image",
+      "src": "assets/images/721ec72f2317.PNG",
+      "content_hash": "721ec72f2317e31ce6735fcef0e377999a67c0c5ec7bf124ac9632edc28325d9",
+      "original_name": null,
+      "metadata": {
+        "page": null,
+        "width": null,
+        "height": null,
+        "format": "PNG",
+        "caption": null,
+        "alt_text": null
+      }
+    }
+  ],
+  "stats": {
+    "total_assets": 3,
+    "images": 3,
+    "tables": 0,
+    "charts": 0,
+    "equations": 0,
+    "markdown_lines": 35,
+    "markdown_chars": 4133,
+    "conversion_ms": 0
+  }
+}
