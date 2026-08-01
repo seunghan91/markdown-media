@@ -31,6 +31,50 @@ pub struct ImageInfo {
     pub data: Vec<u8>,        // actual binary data
 }
 
+/// A pure vector drawing object (`hp:rect`/`ellipse`/`line`/`polygon`/`curv`/
+/// `arc` with no `hp:drawText` body), collected for a caller to render via
+/// `shape_svg::shape_to_svg(&asset.xml)`.
+///
+/// [BLOCKED — see P2-M1 report] This crate's `hwpx` module is compiled into
+/// two separate crate roots (`mdm_core`'s `lib.rs` AND `hwp2mdm`'s
+/// `main.rs`, each with their own `mod hwpx;`). `shape_svg` is only
+/// registered in `lib.rs`, and wiring it into `main.rs` was explicitly out
+/// of scope for this change (main.rs is reserved for a different
+/// in-progress task) — so this module cannot call `shape_to_svg` itself
+/// without either touching `main.rs` or introducing a new
+/// per-file-duplicated-module pattern this codebase doesn't otherwise use.
+/// Rendering is deferred to whatever caller collects `HwpxDocument.shapes`
+/// (the planned main.rs wiring pass, item 4 in the P2 plan) — that caller
+/// already lives in a context where `shape_svg` is reachable.
+///
+/// Shapes that DO carry a `drawText` body are NOT collected here at all —
+/// their text is kept inline in the paragraph stream instead (see
+/// `walk_run_body`'s shape dispatch), matching the P2 plan's textbox
+/// policy: a shape's on-page text shouldn't be duplicated between the
+/// document body and an SVG asset.
+#[derive(Debug, Clone)]
+pub struct ShapeAsset {
+    /// Marker id embedded in the body as `[도형: {id}]`, e.g. "shape1".
+    /// Sequential per document (not the shape's internal HWPX `id`
+    /// attribute, which is an arbitrary large integer).
+    pub id: String,
+    /// Raw shape subtree XML, e.g. `<hp:rect id="...">...</hp:rect>` —
+    /// pass directly to `shape_svg::shape_to_svg` to render.
+    pub xml: String,
+}
+
+/// Accumulates shape/chart/ole references discovered while walking a
+/// document's paragraph runs. Threaded through the run-body walker (instead
+/// of separate loose counters) so `shape{N}`/`chart{N}`/`ole{N}` numbering
+/// stays monotonically increasing across sections and paragraphs, matching
+/// the `image{N}` convention already used for embedded images.
+#[derive(Debug, Clone, Default)]
+struct ShapeCollector {
+    shapes: Vec<ShapeAsset>,
+    chart_count: usize,
+    ole_count: usize,
+}
+
 /// HWPX document parser, generic over the underlying reader type.
 ///
 /// The default type parameter `File` preserves backward compatibility.
@@ -49,6 +93,12 @@ pub struct HwpxDocument {
     pub image_info: Vec<ImageInfo>,
     pub preview_text: String,
     pub tables: Vec<Table>,
+    /// Pure vector shapes extracted as standalone SVG assets. Chart
+    /// (`hp:chart`) / OLE (`hp:ole`) references get a body marker
+    /// (`[차트: chartN]` / `[개체: oleN]`) too, but their original bytes
+    /// aren't collected here yet — that's deferred to the main.rs wiring
+    /// pass (see the P2 plan, M1 file-level item 4).
+    pub shapes: Vec<ShapeAsset>,
 }
 
 /// Table structure
@@ -241,9 +291,9 @@ impl<R: Read + Seek> HwpxParser<R> {
         // Parse header.xml for character styles
         self.parse_header_styles()?;
 
-        let (sections, tables) = self.extract_sections_with_tables()?;
+        let (sections, tables, shapes) = self.extract_sections_with_tables()?;
         let images = self.list_images();
-        
+
         // Parse manifest and extract image info
         let image_info = self.extract_images_with_data()?;
 
@@ -254,6 +304,7 @@ impl<R: Read + Seek> HwpxParser<R> {
             image_info,
             preview_text,
             tables,
+            shapes,
         })
     }
 
@@ -288,10 +339,13 @@ impl<R: Read + Seek> HwpxParser<R> {
     }
 
     /// Extract text and tables from all sections
-    fn extract_sections_with_tables(&mut self) -> io::Result<(Vec<String>, Vec<Table>)> {
+    fn extract_sections_with_tables(&mut self) -> io::Result<(Vec<String>, Vec<Table>, Vec<ShapeAsset>)> {
         let mut sections = Vec::new();
         let mut all_tables = Vec::new();
         let mut section_idx = 0;
+        // Spans all sections so `shape{N}`/`chart{N}`/`ole{N}` numbering
+        // stays monotonic across the whole document, not just one section.
+        let mut collector = ShapeCollector::default();
 
         loop {
             let section_name = format!("Contents/section{}.xml", section_idx);
@@ -299,7 +353,12 @@ impl<R: Read + Seek> HwpxParser<R> {
                 Ok(mut file) => {
                     let content = read_limited_to_string(&mut file, MAX_HWPX_XML)?;
 
-                    let (text, tables) = parse_section_xml(&content, &self.char_styles, &self.heading_styles);
+                    let (text, tables) = parse_section_xml(
+                        &content,
+                        &self.char_styles,
+                        &self.heading_styles,
+                        &mut collector,
+                    );
                     sections.push(text);
                     all_tables.extend(tables);
                     section_idx += 1;
@@ -308,7 +367,7 @@ impl<R: Read + Seek> HwpxParser<R> {
             }
         }
 
-        Ok((sections, all_tables))
+        Ok((sections, all_tables, collector.shapes))
     }
 
     /// List all images in BinData
@@ -639,6 +698,7 @@ fn parse_section_xml(
     xml: &str,
     char_styles: &HashMap<u32, CharStyle>,
     heading_styles: &HashMap<u32, u8>,
+    collector: &mut ShapeCollector,
 ) -> (String, Vec<Table>) {
     // Strip <hp:secPr>...</hp:secPr> section-property blocks before processing.
     let xml = strip_sec_pr(xml);
@@ -659,7 +719,7 @@ fn parse_section_xml(
 
             // Extract text before table
             let before_table = &xml[pos..tbl_pos];
-            result.push_str(&extract_text_with_formatting(before_table, char_styles, heading_styles));
+            result.push_str(&extract_text_with_formatting(before_table, char_styles, heading_styles, collector));
 
             // Find matching table close — must be depth-aware because HWPX
             // tables can nest. See find_matching_close() for rationale.
@@ -698,7 +758,7 @@ fn parse_section_xml(
             }
         } else {
             // No more tables, extract remaining text
-            result.push_str(&extract_text_with_formatting(&xml[pos..], char_styles, heading_styles));
+            result.push_str(&extract_text_with_formatting(&xml[pos..], char_styles, heading_styles, collector));
             break;
         }
     }
@@ -1235,7 +1295,22 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
 ///   - `<hp:equation>…</hp:equation>` → `$…$` / `$$…$$`
 ///   - nested `<hp:run>…</hp:run>` → SKIP (processed as part of the ctrl
 ///     that contains it; don't leak its `<hp:t>` content into the outer run)
-fn walk_run_body(body: &str) -> String {
+///   - `<hp:rect>`/`<hp:ellipse>`/`<hp:line>`/`<hp:polygon>`/`<hp:curv>`/
+///     `<hp:arc>` → pure shape (no drawText): `[도형: shapeN]` marker +
+///     collected into `collector.shapes` as an SVG asset (see
+///     `crate::shape_svg`). Shape WITH a drawText body: its text is kept
+///     inline instead (no asset — see the P2 plan's textbox policy).
+///   - `<hp:chart>`/`<hp:ole>` → `[차트: chartN]` / `[개체: oleN]` marker
+///     only (original bytes aren't collected here — deferred to the
+///     main.rs wiring pass).
+///
+/// NOTE: this only covers the main paragraph-body path. Table cells
+/// (`extract_cell_text` → `extract_runs_text_with_formatting` →
+/// `extract_runs_text`) and footnote/header/footer/dutmal content
+/// (`extract_runs_text` too) are a separate parallel text-extraction chain
+/// that doesn't receive a `ShapeCollector` — shapes embedded there are not
+/// yet detected (known gap, flagged for follow-up).
+fn walk_run_body(body: &str, collector: &mut ShapeCollector) -> String {
     let mut out = String::new();
     let mut pos = 0;
     while pos < body.len() {
@@ -1255,10 +1330,21 @@ fn walk_run_body(body: &str) -> String {
         let eq2 = body[pos..].find("<hp:equation ").map(|i| (pos + i, "eq_attr"));
         let nested_run = body[pos..].find("<hp:run ").map(|i| (pos + i, "nested_run"));
         let nested_run2 = body[pos..].find("<hp:run>").map(|i| (pos + i, "nested_run"));
+        // Boundary-safe: `<hp:line` is a prefix of `<hp:lineBreak`/
+        // `<hp:lineseg`/`<hp:lineShape` — a plain `.find()` would misfire.
+        let shape_rect = find_tag_open(body, pos, "<hp:rect").map(|i| (i, "rect"));
+        let shape_ellipse = find_tag_open(body, pos, "<hp:ellipse").map(|i| (i, "ellipse"));
+        let shape_line = find_tag_open(body, pos, "<hp:line").map(|i| (i, "line"));
+        let shape_polygon = find_tag_open(body, pos, "<hp:polygon").map(|i| (i, "polygon"));
+        let shape_curv = find_tag_open(body, pos, "<hp:curv").map(|i| (i, "curv"));
+        let shape_arc = find_tag_open(body, pos, "<hp:arc").map(|i| (i, "arc"));
+        let chart = find_tag_open(body, pos, "<hp:chart").map(|i| (i, "chart"));
+        let ole = find_tag_open(body, pos, "<hp:ole").map(|i| (i, "ole"));
 
         let candidates = [
             t1, t2, tself, lb1, lb2, tab, tab2, fws, img, ctrl, ctrl2, eq1, eq2,
-            nested_run, nested_run2,
+            nested_run, nested_run2, shape_rect, shape_ellipse, shape_line,
+            shape_polygon, shape_curv, shape_arc, chart, ole,
         ];
         let Some((abs, kind)) = candidates.iter().filter_map(|c| *c).min_by_key(|(i, _)| *i) else {
             break;
@@ -1387,10 +1473,110 @@ fn walk_run_body(body: &str) -> String {
                 };
                 pos = close + 9;
             }
+            "rect" | "ellipse" | "line" | "polygon" | "curv" | "arc" => {
+                let tag_end = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                if body[abs..tag_end].ends_with("/>") {
+                    // Self-closing shape (no children) — nothing to draw or
+                    // extract text from.
+                    pos = tag_end;
+                    continue;
+                }
+                let open_tag = format!("<hp:{} ", kind);
+                let close_tag = format!("</hp:{}>", kind);
+                let close = match find_matching_close(body, tag_end, &open_tag, &close_tag) {
+                    Some(c) => c,
+                    None => break,
+                };
+                let subtree_end = close + close_tag.len();
+                let subtree = &body[abs..subtree_end];
+                if subtree.contains("<hp:drawText") {
+                    // Textbox policy: keep the visible text in the body,
+                    // don't also emit it (duplicated) as an SVG asset.
+                    // `extract_runs_text` already walks nested drawText and
+                    // ignores every other shape-metadata element (lineShape,
+                    // fillBrush, pt0..pt3, ...) since none of those match its
+                    // own candidate set.
+                    let text = extract_runs_text(subtree);
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                            out.push(' ');
+                        }
+                        out.push_str(text);
+                    }
+                } else {
+                    // Pure shape (no drawText) — collect the raw subtree for
+                    // a caller to render via shape_svg::shape_to_svg (see
+                    // the [BLOCKED] note on ShapeAsset for why that call
+                    // doesn't happen here).
+                    let n = collector.shapes.len() + 1;
+                    let id = format!("shape{n}");
+                    collector.shapes.push(ShapeAsset {
+                        id: id.clone(),
+                        xml: subtree.to_string(),
+                    });
+                    if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                        out.push(' ');
+                    }
+                    out.push_str(&format!("[도형: {id}]"));
+                }
+                pos = subtree_end;
+            }
+            "chart" | "ole" => {
+                let tag_end = match body[abs..].find('>') {
+                    Some(i) => abs + i + 1,
+                    None => break,
+                };
+                let self_closing = body[abs..tag_end].ends_with("/>");
+                let subtree_end = if self_closing {
+                    tag_end
+                } else {
+                    let open_tag = format!("<hp:{} ", kind);
+                    let close_tag = format!("</hp:{}>", kind);
+                    match find_matching_close(body, tag_end, &open_tag, &close_tag) {
+                        Some(c) => c + close_tag.len(),
+                        None => break,
+                    }
+                };
+                let (label, count) = if kind == "chart" {
+                    ("차트", &mut collector.chart_count)
+                } else {
+                    ("개체", &mut collector.ole_count)
+                };
+                *count += 1;
+                let marker = format!("[{label}: {kind}{count}]");
+                if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                    out.push(' ');
+                }
+                out.push_str(&marker);
+                pos = subtree_end;
+            }
             _ => break,
         }
     }
     out
+}
+
+/// Find the next occurrence of an element's opening `<{tag}` at or after
+/// `from`, requiring the byte right after the tag name to be a legal XML
+/// name terminator (whitespace, `>`, or `/`) rather than accepting any
+/// prefix match. Needed because e.g. `<hp:line` is a text-prefix of
+/// `<hp:lineBreak`, `<hp:lineseg`, and `<hp:lineShape` — all unrelated
+/// elements that a plain `.find()` would incorrectly match.
+fn find_tag_open(body: &str, from: usize, tag: &str) -> Option<usize> {
+    let mut search_from = from;
+    loop {
+        let idx = search_from + body[search_from..].find(tag)?;
+        let after = idx + tag.len();
+        match body.as_bytes().get(after).copied() {
+            Some(b' ' | b'>' | b'/' | b'\t' | b'\n' | b'\r') => return Some(idx),
+            None => return None,
+            _ => search_from = idx + 1,
+        }
+    }
 }
 
 /// Dispatch on the element inside `<hp:ctrl>` and return its markdown marker.
@@ -1786,6 +1972,7 @@ fn extract_text_with_formatting(
     xml: &str,
     char_styles: &HashMap<u32, CharStyle>,
     heading_styles: &HashMap<u32, u8>,
+    collector: &mut ShapeCollector,
 ) -> String {
     let mut result = String::new();
     let mut pos = 0;
@@ -1819,7 +2006,7 @@ fn extract_text_with_formatting(
             .unwrap_or(0);
 
         // Extract runs from this paragraph
-        let para_text = extract_runs_with_formatting(para_xml, char_styles);
+        let para_text = extract_runs_with_formatting(para_xml, char_styles, collector);
         if !para_text.is_empty() {
             if heading_level > 0 && heading_level <= 7 {
                 // Ensure blank line before heading for proper Markdown rendering
@@ -1846,7 +2033,11 @@ fn extract_text_with_formatting(
 }
 
 /// Extract runs with formatting applied
-fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharStyle>) -> String {
+fn extract_runs_with_formatting(
+    para_xml: &str,
+    char_styles: &HashMap<u32, CharStyle>,
+    collector: &mut ShapeCollector,
+) -> String {
     let mut result = String::new();
     let mut pos = 0;
 
@@ -2049,7 +2240,7 @@ fn extract_runs_with_formatting(para_xml: &str, char_styles: &HashMap<u32, CharS
 
             // Walk the run body linearly, handling nested ctrl / equation / run
             // elements BEFORE their inner <hp:t> contents would leak out.
-            let text_content = walk_run_body(run_body);
+            let text_content = walk_run_body(run_body, collector);
 
             // Apply formatting if we have text and a valid charPrIDRef
             if !text_content.is_empty() {
@@ -2763,7 +2954,7 @@ mod tests {
         let heading_styles: HashMap<u32, u8> = [(2, 1)].into_iter().collect();
         let char_styles = HashMap::new();
         let xml = r#"<hp:sec><hp:p styleIDRef="2"><hp:run charPrIDRef="0"><hp:t>제목입니다</hp:t></hp:run></hp:p><hp:p styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>본문입니다</hp:t></hp:run></hp:p></hp:sec>"#;
-        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles, &mut ShapeCollector::default());
         assert!(result.contains("# 제목입니다"), "heading marker missing: {}", result);
         assert!(result.contains("본문입니다"));
     }
@@ -2774,7 +2965,7 @@ mod tests {
         let heading_styles = HashMap::new();
         // extract_runs_with_formatting requires <hp:run with attrs (space after "run")
         let xml = r#"<hp:p styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>줄1</hp:t><hp:lineBreak/><hp:t>줄2</hp:t></hp:run></hp:p>"#;
-        let result = extract_text_with_formatting(xml, &char_styles, &heading_styles);
+        let result = extract_text_with_formatting(xml, &char_styles, &heading_styles, &mut ShapeCollector::default());
         assert!(result.contains("줄1\n줄2"), "linebreak not handled: {:?}", result);
     }
 
@@ -2786,7 +2977,7 @@ mod tests {
         let char_styles = HashMap::new();
         let heading_styles = HashMap::new();
         let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:footNote number="1" suffixChar="41"><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>12345</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl><hp:t/></hp:run></hp:p></hp:sec>"#;
-        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles, &mut ShapeCollector::default());
         assert!(
             result.contains("[각주: 12345]"),
             "footnote marker missing or malformed: {:?}",
@@ -2799,7 +2990,7 @@ mod tests {
         let char_styles = HashMap::new();
         let heading_styles = HashMap::new();
         let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:endNote number="1" suffixChar="41"><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>7890</hp:t></hp:run></hp:p></hp:subList></hp:endNote></hp:ctrl><hp:t/></hp:run></hp:p></hp:sec>"#;
-        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles, &mut ShapeCollector::default());
         assert!(
             result.contains("[미주: 7890]"),
             "endnote marker missing or malformed: {:?}",
@@ -2815,7 +3006,7 @@ mod tests {
         let char_styles = HashMap::new();
         let heading_styles = HashMap::new();
         let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:equation version="Equation Version 60"><hp:script>y = x^2 + 2x + 1</hp:script></hp:equation><hp:t/></hp:run></hp:p></hp:sec>"#;
-        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles, &mut ShapeCollector::default());
         assert!(
             result.contains("$y = x^2 + 2x + 1$"),
             "equation script not extracted: {:?}",
@@ -2831,7 +3022,7 @@ mod tests {
         let char_styles = HashMap::new();
         let heading_styles = HashMap::new();
         let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:t>본문</hp:t></hp:run><hp:run charPrIDRef="0"><hp:ctrl><hp:footNote number="1"><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>주석내용</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl><hp:t/></hp:run></hp:p></hp:sec>"#;
-        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles, &mut ShapeCollector::default());
         // Body "본문" appears exactly once; footnote body "주석내용" appears
         // only inside the marker, not as standalone text.
         let body_count = result.matches("본문").count();
@@ -2849,7 +3040,7 @@ mod tests {
         let char_styles = HashMap::new();
         let heading_styles = HashMap::new();
         let xml = r#"<hp:sec><hp:p><hp:run charPrIDRef="0"><hp:ctrl><hp:footNote><hp:subList><hp:p><hp:run charPrIDRef="3"><hp:t>inner</hp:t></hp:run></hp:p></hp:subList></hp:footNote></hp:ctrl><hp:t>outer_after_note</hp:t></hp:run></hp:p></hp:sec>"#;
-        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles);
+        let (result, _) = parse_section_xml(xml, &char_styles, &heading_styles, &mut ShapeCollector::default());
         // After the fix, the outer run completes properly and
         // "outer_after_note" is emitted too.
         assert!(
@@ -2871,5 +3062,136 @@ mod tests {
         assert!(stripped.contains("본문"));
         assert!(!stripped.contains("숨김"));
         assert!(!stripped.contains("secPr"));
+    }
+
+    // ── find_tag_open boundary safety ──
+
+    #[test]
+    fn test_find_tag_open_rejects_prefix_collisions() {
+        // `<hp:line` is a text-prefix of lineBreak/lineseg/lineShape — none
+        // of these should match a search for the bare `<hp:line` element.
+        let body = r##"<hp:lineBreak/><hp:lineseg a="1"/><hp:lineShape color="#000"/>"##;
+        assert_eq!(find_tag_open(body, 0, "<hp:line"), None);
+    }
+
+    #[test]
+    fn test_find_tag_open_finds_real_line_after_false_matches() {
+        let body = r#"<hp:lineBreak/><hp:line startPt="0"/>"#;
+        let idx = find_tag_open(body, 0, "<hp:line").expect("should find the real <hp:line");
+        assert_eq!(&body[idx..idx + 9], "<hp:line ");
+    }
+
+    #[test]
+    fn test_find_tag_open_matches_self_closing_and_bare_close() {
+        assert_eq!(find_tag_open("<hp:arc/>", 0, "<hp:arc"), Some(0));
+        assert_eq!(find_tag_open("<hp:arc>", 0, "<hp:arc"), Some(0));
+        assert_eq!(find_tag_open("<hp:arcTo/>", 0, "<hp:arc"), None);
+    }
+
+    // ── shape/chart/ole dispatch in walk_run_body ──
+
+    fn shape_xml_no_drawtext() -> &'static str {
+        r##"<hp:rect id="1"><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/><hc:pt0 x="0" y="0"/><hc:pt1 x="1000" y="0"/><hc:pt2 x="1000" y="1000"/><hc:pt3 x="0" y="1000"/></hp:rect>"##
+    }
+
+    fn shape_xml_with_drawtext() -> &'static str {
+        r#"<hp:rect id="1"><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/><hp:drawText><hp:subList><hp:p><hp:run><hp:t>배너 텍스트</hp:t></hp:run></hp:p></hp:subList></hp:drawText></hp:rect>"#
+    }
+
+    #[test]
+    fn test_pure_shape_gets_marker_and_asset() {
+        let mut collector = ShapeCollector::default();
+        let body = format!("<hp:t>앞</hp:t>{}<hp:t>뒤</hp:t>", shape_xml_no_drawtext());
+        let out = walk_run_body(&body, &mut collector);
+        // Matches the established `img`/`ctrl` marker convention: a leading
+        // space is inserted before the marker when needed, but nothing
+        // separates it from text that immediately follows (same as
+        // `![이미지: id]text` today).
+        assert_eq!(out, "앞 [도형: shape1]뒤");
+        assert_eq!(collector.shapes.len(), 1);
+        assert_eq!(collector.shapes[0].id, "shape1");
+        assert!(collector.shapes[0].xml.starts_with("<hp:rect"));
+        assert!(collector.shapes[0].xml.contains("hc:pt3"));
+    }
+
+    #[test]
+    fn test_drawtext_shape_keeps_text_no_asset() {
+        let mut collector = ShapeCollector::default();
+        let body = shape_xml_with_drawtext().to_string();
+        let out = walk_run_body(&body, &mut collector);
+        assert_eq!(out, "배너 텍스트");
+        assert!(collector.shapes.is_empty(), "drawText shapes must not become SVG assets");
+        assert!(!out.contains("[도형:"));
+    }
+
+    #[test]
+    fn test_multiple_shapes_get_sequential_ids() {
+        let mut collector = ShapeCollector::default();
+        let body = format!("{}{}", shape_xml_no_drawtext(), shape_xml_no_drawtext());
+        let out = walk_run_body(&body, &mut collector);
+        assert_eq!(out, "[도형: shape1] [도형: shape2]");
+        assert_eq!(collector.shapes.len(), 2);
+        assert_eq!(collector.shapes[1].id, "shape2");
+    }
+
+    #[test]
+    fn test_self_closing_shape_is_noop() {
+        let mut collector = ShapeCollector::default();
+        let body = r#"<hp:t>텍스트</hp:t><hp:rect id="1"/>"#;
+        let out = walk_run_body(body, &mut collector);
+        assert_eq!(out, "텍스트");
+        assert!(collector.shapes.is_empty());
+    }
+
+    #[test]
+    fn test_chart_marker() {
+        let mut collector = ShapeCollector::default();
+        let body = r#"<hp:chart chartIDRef="chart1"/>"#;
+        let out = walk_run_body(body, &mut collector);
+        assert_eq!(out, "[차트: chart1]");
+        assert_eq!(collector.chart_count, 1);
+    }
+
+    #[test]
+    fn test_chart_marker_paired_tags() {
+        let mut collector = ShapeCollector::default();
+        let body = r#"<hp:chart chartIDRef="chart1"><hc:anything/></hp:chart>"#;
+        let out = walk_run_body(body, &mut collector);
+        assert_eq!(out, "[차트: chart1]");
+    }
+
+    #[test]
+    fn test_ole_marker() {
+        let mut collector = ShapeCollector::default();
+        let body = r#"<hp:ole id="1"/>"#;
+        let out = walk_run_body(body, &mut collector);
+        assert_eq!(out, "[개체: ole1]");
+        assert_eq!(collector.ole_count, 1);
+    }
+
+    #[test]
+    fn test_chart_and_shape_counters_are_independent() {
+        let mut collector = ShapeCollector::default();
+        let body = format!(
+            r#"{}<hp:chart chartIDRef="c"/>{}"#,
+            shape_xml_no_drawtext(),
+            shape_xml_no_drawtext()
+        );
+        let out = walk_run_body(&body, &mut collector);
+        assert_eq!(out, "[도형: shape1] [차트: chart1] [도형: shape2]");
+    }
+
+    /// Real `hp:rect` fragment from
+    /// `samples/input/2026년 제1기 행정안전부 청년인턴 채용 공고(최종).hwpx`
+    /// — a drawText title banner, the dominant real-world shape pattern
+    /// (see the P2 plan's corpus survey). Its text must land in the body,
+    /// not silently vanish (the pre-P2-M1 bug this task fixes).
+    #[test]
+    fn test_real_mois_rect_drawtext_recovered() {
+        let mut collector = ShapeCollector::default();
+        let body = r##"<hp:rect id="1151124716" zOrder="2"><hp:offset x="932" y="0"/><hp:orgSz width="2835" height="2835"/><hp:curSz width="72972" height="2502"/><hp:rotationInfo angle="0" centerX="36486" centerY="1251"/><hp:lineShape color="#000000" width="33" style="SOLID"/><hc:fillBrush><hc:winBrush faceColor="#364878"/></hc:fillBrush><hp:drawText lastWidth="72972" name=""><hp:subList><hp:p><hp:run charPrIDRef="42"><hp:t> </hp:t></hp:run><hp:run charPrIDRef="43"><hp:t>1. 선발예정인원 (총 114명)</hp:t></hp:run></hp:p></hp:subList></hp:drawText><hc:pt0 x="0" y="0"/><hc:pt1 x="2835" y="0"/><hc:pt2 x="2835" y="2835"/><hc:pt3 x="0" y="2835"/></hp:rect>"##;
+        let out = walk_run_body(body, &mut collector);
+        assert_eq!(out, "1. 선발예정인원 (총 114명)");
+        assert!(collector.shapes.is_empty());
     }
 }

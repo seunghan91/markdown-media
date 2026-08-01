@@ -2248,7 +2248,15 @@ fn detect_image_format(data: &[u8]) -> String {
         "bmp".to_string()
     } else if data[0] == 0xD7 && data[1] == 0xCD && data[2] == 0xC6 && data[3] == 0x9A {
         "wmf".to_string()
-    } else if data[0] == 0x01 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x00 {
+    } else if data[0] == 0x01 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x00
+        // `iType == EMR_HEADER (1)` alone is a weak signature — a LE u32 of 1
+        // at offset 0 is not distinctive. EMF's ENHMETAHEADER also carries a
+        // fixed `dSignature` field (" EMF") at a fixed offset: iType(4) +
+        // nSize(4) + rclBounds(16) + rclFrame(16) = byte 40. Require both so
+        // arbitrary binary blobs that happen to start with 01 00 00 00 don't
+        // get misclassified as EMF.
+        && data.len() >= 44 && &data[40..44] == b" EMF"
+    {
         "emf".to_string()
     } else if &data[0..4] == b"RIFF" && data.len() >= 12 && &data[8..12] == b"WEBP" {
         "webp".to_string()
@@ -2649,6 +2657,28 @@ mod tests {
         // Too short
         let short = vec![0xFF, 0xD8];
         assert_eq!(detect_image_format(&short), "");
+    }
+
+    #[test]
+    fn test_emf_detection_requires_dsignature_at_offset_40() {
+        // Real ENHMETAHEADER shape: iType(4)=1 + nSize(4) + rclBounds(16) +
+        // rclFrame(16) + dSignature(4)=" EMF" at byte 40.
+        let mut emf = vec![0u8; 44];
+        emf[0..4].copy_from_slice(&1u32.to_le_bytes()); // iType = EMR_HEADER
+        emf[40..44].copy_from_slice(b" EMF");
+        assert_eq!(detect_image_format(&emf), "emf");
+
+        // False-positive guard: old check (`data[0..4] == 01 00 00 00`) alone
+        // would have misclassified this as EMF — it's just an arbitrary blob
+        // that happens to start with a le-u32 of 1 but has no " EMF" at 40.
+        let mut not_emf = vec![0u8; 44];
+        not_emf[0..4].copy_from_slice(&1u32.to_le_bytes());
+        not_emf[40..44].copy_from_slice(b"NOPE");
+        assert_eq!(detect_image_format(&not_emf), "");
+
+        // Too short to contain dSignature at offset 40 — must not misfire.
+        let truncated = vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(detect_image_format(&truncated), "");
     }
 
     #[test]
