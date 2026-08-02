@@ -1646,6 +1646,43 @@ fn count_non_empty_cols(cells: &[Vec<String>], cols: usize) -> usize {
 
 /// Detect line-based (ruled) tables on a single page. Returns rich
 /// `DetectedTable`s (both flat `PdfTable` and merged-cell `IRTable`).
+/// Whether a grid is really the page frame (a border box, a cover banner, a
+/// form's outer rule) rather than a table.
+///
+/// Such a grid swallows the blocks inside it: the renderer attributes text to
+/// it and emits its near-empty cells in place of the real content, or emits it
+/// *alongside* the genuine table nested within, printing the same header twice.
+///
+/// Thresholds come from the fixture corpus (86 detected grids, `bench/fixtures`):
+/// every grid covering ≥50% of the page area was spurious — page frames on the
+/// two 행정예고 공고, the W-9 form outline, a `< … >` banner rule, a cover title
+/// box — and each was either sparse (≤50% of cells filled) or ≤2 rows. The
+/// densest real table sits just below at 49.7% (9 rows × 2 cols, every cell
+/// filled), so area alone is too blunt a cut; requiring sparseness or thinness
+/// as well keeps a genuinely page-filling table.
+fn traces_the_page_frame(bbox: &BBox, page_w: f64, page_h: f64, matrix: &[Vec<String>]) -> bool {
+    const AREA_FRACTION: f64 = 0.5;
+    const SPARSE_FILL: f64 = 0.6;
+    const THIN_ROWS: usize = 2;
+
+    if page_w <= 0.0 || page_h <= 0.0 {
+        return false;
+    }
+    let area = (bbox.x2 - bbox.x1) * (bbox.y2 - bbox.y1);
+    if area / (page_w * page_h) < AREA_FRACTION {
+        return false;
+    }
+    if matrix.len() <= THIN_ROWS {
+        return true;
+    }
+    let total: usize = matrix.iter().map(|r| r.len()).sum();
+    if total == 0 {
+        return true;
+    }
+    let filled = matrix.iter().flatten().filter(|c| !c.trim().is_empty()).count();
+    (filled as f64) / (total as f64) < SPARSE_FILL
+}
+
 pub fn detect_line_tables(
     doc: &lopdf::Document,
     page_id: lopdf::ObjectId,
@@ -1658,6 +1695,7 @@ pub fn detect_line_tables(
     // building grids; conservative — needs interior verticals crossing the rules.
     let verticals = close_open_table_edges(&horizontals, &verticals);
     let grids = build_table_grids(&horizontals, &verticals);
+    let (page_w, page_h) = super::parser::page_dimensions(doc, page_id);
 
     let mut out = Vec::new();
     for grid in &grids {
@@ -1666,6 +1704,10 @@ pub fn detect_line_tables(
             continue;
         }
         let mut matrix = build_cell_matrix(grid, &cells, texts);
+
+        if traces_the_page_frame(&grid.bbox, page_w, page_h, &matrix) {
+            continue;
+        }
 
         // Under-segmentation reconstruction: a ≤2-row, ≥3-col grid whose cells
         // actually hold many stacked text lines is a merged table; rebuild it.
@@ -1998,6 +2040,40 @@ mod tests {
         assert!(rebuilt.len() >= 8, "expected >=8 rebuilt rows, got {}", rebuilt.len());
         assert_eq!(rebuilt[0][0], "a0");
         assert_eq!(rebuilt[0][2], "c0");
+    }
+
+    /// Corpus-derived thresholds for `traces_the_page_frame`. A4 is 595×842pt;
+    /// the shapes below are the real ones measured in `bench/fixtures`.
+    #[test]
+    fn page_frame_grids_are_rejected_but_dense_big_tables_survive() {
+        let (pw, ph) = (595.0, 842.0);
+        let full_page = BBox { x1: 35.0, y1: 40.0, x2: 560.0, y2: 800.0 };
+        let cell = |s: &str| s.to_string();
+
+        // 행정예고 공고 page frame: 4 rows × 5 cols, ~35% filled.
+        let sparse: Vec<Vec<String>> = (0..4)
+            .map(|r| (0..5).map(|c| if (r + c) % 3 == 0 { cell("x") } else { cell("") }).collect())
+            .collect();
+        assert!(traces_the_page_frame(&full_page, pw, ph, &sparse), "sparse page frame");
+
+        // Cover title box: one row, one filled cell — dense, but too thin.
+        let thin = vec![vec![cell("｢ 제 5 차 국가표준기본계획 ｣ 에 따른 2025 년도 국가표준시행계획")]];
+        assert!(traces_the_page_frame(&full_page, pw, ph, &thin), "one-row cover box");
+
+        // A genuinely page-filling table: every cell carries text.
+        let dense: Vec<Vec<String>> =
+            (0..9).map(|_| (0..2).map(|_| cell("내용")).collect()).collect();
+        assert!(
+            !traces_the_page_frame(&full_page, pw, ph, &dense),
+            "a dense many-row table must survive even when it fills the page"
+        );
+
+        // Below the area cut nothing is rejected, however sparse.
+        let small = BBox { x1: 100.0, y1: 400.0, x2: 300.0, y2: 500.0 };
+        assert!(!traces_the_page_frame(&small, pw, ph, &sparse), "small grid is never a frame");
+
+        // Degenerate page size must not divide by zero into a rejection.
+        assert!(!traces_the_page_frame(&full_page, 0.0, 0.0, &sparse));
     }
 
     #[test]

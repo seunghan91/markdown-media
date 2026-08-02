@@ -595,7 +595,7 @@ impl PdfParser {
         let mut elements = Vec::new();
 
         // Get page dimensions
-        let (page_width, page_height) = self.get_page_dimensions(doc, page_id);
+        let (page_width, page_height) = page_dimensions(doc, page_id);
 
         // Add page break marker for pages after the first
         if page_num > 1 {
@@ -696,30 +696,6 @@ impl PdfParser {
         }
 
         elements
-    }
-
-    /// Get page dimensions in points
-    fn get_page_dimensions(&self, doc: &lopdf::Document, page_id: lopdf::ObjectId) -> (f64, f64) {
-        // Default to US Letter size
-        let default_width = 612.0;
-        let default_height = 792.0;
-
-        if let Ok(page_dict) = doc.get_dictionary(page_id) {
-            // Try MediaBox first, then CropBox
-            for key in &[b"MediaBox".as_slice(), b"CropBox".as_slice()] {
-                if let Ok(box_obj) = page_dict.get(key) {
-                    if let Ok(arr) = box_obj.as_array() {
-                        if arr.len() >= 4 {
-                            let width = extract_number(&arr[2]).unwrap_or(default_width);
-                            let height = extract_number(&arr[3]).unwrap_or(default_height);
-                            return (width, height);
-                        }
-                    }
-                }
-            }
-        }
-
-        (default_width, default_height)
     }
 
     /// Group positioned text into logical blocks.
@@ -1801,6 +1777,30 @@ fn encode_png(width: u32, height: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
     chunk(&mut out, b"IDAT", &idat);
     chunk(&mut out, b"IEND", &[]);
     out
+}
+
+/// Page size in points, from `MediaBox` (falling back to `CropBox`, then US
+/// Letter). Shared with the table detector, which needs it to tell a real
+/// table from a grid that just traces the page frame.
+pub(crate) fn page_dimensions(doc: &lopdf::Document, page_id: lopdf::ObjectId) -> (f64, f64) {
+    let default_width = 612.0;
+    let default_height = 792.0;
+
+    if let Ok(page_dict) = doc.get_dictionary(page_id) {
+        for key in &[b"MediaBox".as_slice(), b"CropBox".as_slice()] {
+            if let Ok(box_obj) = page_dict.get(key) {
+                if let Ok(arr) = box_obj.as_array() {
+                    if arr.len() >= 4 {
+                        let width = extract_number(&arr[2]).unwrap_or(default_width);
+                        let height = extract_number(&arr[3]).unwrap_or(default_height);
+                        return (width, height);
+                    }
+                }
+            }
+        }
+    }
+
+    (default_width, default_height)
 }
 
 /// Extract numeric value from PDF object (handles both Integer and Real types)
