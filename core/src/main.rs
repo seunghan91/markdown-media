@@ -893,6 +893,19 @@ fn ocr_suffix(text: &str) -> String {
     format!("\n\n{quoted}\n")
 }
 
+/// Strip square brackets from caption text before it is used as image alt.
+///
+/// A caption authored as `[제목]` (common in HWPX government documents) would
+/// emit `![[제목]](assets/…)`. CommonMark parses that as an image with
+/// `alt="[제목]"`, but the project's own viewer tokenizer scans the MDM bracket
+/// alternative first (`!\[\[([^\]]+)\]\]`), whose `]]` closes on the caption's
+/// own bracket — the reference becomes a non-existent `mdm-reference` and the
+/// asset path leaks into the body as plain text. Dropping the brackets keeps
+/// the caption readable and the reference unambiguous.
+fn sanitize_alt(caption: &str) -> String {
+    caption.replace(['[', ']'], "").trim().to_string()
+}
+
 /// Save a single asset file under `output_dir` using the asset's `src` path.
 fn save_asset_file(output_dir: &Path, asset: &manifest::Asset, data: &[u8]) -> io::Result<()> {
     let full_path = output_dir.join(&asset.src);
@@ -1708,9 +1721,13 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                                     .unwrap_or_default();
                                 // Prefer the authored caption over the raw
                                 // `image1`-style id as alt text.
-                                let alt = asset
+                                let caption_alt = asset
                                     .metadata
                                     .caption
+                                    .as_deref()
+                                    .filter(|c| !c.is_empty())
+                                    .map(sanitize_alt);
+                                let alt = caption_alt
                                     .as_deref()
                                     .filter(|c| !c.is_empty())
                                     .unwrap_or(id.as_str());
