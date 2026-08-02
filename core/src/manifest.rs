@@ -88,6 +88,10 @@ pub struct AssetMetadata {
     pub caption: Option<String>,
     /// Alt text for accessibility
     pub alt_text: Option<String>,
+    /// Payload decoded from a QR code in this image (P3-2). Usually a URL —
+    /// in Korean legal/government documents nearly always a law.go.kr link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub barcode: Option<String>,
     /// Position within the source page
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<Position>,
@@ -373,6 +377,7 @@ mod tests {
                 format: Some("png".to_string()),
                 caption: Some("Test image".to_string()),
                 alt_text: None,
+                barcode: None,
                 position: Some(Position { x: 10.0, y: 20.0 }),
             },
         );

@@ -19,6 +19,8 @@ mod watch;
 mod ocr;
 mod manifest;
 mod shape_svg;
+#[cfg(feature = "qr")]
+mod barcode;
 mod chart_data;
 #[cfg(feature = "wmf")]
 mod wmf;
@@ -757,6 +759,42 @@ fn try_wmf_to_svg(_data: &[u8], _ext: &str) -> Option<Vec<u8>> {
     None
 }
 
+/// Decode a QR code out of an image asset, if it holds one (P3-2).
+///
+/// QR codes are the single largest image category in the corpus (33% of
+/// unique images from real documents) and their payload — almost always a
+/// law.go.kr URL — is the entire meaning of the image. Left undecoded it is
+/// invisible to search, link extraction and any LLM reading the Markdown.
+#[cfg(feature = "qr")]
+fn decode_barcode(data: &[u8]) -> Option<String> {
+    barcode::decode_image_bytes(data).map(|b| b.payload)
+}
+
+#[cfg(not(feature = "qr"))]
+fn decode_barcode(_data: &[u8]) -> Option<String> {
+    None
+}
+
+/// Markdown suffix appended after an image reference whose asset decoded to a
+/// barcode payload — an autolink for URLs, a labelled note otherwise.
+#[cfg(feature = "qr")]
+fn barcode_suffix(payload: &str) -> String {
+    barcode::Barcode { payload: payload.to_string() }.to_markdown_suffix()
+}
+
+#[cfg(not(feature = "qr"))]
+fn barcode_suffix(_payload: &str) -> String {
+    String::new()
+}
+
+/// Look up the decoded barcode payload recorded for an asset, if any.
+fn asset_barcode<'a>(manifest: &'a ManifestV2, hash_filename: &str) -> Option<&'a str> {
+    asset_by_filename(manifest, hash_filename)?
+        .metadata
+        .barcode
+        .as_deref()
+}
+
 /// Save a single asset file under `output_dir` using the asset's `src` path.
 fn save_asset_file(output_dir: &Path, asset: &manifest::Asset, data: &[u8]) -> io::Result<()> {
     let full_path = output_dir.join(&asset.src);
@@ -1109,6 +1147,7 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                     format: Some(format),
                     width: img.width,
                     height: img.height,
+                    barcode: decode_barcode(data),
                     ..Default::default()
                 };
                 let hash_filename = mv2.add_asset(data, MediaType::Image, ext, Some(&img.name), meta);
@@ -1198,7 +1237,12 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                         if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
                             let alt = format!("image{}", bin_id);
                             let md_img = format!("![{}](assets/{})", alt, alt);
-                            let replacement = format!("![{}]({})", alt, asset.src);
+                            // A decoded QR payload is the image's actual
+                            // content — append it so it survives as text.
+                            let suffix = asset_barcode(&mv2, hash_filename)
+                                .map(barcode_suffix)
+                                .unwrap_or_default();
+                            let replacement = format!("![{}]({}){}", alt, asset.src, suffix);
                             mdx_content = mdx_content.replace(&md_img, &replacement);
                         }
                     }
@@ -1504,6 +1548,7 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                             format: Some(ext.to_string()),
                             width: img.width,
                             height: img.height,
+                            barcode: decode_barcode(&data),
                             ..Default::default()
                         };
                         let hash_filename = mv2.add_asset(&data, MediaType::Image, ext, Some(filename), meta);
@@ -1546,7 +1591,10 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                         let marker = format!("[이미지: {}]", id);
                         if content.contains(&marker) {
                             if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
-                                let replacement = format!("![{}]({})", id, asset.src);
+                                let suffix = asset_barcode(&mv2, hash_filename)
+                                    .map(barcode_suffix)
+                                    .unwrap_or_default();
+                                let replacement = format!("![{}]({}){}", id, asset.src, suffix);
                                 content = content.replace(&marker, &replacement);
                                 referenced_ids.insert(id.as_str());
                             }
@@ -1744,6 +1792,7 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
                             width: Some(image.width),
                             height: Some(image.height),
                             format: Some(ext.to_string()),
+                            barcode: decode_barcode(&image.data),
                             ..Default::default()
                         };
                         let orig_filename = image.filename();
@@ -1801,7 +1850,11 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
                             for (orig_id, hash_filename) in &image_map {
                                 if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
                                     let md_pattern = format!("![{}]({})", orig_id, orig_id);
-                                    let replacement = format!("![{}]({})", orig_id, asset.src);
+                                    let suffix = asset_barcode(&mv2, hash_filename)
+                                        .map(barcode_suffix)
+                                        .unwrap_or_default();
+                                    let replacement =
+                                        format!("![{}]({}){}", orig_id, asset.src, suffix);
                                     mdx_content = mdx_content.replace(&md_pattern, &replacement);
                                 }
                             }
@@ -1962,6 +2015,7 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                                 height: image.height,
                                 format: Some(ext.to_string()),
                                 alt_text: image.alt_text.clone(),
+                                barcode: decode_barcode(&data),
                                 ..Default::default()
                             };
                             let hash_filename = mv2.add_asset(&data, MediaType::Image, ext, Some(&image.filename), meta);
@@ -2029,7 +2083,10 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                                     let md_pattern = format!("]({})", img.filename);
                                     if mdx_content.contains(&md_pattern) {
                                         if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
-                                            let replacement = format!("]({})", asset.src);
+                                            let suffix = asset_barcode(&mv2, hash_filename)
+                                                .map(barcode_suffix)
+                                                .unwrap_or_default();
+                                            let replacement = format!("]({}){}", asset.src, suffix);
                                             mdx_content = mdx_content.replace(&md_pattern, &replacement);
                                             referenced_ids.insert(orig_id.as_str());
                                         }
