@@ -54,6 +54,8 @@ pub mod legal;
 pub mod form;
 pub mod manifest;
 pub mod shape_svg;
+#[cfg(feature = "wmf")]
+pub mod wmf;
 pub mod utils;
 pub mod pii;
 pub mod lint;

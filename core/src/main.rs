@@ -19,6 +19,8 @@ mod watch;
 mod ocr;
 mod manifest;
 mod shape_svg;
+#[cfg(feature = "wmf")]
+mod wmf;
 mod pdf;
 mod xlsx;
 #[cfg(feature = "xls")]
