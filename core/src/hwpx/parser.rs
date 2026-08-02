@@ -138,6 +138,9 @@ pub struct Table {
     pub cells: Vec<Vec<String>>,
     pub has_header: bool,
     pub spans: Vec<Vec<(u16, u16)>>,
+    /// Authored table caption from `<hp:caption>` (P4-1). Far more common
+    /// than figure captions in the corpus — 52 vs 10 across 272 HWPX files.
+    pub caption: Option<String>,
 }
 
 impl Table {
@@ -164,7 +167,16 @@ impl Table {
         if self.cells.is_empty() || self.cols == 0 {
             return String::new();
         }
+        let body = self.body_markdown();
+        match &self.caption {
+            // Authored caption, emitted above the table so it reads as the
+            // table's title and stays in the same chunk (P4-1).
+            Some(c) if !c.is_empty() => format!("**{c}**\n\n{body}"),
+            _ => body,
+        }
+    }
 
+    fn body_markdown(&self) -> String {
         // Merged cells → HTML (markdown cannot express rowspan/colspan)
         if self.has_merged_cells() {
             return self.to_html();
@@ -805,6 +817,33 @@ fn strip_sec_pr(xml: &str) -> String {
 /// The caption is text the author wrote (`< 성과점검 흐름도 >`), so it beats
 /// anything inferred — but it is rare: 5 of 222 corpus HWPX files carry
 /// `hp:caption` at all.
+/// Text of the `<hp:caption>` starting at `at`, bounded by its own closing
+/// tag. Bounding matters: without it the extractor runs past `</hp:caption>`
+/// and swallows the following table body into the caption.
+fn caption_text_at(xml: &str, at: usize) -> Option<String> {
+    let end = xml[at..].find("</hp:caption>").map(|i| at + i)?;
+    let text = extract_runs_text(&xml[at..end]);
+    let text = decode_xml_entities(text.trim());
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The caption belonging to *this* table, not to a nested one (P4-1).
+///
+/// `<hp:caption>` is a direct child of `<hp:tbl>`; a nested table brings its
+/// own, so only captions appearing before the first nested `<hp:tbl` count.
+fn own_table_caption(table_xml: &str) -> Option<String> {
+    let cap = table_xml.find("<hp:caption")?;
+    // A nested table opening before the caption means the caption is that
+    // table's, reached through the outer XML — leave it alone.
+    if let Some(nested) = table_xml[1..].find("<hp:tbl") {
+        if nested + 1 < cap {
+            return None;
+        }
+    }
+    caption_text_at(table_xml, cap)
+}
+
 fn collect_image_captions(section: &str, out: &mut Vec<(String, String)>) {
     let mut pos = 0usize;
     while let Some(rel) = section[pos..].find("<hp:pic") {
@@ -825,11 +864,8 @@ fn collect_image_captions(section: &str, out: &mut Vec<(String, String)>) {
         let Some(id) = extract_attr(&pic[img_at..img_tag_end], "binaryItemIDRef") else {
             continue;
         };
-        let text = extract_runs_text(&pic[cap_start..]);
-        let text = decode_xml_entities(text.trim());
-        let text = text.trim();
-        if !text.is_empty() {
-            out.push((id, text.to_string()));
+        if let Some(text) = caption_text_at(pic, cap_start) {
+            out.push((id, text));
         }
     }
 }
@@ -1290,6 +1326,7 @@ fn parse_table_ctx(
         cells,
         has_header,
         spans,
+        caption: own_table_caption(xml),
     })
 }
 
@@ -2606,6 +2643,7 @@ mod tests {
             ],
             has_header: true,
             spans: Vec::new(),
+            caption: None,
         };
 
         let md = table.to_markdown();
@@ -2808,6 +2846,7 @@ mod tests {
             ],
             has_header: false,
             spans: Vec::new(),
+            caption: None,
         };
         assert_eq!(flatten_table_to_text(&t), "A | B; C | D");
     }
@@ -2823,6 +2862,7 @@ mod tests {
             ],
             has_header: false,
             spans: Vec::new(),
+            caption: None,
         };
         assert_eq!(flatten_table_to_text(&t), "A; D");
     }
@@ -2841,6 +2881,7 @@ mod tests {
             ],
             has_header: false,
             spans: vec![vec![(2, 1), (0, 0)], vec![(1, 1), (1, 1)]],
+            caption: None,
         };
         assert!(t.has_merged_cells());
         let out = t.to_markdown();
@@ -2866,6 +2907,7 @@ mod tests {
             ],
             has_header: false,
             spans: vec![vec![(1, 2), (1, 1)], vec![(0, 0), (1, 1)]],
+            caption: None,
         };
         assert!(t.has_merged_cells());
         let out = t.to_markdown();
@@ -2887,6 +2929,7 @@ mod tests {
             ],
             has_header: true,
             spans: vec![vec![(1, 1), (1, 1)], vec![(1, 1), (1, 1)]],
+            caption: None,
         };
         assert!(!t.has_merged_cells());
         let out = t.to_markdown();
@@ -2904,6 +2947,7 @@ mod tests {
             cells: vec![vec!["<script>".to_string(), "".to_string()]],
             has_header: false,
             spans: vec![vec![(2, 1), (0, 0)]],
+            caption: None,
         };
         let out = t.to_markdown();
         assert!(out.contains("&lt;script&gt;"));
@@ -3444,5 +3488,44 @@ mod tests {
             out,
             vec![("a".to_string(), "첫째".to_string()), ("b".to_string(), "둘째".to_string())]
         );
+    }
+
+    /// P4-1: caption text stops at `</hp:caption>` — without the bound the
+    /// extractor ran on and swallowed the whole table body into the title.
+    #[test]
+    fn table_caption_is_bounded_to_its_own_close_tag() {
+        let xml = r##"<hp:tbl rowCnt="1" colCnt="2"><hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt; 단계별 관리기능 &gt;</hp:t></hp:run></hp:p></hp:subList></hp:caption><hp:tr><hp:tc><hp:subList><hp:p><hp:run><hp:t>구 분</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr></hp:tbl>"##;
+        let cap = own_table_caption(xml).expect("caption found");
+        assert_eq!(cap, "< 단계별 관리기능 >");
+        assert!(!cap.contains("구 분"), "must not swallow the body: {cap}");
+    }
+
+    #[test]
+    fn table_without_caption_has_none() {
+        let xml = r##"<hp:tbl rowCnt="1" colCnt="1"><hp:tr><hp:tc><hp:subList><hp:p><hp:run><hp:t>값</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr></hp:tbl>"##;
+        assert!(own_table_caption(xml).is_none());
+    }
+
+    /// A nested table's caption belongs to the nested table, not the outer one.
+    #[test]
+    fn nested_table_caption_is_not_claimed_by_the_outer_table() {
+        let xml = r##"<hp:tbl rowCnt="1" colCnt="1"><hp:tr><hp:tc><hp:tbl rowCnt="1" colCnt="1"><hp:caption><hp:subList><hp:p><hp:run><hp:t>안쪽 표</hp:t></hp:run></hp:p></hp:subList></hp:caption></hp:tbl></hp:tc></hp:tr></hp:tbl>"##;
+        assert!(own_table_caption(xml).is_none());
+    }
+
+    /// The caption renders as the table's title, above the grid.
+    #[test]
+    fn caption_renders_above_the_table_body() {
+        let t = Table {
+            rows: 1,
+            cols: 2,
+            cells: vec![vec!["가".to_string(), "나".to_string()]],
+            has_header: true,
+            spans: vec![vec![(1, 1), (1, 1)]],
+            caption: Some("< 단계별 관리기능 >".to_string()),
+        };
+        let md = t.to_markdown();
+        assert!(md.starts_with("**< 단계별 관리기능 >**\n\n|"), "{md}");
+        assert!(md.contains("| 가 | 나 |"), "{md}");
     }
 }
