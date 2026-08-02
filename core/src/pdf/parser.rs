@@ -209,6 +209,13 @@ pub struct PdfTable {
     pub y_top: f64,
     /// Bottom Y coordinate (lowest Y in PDF space) of the detected table region.
     pub y_bottom: f64,
+    /// Left X of the detected region. Two banner boxes sitting side by side
+    /// share a Y band, so the renderer needs X to tell them apart — without it
+    /// the first one swallowed the other's text. Defaults to an unbounded span
+    /// for detectors that cannot supply it, which keeps the Y-only behaviour.
+    pub x_left: f64,
+    /// Right X of the detected region. See [`PdfTable::x_left`].
+    pub x_right: f64,
 }
 
 /// Content of a single PDF page
@@ -2666,6 +2673,10 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
             column_count: mode_cols,
             y_top,
             y_bottom,
+            // Column anchors give a left edge but no right one — text x's are
+            // start positions, not extents. Stay unbounded rather than guess.
+            x_left: f64::NEG_INFINITY,
+            x_right: f64::INFINITY,
         });
     }
 
@@ -2899,6 +2910,62 @@ impl PdfDocument {
     /// - `>= median * 1.15` AND bold -> H3
     /// - bold AND `> median` -> H4
     ///
+    /// Which detected tables a layout block belongs to, in left-to-right order.
+    ///
+    /// Regions overlap in two real ways, and picking the *first* match handled
+    /// neither. A spurious page-sized grid can enclose the genuine banner, so
+    /// the tightest region has to win — otherwise the bogus one absorbs the
+    /// block. And two banner boxes can sit side by side in one Y band (`Ⅰ` +
+    /// its title), with a single text block spanning both; there the tightest
+    /// one alone is not enough, because the box that loses is then never
+    /// emitted at all and its text disappears from the output. So: take the
+    /// tightest, and if the block runs past it horizontally, take every
+    /// overlapping region instead.
+    fn tables_covering(&self, elem: &LayoutElement) -> Vec<usize> {
+        if !matches!(elem.element_type, LayoutElementType::Text | LayoutElementType::ListItem) {
+            return Vec::new();
+        }
+        let elem_right = elem.x + elem.width;
+        let mut candidates: Vec<usize> = self
+            .tables
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.page == elem.page
+                    // Tolerance so the first row (whose Y equals y_top) counts.
+                    && elem.y <= t.y_top + 0.5
+                    && elem.y >= t.y_bottom - 0.5
+                    && elem_right >= t.x_left - 0.5
+                    && elem.x <= t.x_right + 0.5
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.is_empty() {
+            return candidates;
+        }
+        // Height first, then width: a detector that cannot supply an X extent
+        // reports an infinite width, which must not decide the comparison.
+        candidates.sort_by(|&a, &b| {
+            let extent = |i: usize| {
+                let t = &self.tables[i];
+                (t.y_top - t.y_bottom, t.x_right - t.x_left)
+            };
+            extent(a).partial_cmp(&extent(b)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let tightest = &self.tables[candidates[0]];
+        let spans_past_it = elem.x < tightest.x_left - 0.5 || elem_right > tightest.x_right + 0.5;
+        if !spans_past_it {
+            return vec![candidates[0]];
+        }
+        candidates.sort_by(|&a, &b| {
+            self.tables[a]
+                .x_left
+                .partial_cmp(&self.tables[b].x_left)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        candidates
+    }
+
     /// Header/Footer regions (top/bottom 10%) are stripped.
     pub fn to_markdown_with_layout(&self) -> String {
         if self.layout.is_empty() {
@@ -3038,22 +3105,12 @@ impl PdfDocument {
             // table's Y-region — they'd be a flat duplicate of the table
             // rendered later. Also emit the table markdown once when we
             // first cross into its region.
-            let mut covered_by_table: Option<usize> = None;
-            if matches!(elem.element_type, LayoutElementType::Text | LayoutElementType::ListItem) {
-                for (i, t) in self.tables.iter().enumerate() {
-                    if t.page != elem.page {
+            let covered_by_tables = self.tables_covering(elem);
+            if !covered_by_tables.is_empty() {
+                for &ti in &covered_by_tables {
+                    if emitted_tables[ti] {
                         continue;
                     }
-                    // Allow a small tolerance so the first row of the table
-                    // (whose Y exactly equals y_top) is counted as inside.
-                    if elem.y <= t.y_top + 0.5 && elem.y >= t.y_bottom - 0.5 {
-                        covered_by_table = Some(i);
-                        break;
-                    }
-                }
-            }
-            if let Some(ti) = covered_by_table {
-                if !emitted_tables[ti] {
                     if !output.is_empty() && !output.ends_with("\n\n") {
                         output.push_str("\n\n");
                     }
@@ -3735,6 +3792,120 @@ mod tests {
         assert!(mdx.contains("Arial-Italic (Italic)"));
     }
 
+    fn table_at(page: usize, y: (f64, f64), x: (f64, f64), cell: &str) -> PdfTable {
+        PdfTable {
+            page,
+            rows: vec![vec![cell.to_string()]],
+            column_count: 1,
+            y_top: y.1,
+            y_bottom: y.0,
+            x_left: x.0,
+            x_right: x.1,
+        }
+    }
+
+    fn text_at(page: usize, y: f64, x: (f64, f64), content: &str) -> LayoutElement {
+        LayoutElement {
+            element_type: LayoutElementType::Text,
+            content: content.to_string(),
+            page,
+            x: x.0,
+            y,
+            width: x.1 - x.0,
+            height: 10.0,
+            font_size: Some(10.0),
+            font_name: None,
+            alignment: TextAlignment::Left,
+            is_bold: false,
+            is_italic: false,
+            line_spacing: 0.0,
+            indent_level: 0,
+            ref_id: None,
+        }
+    }
+
+    fn doc_with_tables(tables: Vec<PdfTable>) -> PdfDocument {
+        PdfDocument {
+            version: String::new(),
+            page_count: 1,
+            pages: vec![],
+            metadata: PdfMetadata::default(),
+            images: vec![],
+            fonts: vec![],
+            tables,
+            layout: vec![],
+        }
+    }
+
+    /// A spurious page-sized grid can enclose the genuine banner box. Taking
+    /// the first match let the bogus one absorb the block; the tightest region
+    /// has to win. Coordinates mirror `bench/fixtures/mixed/press_brief_mixed.pdf`
+    /// page 2, where the page-sized grid rendered the banner as `| < | … | > |`.
+    #[test]
+    fn tightest_enclosing_table_wins() {
+        let doc = doc_with_tables(vec![
+            table_at(2, (56.46, 775.55), (56.61, 538.27), "page-sized"),
+            table_at(2, (767.04, 782.98), (199.57, 387.99), "banner"),
+        ]);
+        let elem = text_at(2, 769.36, (199.68, 388.20), "< 2025 년 주요 추진과제 >");
+        assert_eq!(doc.tables_covering(&elem), vec![1], "the tight banner must win");
+    }
+
+    /// Two banner boxes side by side share a Y band and a single text block
+    /// spans both. Picking only the tightest left the other box unemitted and
+    /// its text vanished from the output entirely. Coordinates mirror
+    /// `bench/fixtures/mixed/standards_plan.pdf` page 2.
+    #[test]
+    fn block_spanning_side_by_side_tables_covers_both() {
+        let doc = doc_with_tables(vec![
+            table_at(2, (664.67, 693.92), (59.49, 119.10), "Ⅰ"),
+            table_at(2, (664.67, 693.92), (124.73, 535.39), "2025 년도 국가표준시행계획 개요"),
+        ]);
+        let elem = text_at(2, 673.60, (81.36, 334.68), "Ⅰ 2025 년도 국가표준시행계획 개요");
+        assert_eq!(
+            doc.tables_covering(&elem),
+            vec![0, 1],
+            "both boxes emit, left to right — neither one's text may be dropped"
+        );
+    }
+
+    /// The cluster detector cannot supply an X extent and reports an unbounded
+    /// span. `INFINITY - NEG_INFINITY` is infinite, not NaN, so the ordering
+    /// stays total — but an unbounded region must never look "tighter" than a
+    /// measured one of the same height, and must not drag in extra regions.
+    #[test]
+    fn unbounded_x_extent_orders_without_nan() {
+        let doc = doc_with_tables(vec![
+            table_at(1, (100.0, 200.0), (f64::NEG_INFINITY, f64::INFINITY), "cluster"),
+            table_at(1, (100.0, 200.0), (50.0, 300.0), "line"),
+        ]);
+        let elem = text_at(1, 150.0, (60.0, 280.0), "inside both");
+        assert_eq!(
+            doc.tables_covering(&elem),
+            vec![1],
+            "same height — the measured extent must win over the unbounded one"
+        );
+
+        // An unbounded region on its own contains everything, so it is picked
+        // alone rather than pulling in every other region on the page.
+        let doc = doc_with_tables(vec![table_at(
+            1,
+            (100.0, 200.0),
+            (f64::NEG_INFINITY, f64::INFINITY),
+            "cluster",
+        )]);
+        assert_eq!(doc.tables_covering(&text_at(1, 150.0, (0.0, 9999.0), "wide")), vec![0]);
+    }
+
+    /// A block outside every detected region belongs to none of them.
+    #[test]
+    fn block_outside_every_table_is_uncovered() {
+        let doc = doc_with_tables(vec![table_at(2, (100.0, 200.0), (50.0, 300.0), "t")]);
+        assert!(doc.tables_covering(&text_at(2, 400.0, (50.0, 300.0), "above")).is_empty());
+        assert!(doc.tables_covering(&text_at(2, 150.0, (400.0, 500.0), "beside")).is_empty());
+        assert!(doc.tables_covering(&text_at(3, 150.0, (50.0, 300.0), "other page")).is_empty());
+    }
+
     #[test]
     fn test_table_to_markdown() {
         let table = PdfTable {
@@ -3747,6 +3918,8 @@ mod tests {
             column_count: 3,
             y_top: 0.0,
             y_bottom: 0.0,
+            x_left: f64::NEG_INFINITY,
+            x_right: f64::INFINITY,
         };
 
         let md = table.to_markdown();
@@ -3968,6 +4141,8 @@ mod tests {
                 column_count: 2,
                 y_top: 0.0,
                 y_bottom: 0.0,
+                x_left: f64::NEG_INFINITY,
+                x_right: f64::INFINITY,
             }],
             layout: vec![],
         };

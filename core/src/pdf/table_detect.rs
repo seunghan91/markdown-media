@@ -938,7 +938,19 @@ fn group_connected_lines(
         let entry = if i < nh { (true, i) } else { (false, i - nh) };
         comps.entry(r).or_default().push(entry);
     }
-    comps.into_values().collect()
+    // `HashMap` iteration order is randomised per process, so yielding the
+    // components in map order made table extraction non-deterministic — the
+    // same PDF produced different Markdown on consecutive runs (measured:
+    // 4 runs, 4 distinct outputs on `bench/fixtures/mixed/standards_plan.pdf`).
+    // Order by the smallest source line index instead: stable across runs and
+    // the order the lines were discovered in.
+    let mut comps: Vec<Vec<(bool, usize)>> = comps.into_values().collect();
+    let source_index = |&(horizontal, i): &(bool, usize)| if horizontal { i } else { i + nh };
+    for members in comps.iter_mut() {
+        members.sort_unstable_by_key(source_index);
+    }
+    comps.sort_unstable_by_key(|members| members.iter().map(source_index).min());
+    comps
 }
 
 /// 1-D running-mean clustering (kkdoc clusterCoordinates). Comparison is
@@ -1703,6 +1715,8 @@ fn matrix_to_pdf_table(matrix: &[Vec<String>], page: usize, bbox: BBox) -> PdfTa
         column_count,
         y_top: bbox.y2,
         y_bottom: bbox.y1,
+        x_left: bbox.x1,
+        x_right: bbox.x2,
     }
 }
 
@@ -1988,9 +2002,10 @@ mod tests {
 
     #[test]
     fn merge_prefers_line_over_overlapping_cluster() {
-        let line = PdfTable { page: 1, rows: vec![vec!["L".into()]], column_count: 1, y_top: 200.0, y_bottom: 100.0 };
-        let overlap = PdfTable { page: 1, rows: vec![vec!["C".into()]], column_count: 1, y_top: 150.0, y_bottom: 120.0 };
-        let disjoint = PdfTable { page: 1, rows: vec![vec!["D".into()]], column_count: 1, y_top: 90.0, y_bottom: 50.0 };
+        let unbounded_x = (f64::NEG_INFINITY, f64::INFINITY);
+        let line = PdfTable { page: 1, rows: vec![vec!["L".into()]], column_count: 1, y_top: 200.0, y_bottom: 100.0, x_left: unbounded_x.0, x_right: unbounded_x.1 };
+        let overlap = PdfTable { page: 1, rows: vec![vec!["C".into()]], column_count: 1, y_top: 150.0, y_bottom: 120.0, x_left: unbounded_x.0, x_right: unbounded_x.1 };
+        let disjoint = PdfTable { page: 1, rows: vec![vec!["D".into()]], column_count: 1, y_top: 90.0, y_bottom: 50.0, x_left: unbounded_x.0, x_right: unbounded_x.1 };
         let out = merge_line_and_cluster(vec![line], vec![overlap, disjoint]);
         assert_eq!(out.len(), 2, "overlapping cluster dropped, disjoint kept");
         assert_eq!(out[0].rows[0][0], "L");

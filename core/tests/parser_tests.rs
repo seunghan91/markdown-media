@@ -408,6 +408,8 @@ mod pdf_tests {
             column_count: 2,
             y_top: 100.0,
             y_bottom: 80.0,
+            x_left: f64::NEG_INFINITY,
+            x_right: f64::INFINITY,
         };
 
         let md = table.to_markdown();
