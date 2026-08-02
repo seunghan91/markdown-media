@@ -835,6 +835,51 @@ fn asset_ocr_text<'a>(manifest: &'a ManifestV2, hash_filename: &str) -> Option<&
         .as_deref()
 }
 
+/// Replace every occurrence of `marker`, choosing a table-safe form when the
+/// occurrence sits inside a GFM table row.
+///
+/// A blockquote after an image reference reads well in body text but
+/// terminates a table mid-row when the image lives in a cell — measured on
+/// 행정업무운영편람.hwpx, where three tables were being cut in half. Inside a
+/// row the recognized text is inlined with `<br>` and its pipes escaped
+/// instead.
+fn replace_marker_table_aware(
+    content: &str,
+    marker: &str,
+    base: &str,
+    suffix: &str,
+    ocr: Option<&str>,
+) -> String {
+    let block = ocr.map(ocr_suffix).unwrap_or_default();
+    let inline = ocr.map(ocr_inline).unwrap_or_default();
+    let mut out = String::with_capacity(content.len());
+    let mut pos = 0usize;
+    while let Some(rel) = content[pos..].find(marker) {
+        let at = pos + rel;
+        let line_start = content[..at].rfind('\n').map_or(0, |i| i + 1);
+        let in_table = content[line_start..at].trim_start().starts_with('|');
+        out.push_str(&content[pos..at]);
+        out.push_str(base);
+        out.push_str(suffix);
+        out.push_str(if in_table { &inline } else { &block });
+        pos = at + marker.len();
+    }
+    out.push_str(&content[pos..]);
+    out
+}
+
+/// Table-cell form of recognized text: single line, pipes escaped so the row
+/// keeps its column count.
+fn ocr_inline(text: &str) -> String {
+    let joined = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("<br>{}", joined.replace('|', "\\|"))
+}
+
 /// Markdown block placed immediately after an image reference carrying OCR
 /// text — adjacency matters because chunkers split on blank lines, and text
 /// parked at the end of the document (the old `## Page N (OCR)` behaviour)
@@ -1661,9 +1706,6 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                                 let suffix = asset_barcode(&mv2, hash_filename)
                                     .map(barcode_suffix)
                                     .unwrap_or_default();
-                                let ocr = asset_ocr_text(&mv2, hash_filename)
-                                    .map(ocr_suffix)
-                                    .unwrap_or_default();
                                 // Prefer the authored caption over the raw
                                 // `image1`-style id as alt text.
                                 let alt = asset
@@ -1672,9 +1714,14 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                                     .as_deref()
                                     .filter(|c| !c.is_empty())
                                     .unwrap_or(id.as_str());
-                                let replacement =
-                                    format!("![{}]({}){}{}", alt, asset.src, suffix, ocr);
-                                content = content.replace(&marker, &replacement);
+                                let base = format!("![{}]({})", alt, asset.src);
+                                content = replace_marker_table_aware(
+                                    &content,
+                                    &marker,
+                                    &base,
+                                    &suffix,
+                                    asset_ocr_text(&mv2, hash_filename),
+                                );
                                 referenced_ids.insert(id.as_str());
                             }
                         }
