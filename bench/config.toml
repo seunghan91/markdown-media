@@ -1,0 +1,38 @@
+# Bench runner config.
+# Adapter entries map a short name → local import path.
+# External parser adapters are configured per-developer; only `mdm` ships in-repo.
+
+[run]
+fixtures_root = "fixtures"
+ground_truth_root = "ground_truth"
+results_root = "results"
+parallel_workers = 4
+
+[adapters.mdm]
+module = "adapters.mdm"
+binary = "../core/target/release/hwp2mdm"
+
+# Example (commented) — copy to local config.local.toml to enable:
+# [adapters.ext_a]
+# module = "adapters.ext_a"
+# repo   = "../reference/<local-clone>"
+
+[metrics]
+enabled = ["bleu", "rouge_l", "cer", "edit_ratio", "tsed"]
+# Enable once table ground truth is populated:
+# enabled = ["bleu", "rouge_l", "cer", "edit_ratio", "tsed", "teds"]
+
+[gate]
+# Absolute thresholds
+bleu_min = 0.80
+cer_max = 0.10
+# Relative: drop vs rolling average on main
+relative_drop_max = 0.05
+rolling_window = 10
+# Per-slice and per-fixture floors. The overall mean hides regressions: the
+# easy English/synthetic fixtures score ~0.95 while cjk/mixed sit near 0.66,
+# so a real cjk regression can land as an overall "improvement" (measured
+# 2026-08-03: korean_directive lost 0.026 bleu while the mean gained 0.001).
+# Single fixtures swing more than an aggregate, hence the looser tolerance.
+slice_drop_max = 0.05
+fixture_drop_max = 0.10

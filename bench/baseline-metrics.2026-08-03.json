@@ -1,0 +1,163 @@
+{
+  "_comment": "Recorded, not overwritten onto baseline-metrics.json — that pin has no record of its scale or fixture set, so it is not comparable (blocked, not a regression). Regenerate with this script's procedure after any metrics.py change.",
+  "measured_at": "2026-08-03",
+  "commit": "f4579261acda1faa5c3caa3dd5c7f5ace3a56145",
+  "adapter": "mdm",
+  "normalization": "image refs collapsed to <IMG:alt> in metrics._normalize (path dropped; alt/count/order preserved)",
+  "metrics_py_sha256_16": "dec360ebcdc3a7d3",
+  "dependency_pins": {
+    "apted": "1.0.3",
+    "jiwer": "4.0.0",
+    "Levenshtein": "0.27.3",
+    "mistune": "3.2.0",
+    "nltk": "3.9.4"
+  },
+  "fixture_count": 16,
+  "overall": {
+    "bleu": 0.788164160539864,
+    "rouge_l": 0.9585127390450191,
+    "cer": 0.12814767383308243,
+    "edit_ratio": 0.9234260965357524,
+    "tsed": 0.7708931658116268
+  },
+  "by_slice": {
+    "cjk": {
+      "bleu": 0.6562942643427607,
+      "rouge_l": 0.9599502805519505,
+      "cer": 0.18274686229869097,
+      "edit_ratio": 0.882556152080324,
+      "tsed": 0.6635019835582874,
+      "n": 6
+    },
+    "mixed": {
+      "bleu": 0.6762097247228621,
+      "rouge_l": 0.9112107744943431,
+      "cer": 0.20484777063877024,
+      "edit_ratio": 0.8816633782671913,
+      "tsed": 0.6346205921084338,
+      "n": 3
+    },
+    "text-native": {
+      "bleu": 0.9491759726303819,
+      "rouge_l": 0.9775528311322247,
+      "cer": 0.04847689937440892,
+      "edit_ratio": 0.9763557853269313,
+      "tsed": 0.9213452821872863,
+      "n": 7
+    }
+  },
+  "per_fixture": {
+    "fixtures/cjk/korean_press.pdf": {
+      "bleu": 0.6062574771593352,
+      "rouge_l": 0.9172932330827067,
+      "cer": 0.13192182410423453,
+      "edit_ratio": 0.9322555812163202,
+      "tsed": 0.6144578313253012
+    },
+    "fixtures/cjk/korean_directive.pdf": {
+      "bleu": 0.9542484302566387,
+      "rouge_l": 0.9906542056074766,
+      "cer": 0.03008070432868672,
+      "edit_ratio": 0.9848156182212582,
+      "tsed": 0.9240506329113924
+    },
+    "fixtures/cjk/korean_directive2.pdf": {
+      "bleu": 0.9601779683073642,
+      "rouge_l": 0.990909090909091,
+      "cer": 0.03359173126614987,
+      "edit_ratio": 0.9740932642487047,
+      "tsed": 0.8130841121495327
+    },
+    "fixtures/cjk/korean_press2.pdf": {
+      "bleu": 0.12727775698931612,
+      "rouge_l": 0.9261744966442954,
+      "cer": 0.5315576143601621,
+      "edit_ratio": 0.6288968824940048,
+      "tsed": 0.364406779661017
+    },
+    "fixtures/cjk/korean_press3.pdf": {
+      "bleu": 0.6327027059252658,
+      "rouge_l": 0.9914529914529915,
+      "cer": 0.20156774916013437,
+      "edit_ratio": 0.8793580520199226,
+      "tsed": 0.5882352941176471
+    },
+    "fixtures/mixed/changes_brochure.pdf": {
+      "bleu": 0.7386768852650838,
+      "rouge_l": 0.9024390243902438,
+      "cer": 0.1760688836104513,
+      "edit_ratio": 0.9025655808590372,
+      "tsed": 0.551948051948052
+    },
+    "fixtures/cjk/korean_plan.pdf": {
+      "bleu": 0.6571012474186444,
+      "rouge_l": 0.943217665615142,
+      "cer": 0.1677615505727781,
+      "edit_ratio": 0.8959175142817333,
+      "tsed": 0.6767772511848341
+    },
+    "fixtures/mixed/press_brief_mixed.pdf": {
+      "bleu": 0.6499438971762256,
+      "rouge_l": 0.8914342629482072,
+      "cer": 0.19240692959823075,
+      "edit_ratio": 0.8818608223386455,
+      "tsed": 0.6205704407951599
+    },
+    "fixtures/mixed/standards_plan.pdf": {
+      "bleu": 0.640008391727277,
+      "rouge_l": 0.9397590361445783,
+      "cer": 0.24606749870762867,
+      "edit_ratio": 0.8605637316038912,
+      "tsed": 0.7313432835820896
+    },
+    "fixtures/text-native/test_comprehensive.pdf": {
+      "bleu": 0.8090006739767752,
+      "rouge_l": 0.9140625,
+      "cer": 0.16046511627906976,
+      "edit_ratio": 0.9236599891716297,
+      "tsed": 0.896551724137931
+    },
+    "fixtures/text-native/test_headers_footers.pdf": {
+      "bleu": 0.9807381121843188,
+      "rouge_l": 0.9918166939443536,
+      "cer": 0.022490400438837082,
+      "edit_ratio": 0.9888798481149986,
+      "tsed": 0.896551724137931
+    },
+    "fixtures/text-native/test_headings.pdf": {
+      "bleu": 0.9378152095261076,
+      "rouge_l": 0.9740932642487047,
+      "cer": 0.07536764705882353,
+      "edit_ratio": 0.9636846767050488,
+      "tsed": 0.8846153846153846
+    },
+    "fixtures/text-native/test_twocolumn.pdf": {
+      "bleu": 0.9497862831533799,
+      "rouge_l": 0.979253112033195,
+      "cer": 0.05540540540540541,
+      "edit_ratio": 0.9730440499671269,
+      "tsed": 0.8421052631578947
+    },
+    "fixtures/text-native/en_arxiv_attention.pdf": {
+      "bleu": 0.9848905956362912,
+      "rouge_l": 0.9948608137044967,
+      "cer": 0.0011132069637280065,
+      "edit_ratio": 0.998886793036272,
+      "tsed": 0.9944392956441149
+    },
+    "fixtures/text-native/en_irs_w9.pdf": {
+      "bleu": 0.9820009339358003,
+      "rouge_l": 0.9887834339948232,
+      "cer": 0.02449651947499867,
+      "edit_ratio": 0.9863351402934433,
+      "tsed": 0.9351535836177475
+    },
+    "fixtures/text-native/en_rfc7519.pdf": {
+      "bleu": 1.0,
+      "rouge_l": 1.0,
+      "cer": 0.0,
+      "edit_ratio": 1.0,
+      "tsed": 1.0
+    }
+  }
+}

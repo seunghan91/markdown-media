@@ -73,4 +73,23 @@ output/
 desktop/src-tauri/gen/
 .metadata_never_index
 assets/
-bench/
+
+# Bench harness: track the code and the hand-curated reference text, so a run
+# is reproducible on another machine. Everything heavy stays out — input PDFs
+# (6.8M), per-run results, the venv, and the image/.mdm byproducts sitting
+# next to each ground_truth document.md (23M of the 23.3M there).
+bench/.venv/
+bench/results/
+bench/regressions/
+bench/fixtures/
+bench/__pycache__/
+bench/config.local.toml*
+# README: the repo ships no adapter code for any specific external parser —
+# those are configured per-developer against local clones in ../reference/.
+bench/adapters/ext_*.py
+bench/ground_truth/**/*.mdm
+bench/ground_truth/**/*.jpg
+bench/ground_truth/**/*.jpeg
+bench/ground_truth/**/*.png
+bench/ground_truth/**/*.raw
+bench/ground_truth/**/assets/

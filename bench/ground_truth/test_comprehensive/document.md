@@ -1,0 +1,46 @@
+---
+format: pdf
+version: "1.4"
+pages: 1
+images: 0
+fonts: 4
+tables: 1
+title: "MDM PDF Parser Benchmark"
+author: "Seunghan Kim"
+---
+
+# Document Title
+
+This is body text under the main heading. It tests basic paragraph extraction from PDF documents. The MDM parser should preserve this text accurately.
+
+## Section One
+
+Body text in section one with normal formatting.
+
+### Subsection 1.1
+
+This paragraph contains **bold text**, *italic text*, and ***bold italic*** formatting.
+
+## List Tests
+
+- First bullet item
+- Second bullet item
+- Third bullet item
+
+1. First numbered item
+2. Second numbered item
+3. Third numbered item
+
+## Table Tests
+
+| Name | Age | City |
+| --- | --- | --- |
+| Alice | 30 | Seoul |
+| Bob | 25 | Busan |
+| Charlie | 35 | Daejeon |
+
+## Font Styles
+
+- Helvetica-Bold (Bold)
+- Helvetica-BoldOblique (Bold Italic)
+- Helvetica-Oblique (Italic)

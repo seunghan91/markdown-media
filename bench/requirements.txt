@@ -1,0 +1,6 @@
+nltk>=3.8
+rouge-score>=0.1.2
+jiwer>=3.0
+Levenshtein>=0.25
+apted>=1.0.3
+mistune>=3.0
