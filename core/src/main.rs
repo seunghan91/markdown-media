@@ -1602,10 +1602,18 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                                 Some(svg) => (std::borrow::Cow::Owned(svg), "svg"),
                                 None => (std::borrow::Cow::Borrowed(&img.data[..]), orig_ext),
                             };
+                        // Authored figure caption, when the source carries one
+                        // (`<hp:caption>`) — beats anything inferred (P3-4).
+                        let caption = doc
+                            .image_captions
+                            .iter()
+                            .find(|(id, _)| *id == img.id)
+                            .map(|(_, c)| c.clone());
                         let meta = AssetMetadata {
                             format: Some(ext.to_string()),
                             width: img.width,
                             height: img.height,
+                            caption: caption.clone(),
                             barcode: decode_barcode(&data),
                             ocr_text: ocr_asset_text(&data),
                             ..Default::default()
@@ -1656,8 +1664,16 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                                 let ocr = asset_ocr_text(&mv2, hash_filename)
                                     .map(ocr_suffix)
                                     .unwrap_or_default();
+                                // Prefer the authored caption over the raw
+                                // `image1`-style id as alt text.
+                                let alt = asset
+                                    .metadata
+                                    .caption
+                                    .as_deref()
+                                    .filter(|c| !c.is_empty())
+                                    .unwrap_or(id.as_str());
                                 let replacement =
-                                    format!("![{}]({}){}{}", id, asset.src, suffix, ocr);
+                                    format!("![{}]({}){}{}", alt, asset.src, suffix, ocr);
                                 content = content.replace(&marker, &replacement);
                                 referenced_ids.insert(id.as_str());
                             }

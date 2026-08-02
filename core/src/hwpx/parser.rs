@@ -74,6 +74,10 @@ pub struct ShapeAsset {
 /// of separate loose counters) so `shape{N}`/`chart{N}`/`ole{N}` numbering
 /// stays monotonically increasing across sections and paragraphs, matching
 /// the `image{N}` convention already used for embedded images.
+/// What one pass over every `Contents/sectionN.xml` yields: rendered text per
+/// section, tables, pure-shape SVG assets, and `image id → caption` pairs.
+type SectionExtract = (Vec<String>, Vec<Table>, Vec<ShapeAsset>, Vec<(String, String)>);
+
 #[derive(Debug, Clone, Default)]
 struct ShapeCollector {
     shapes: Vec<ShapeAsset>,
@@ -83,6 +87,9 @@ struct ShapeCollector {
     /// at (P2-M4). The part bytes are read later, in `parse()`, where the
     /// archive is reachable.
     chart_refs: Vec<(String, String)>,
+    /// `binaryItemIDRef` → figure caption text from the enclosing `<hp:pic>`
+    /// (P3-4). Authoritative, already-authored text — no inference needed.
+    image_captions: Vec<(String, String)>,
 }
 
 /// HWPX document parser, generic over the underlying reader type.
@@ -109,6 +116,9 @@ pub struct HwpxDocument {
     /// aren't collected here yet — that's deferred to the main.rs wiring
     /// pass (see the P2 plan, M1 file-level item 4).
     pub shapes: Vec<ShapeAsset>,
+    /// `binaryItemIDRef` → authored figure caption (P3-4). Empty for most
+    /// documents — only 5 of 222 corpus HWPX files carry `hp:caption`.
+    pub image_captions: Vec<(String, String)>,
 }
 
 /// Table structure
@@ -301,7 +311,8 @@ impl<R: Read + Seek> HwpxParser<R> {
         // Parse header.xml for character styles
         self.parse_header_styles()?;
 
-        let (sections, tables, shapes) = self.extract_sections_with_tables()?;
+        let (sections, tables, shapes, image_captions) =
+            self.extract_sections_with_tables()?;
         let images = self.list_images();
 
         // Parse manifest and extract image info
@@ -315,6 +326,7 @@ impl<R: Read + Seek> HwpxParser<R> {
             preview_text,
             tables,
             shapes,
+            image_captions,
         })
     }
 
@@ -349,7 +361,7 @@ impl<R: Read + Seek> HwpxParser<R> {
     }
 
     /// Extract text and tables from all sections
-    fn extract_sections_with_tables(&mut self) -> io::Result<(Vec<String>, Vec<Table>, Vec<ShapeAsset>)> {
+    fn extract_sections_with_tables(&mut self) -> io::Result<SectionExtract> {
         let mut sections = Vec::new();
         let mut all_tables = Vec::new();
         let mut section_idx = 0;
@@ -369,6 +381,7 @@ impl<R: Read + Seek> HwpxParser<R> {
                         &self.heading_styles,
                         &mut collector,
                     );
+                    collect_image_captions(&content, &mut collector.image_captions);
                     sections.push(text);
                     all_tables.extend(tables);
                     section_idx += 1;
@@ -406,7 +419,7 @@ impl<R: Read + Seek> HwpxParser<R> {
             }
         }
 
-        Ok((sections, all_tables, collector.shapes))
+        Ok((sections, all_tables, collector.shapes, collector.image_captions))
     }
 
     /// List all images in BinData
@@ -781,6 +794,46 @@ fn strip_sec_pr(xml: &str) -> String {
 /// causing the outer table to truncate and lose all nested-cell content.
 /// Reference: pyhwpx/kordoc use recursive tree walkers; we need the same
 /// correctness without pulling in a DOM parser.
+/// Collect authored figure captions from a section: for every `<hp:pic>`
+/// block, pair its `binaryItemIDRef` with the `<hp:caption>` text (P3-4).
+///
+/// Deliberately a standalone scan rather than a hook in the paragraph walker:
+/// pictures reach the text output through two parallel paths (`walk_run_body`
+/// for body runs, `extract_runs_text` for table cells and notes), so a hook in
+/// either one silently misses the other.
+///
+/// The caption is text the author wrote (`< 성과점검 흐름도 >`), so it beats
+/// anything inferred — but it is rare: 5 of 222 corpus HWPX files carry
+/// `hp:caption` at all.
+fn collect_image_captions(section: &str, out: &mut Vec<(String, String)>) {
+    let mut pos = 0usize;
+    while let Some(rel) = section[pos..].find("<hp:pic") {
+        let pic_start = pos + rel;
+        let pic_end = match section[pic_start..].find("</hp:pic>") {
+            Some(i) => pic_start + i,
+            None => break,
+        };
+        let pic = &section[pic_start..pic_end];
+        pos = pic_end + "</hp:pic>".len();
+
+        let Some(cap_start) = pic.find("<hp:caption") else { continue };
+        let Some(img_at) = pic.find("<hc:img") else { continue };
+        let img_tag_end = match pic[img_at..].find('>') {
+            Some(i) => img_at + i + 1,
+            None => continue,
+        };
+        let Some(id) = extract_attr(&pic[img_at..img_tag_end], "binaryItemIDRef") else {
+            continue;
+        };
+        let text = extract_runs_text(&pic[cap_start..]);
+        let text = decode_xml_entities(text.trim());
+        let text = text.trim();
+        if !text.is_empty() {
+            out.push((id, text.to_string()));
+        }
+    }
+}
+
 fn find_matching_close(xml: &str, from: usize, open: &str, close: &str) -> Option<usize> {
     let mut depth: usize = 1;
     let mut scan = from;
@@ -3352,5 +3405,44 @@ mod tests {
         let out = walk_run_body(body, &mut collector);
         assert_eq!(out, "1. 선발예정인원 (총 114명)");
         assert!(collector.shapes.is_empty());
+    }
+
+    /// P3-4: `<hp:caption>` inside `<hp:pic>` pairs with the picture's
+    /// `binaryItemIDRef`. Structure mirrors 행정업무운영편람.hwpx section7.
+    #[test]
+    fn collects_picture_caption_by_image_id() {
+        let section = r##"<hp:pic><hp:offset x="0" y="0"/><hc:img binaryItemIDRef="image402" bright="0"/><hp:imgRect/><hp:caption side="BOTTOM"><hp:subList><hp:p><hp:run><hp:t>&lt; 성과점검 흐름도 &gt;</hp:t></hp:run></hp:p></hp:subList></hp:caption></hp:pic>"##;
+        let mut out = Vec::new();
+        collect_image_captions(section, &mut out);
+        assert_eq!(out, vec![("image402".to_string(), "< 성과점검 흐름도 >".to_string())]);
+    }
+
+    #[test]
+    fn picture_without_caption_yields_nothing() {
+        let section = r##"<hp:pic><hc:img binaryItemIDRef="image1"/><hp:imgRect/></hp:pic>"##;
+        let mut out = Vec::new();
+        collect_image_captions(section, &mut out);
+        assert!(out.is_empty());
+    }
+
+    /// A table caption belongs to the table, not to any picture — it must not
+    /// leak onto a neighbouring image (both appear in the same real section).
+    #[test]
+    fn table_caption_is_not_attributed_to_a_picture() {
+        let section = r##"<hp:pic><hc:img binaryItemIDRef="image9"/></hp:pic><hp:tbl><hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt; 단계별 관리기능 &gt;</hp:t></hp:run></hp:p></hp:subList></hp:caption></hp:tbl>"##;
+        let mut out = Vec::new();
+        collect_image_captions(section, &mut out);
+        assert!(out.is_empty(), "table caption must not attach to the picture: {out:?}");
+    }
+
+    #[test]
+    fn multiple_pictures_keep_their_own_captions() {
+        let section = r##"<hp:pic><hc:img binaryItemIDRef="a"/><hp:caption><hp:subList><hp:p><hp:run><hp:t>첫째</hp:t></hp:run></hp:p></hp:subList></hp:caption></hp:pic><hp:pic><hc:img binaryItemIDRef="b"/><hp:caption><hp:subList><hp:p><hp:run><hp:t>둘째</hp:t></hp:run></hp:p></hp:subList></hp:caption></hp:pic>"##;
+        let mut out = Vec::new();
+        collect_image_captions(section, &mut out);
+        assert_eq!(
+            out,
+            vec![("a".to_string(), "첫째".to_string()), ("b".to_string(), "둘째".to_string())]
+        );
     }
 }
