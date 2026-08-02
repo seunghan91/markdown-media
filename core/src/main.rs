@@ -795,6 +795,59 @@ fn asset_barcode<'a>(manifest: &'a ManifestV2, hash_filename: &str) -> Option<&'
         .as_deref()
 }
 
+/// Minimum recognized characters before an image's OCR text is worth keeping.
+/// Below this it's almost always noise off a logo or a decorative rule.
+const OCR_MIN_CHARS: usize = 8;
+
+/// Recognize text inside an extracted image (P3-3).
+///
+/// The engine (PP-OCRv5 korean) was already bundled but only reachable from
+/// one PDF fallback branch, so text pasted into documents as pictures — 16%
+/// of corpus images, carrying up to 776 characters — was never recovered.
+/// Returns `None` when the feature is off, models are missing, or too little
+/// text was found; OCR failure must never fail a conversion.
+#[cfg(feature = "ocr")]
+fn ocr_asset_text(data: &[u8]) -> Option<String> {
+    if !ocr::models::models_present() {
+        return None;
+    }
+    let lines = ocr::ocr_image(data).ok()?;
+    let text = lines
+        .iter()
+        .filter(|l| l.confidence >= ocr::TEXT_SCORE)
+        .map(|l| l.text.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (text.chars().filter(|c| !c.is_whitespace()).count() >= OCR_MIN_CHARS).then_some(text)
+}
+
+#[cfg(not(feature = "ocr"))]
+fn ocr_asset_text(_data: &[u8]) -> Option<String> {
+    None
+}
+
+/// Look up recognized text recorded for an asset, if any.
+fn asset_ocr_text<'a>(manifest: &'a ManifestV2, hash_filename: &str) -> Option<&'a str> {
+    asset_by_filename(manifest, hash_filename)?
+        .metadata
+        .ocr_text
+        .as_deref()
+}
+
+/// Markdown block placed immediately after an image reference carrying OCR
+/// text — adjacency matters because chunkers split on blank lines, and text
+/// parked at the end of the document (the old `## Page N (OCR)` behaviour)
+/// never lands in the same chunk as its image.
+fn ocr_suffix(text: &str) -> String {
+    let quoted = text
+        .lines()
+        .map(|l| format!("> {}", l.trim()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("\n\n{quoted}\n")
+}
+
 /// Save a single asset file under `output_dir` using the asset's `src` path.
 fn save_asset_file(output_dir: &Path, asset: &manifest::Asset, data: &[u8]) -> io::Result<()> {
     let full_path = output_dir.join(&asset.src);
@@ -1148,6 +1201,7 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                     width: img.width,
                     height: img.height,
                     barcode: decode_barcode(data),
+                    ocr_text: ocr_asset_text(data),
                     ..Default::default()
                 };
                 let hash_filename = mv2.add_asset(data, MediaType::Image, ext, Some(&img.name), meta);
@@ -1242,7 +1296,11 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                             let suffix = asset_barcode(&mv2, hash_filename)
                                 .map(barcode_suffix)
                                 .unwrap_or_default();
-                            let replacement = format!("![{}]({}){}", alt, asset.src, suffix);
+                            let ocr = asset_ocr_text(&mv2, hash_filename)
+                                .map(ocr_suffix)
+                                .unwrap_or_default();
+                            let replacement =
+                                format!("![{}]({}){}{}", alt, asset.src, suffix, ocr);
                             mdx_content = mdx_content.replace(&md_img, &replacement);
                         }
                     }
@@ -1549,6 +1607,7 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                             width: img.width,
                             height: img.height,
                             barcode: decode_barcode(&data),
+                            ocr_text: ocr_asset_text(&data),
                             ..Default::default()
                         };
                         let hash_filename = mv2.add_asset(&data, MediaType::Image, ext, Some(filename), meta);
@@ -1594,7 +1653,11 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                                 let suffix = asset_barcode(&mv2, hash_filename)
                                     .map(barcode_suffix)
                                     .unwrap_or_default();
-                                let replacement = format!("![{}]({}){}", id, asset.src, suffix);
+                                let ocr = asset_ocr_text(&mv2, hash_filename)
+                                    .map(ocr_suffix)
+                                    .unwrap_or_default();
+                                let replacement =
+                                    format!("![{}]({}){}{}", id, asset.src, suffix, ocr);
                                 content = content.replace(&marker, &replacement);
                                 referenced_ids.insert(id.as_str());
                             }
@@ -1793,6 +1856,7 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
                             height: Some(image.height),
                             format: Some(ext.to_string()),
                             barcode: decode_barcode(&image.data),
+                            ocr_text: ocr_asset_text(&image.data),
                             ..Default::default()
                         };
                         let orig_filename = image.filename();
@@ -1853,8 +1917,11 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
                                     let suffix = asset_barcode(&mv2, hash_filename)
                                         .map(barcode_suffix)
                                         .unwrap_or_default();
+                                    let ocr = asset_ocr_text(&mv2, hash_filename)
+                                        .map(ocr_suffix)
+                                        .unwrap_or_default();
                                     let replacement =
-                                        format!("![{}]({}){}", orig_id, asset.src, suffix);
+                                        format!("![{}]({}){}{}", orig_id, asset.src, suffix, ocr);
                                     mdx_content = mdx_content.replace(&md_pattern, &replacement);
                                 }
                             }
@@ -1907,35 +1974,16 @@ fn convert_pdf(input: &Path, output: &Path, format: &str, verbose: bool, ocr: bo
                             }
                         }
 
-                        // Fallback (ocr-pdf off): OCR embedded image XObjects on
-                        // text-sparse pages, preserving the original behavior.
-                        #[cfg(not(feature = "ocr-pdf"))]
-                        for img in &doc.images {
-                            let empty = String::new();
-                            let page_text = doc.pages.iter()
-                                .find(|p| p.page_number == img.page.unwrap_or(0))
-                                .map(|p| &p.text)
-                                .unwrap_or(&empty);
-                            if page_text.len() > 200 {
-                                continue;
-                            }
-                            #[cfg(feature = "ocr")]
-                            match ocr::ocr_image(&img.data) {
-                                Ok(lines) => {
-                                    let text: String = lines.iter()
-                                        .map(|l| l.text.clone())
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    if !text.trim().is_empty() {
-                                        let pn = img.page.unwrap_or(0);
-                                        ocr_parts.push(format!("## Page {} (OCR)\n\n{}\n", pn, text));
-                                    }
-                                }
-                                Err(_) => {}
-                            }
-                            #[cfg(not(feature = "ocr"))]
-                            let _ = img;
-                        }
+                        // [P3-3] The per-image fallback that used to live here
+                        // (OCR embedded XObjects on text-sparse pages, appended
+                        // as `## Page N (OCR)` at the end of the document) is
+                        // gone. Every extracted image — in every format, not
+                        // just PDF — now goes through `ocr_asset_text` at asset
+                        // registration, and its text is emitted immediately
+                        // after the image reference so chunkers keep the two
+                        // together. Full-page rasterization above is still
+                        // PDF-only, since only there does a page exist to
+                        // rasterize.
                         if ocr_parts.is_empty() {
                             String::new()
                         } else {
@@ -2016,6 +2064,7 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                                 format: Some(ext.to_string()),
                                 alt_text: image.alt_text.clone(),
                                 barcode: decode_barcode(&data),
+                                ocr_text: ocr_asset_text(&data),
                                 ..Default::default()
                             };
                             let hash_filename = mv2.add_asset(&data, MediaType::Image, ext, Some(&image.filename), meta);
@@ -2086,7 +2135,11 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                                             let suffix = asset_barcode(&mv2, hash_filename)
                                                 .map(barcode_suffix)
                                                 .unwrap_or_default();
-                                            let replacement = format!("]({}){}", asset.src, suffix);
+                                            let ocr = asset_ocr_text(&mv2, hash_filename)
+                                                .map(ocr_suffix)
+                                                .unwrap_or_default();
+                                            let replacement =
+                                                format!("]({}){}{}", asset.src, suffix, ocr);
                                             mdx_content = mdx_content.replace(&md_pattern, &replacement);
                                             referenced_ids.insert(orig_id.as_str());
                                         }

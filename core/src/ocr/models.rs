@@ -52,14 +52,24 @@ pub const ALL_OCR_MODELS: [ModelSpec; 3] = [OCR_DET_MODEL, OCR_REC_MODEL, OCR_RE
 /// Cache directory for a model group. Honors `MDM_MODEL_CACHE`, else
 /// `~/.cache/mdm/models/<subdir>/` (falls back to `./.mdm-cache` if HOME is unset).
 pub fn models_dir_for(subdir: &str) -> PathBuf {
-    if let Ok(root) = std::env::var("MDM_MODEL_CACHE") {
+    let override_root = std::env::var("MDM_MODEL_CACHE").ok();
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    resolve_models_dir(override_root.as_deref(), &home, subdir)
+}
+
+/// Pure resolution of the cache path, split out so tests can exercise the
+/// override without mutating process-global environment — doing that raced
+/// with any concurrently running test that reads the same variable
+/// (`ocr::engine::smoke` resolved to the test's fake root and reported
+/// `ModelsMissing`).
+fn resolve_models_dir(override_root: Option<&str>, home: &str, subdir: &str) -> PathBuf {
+    if let Some(root) = override_root {
         if !root.trim().is_empty() {
             return PathBuf::from(root).join(subdir);
         }
     }
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join(".cache")
         .join("mdm")
@@ -173,11 +183,16 @@ mod tests {
 
     #[test]
     fn cache_dir_respects_env_override() {
-        // Non-destructive: just verify the join shape via a synthetic root.
-        std::env::set_var("MDM_MODEL_CACHE", "/tmp/xyz-mdm-test");
-        let d = ocr_models_dir();
-        assert!(d.ends_with("xyz-mdm-test/ppocr") || d.ends_with("ppocr"));
-        std::env::remove_var("MDM_MODEL_CACHE");
+        let d = resolve_models_dir(Some("/tmp/xyz-mdm-test"), "/home/u", "ppocr");
+        assert!(d.ends_with("xyz-mdm-test/ppocr"), "{d:?}");
+    }
+
+    #[test]
+    fn cache_dir_falls_back_to_home_when_override_absent_or_blank() {
+        for root in [None, Some(""), Some("   ")] {
+            let d = resolve_models_dir(root, "/home/u", "ppocr");
+            assert!(d.ends_with(".cache/mdm/models/ppocr"), "{root:?} -> {d:?}");
+        }
     }
 
     #[test]

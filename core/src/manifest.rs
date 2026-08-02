@@ -92,6 +92,12 @@ pub struct AssetMetadata {
     /// in Korean legal/government documents nearly always a law.go.kr link.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub barcode: Option<String>,
+    /// Text recognized inside the image by the built-in OCR engine (P3-3,
+    /// feature `ocr`). Documents routinely paste tables and paragraphs in as
+    /// pictures — 16% of corpus images carry 100+ characters — and without
+    /// this the text is unsearchable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_text: Option<String>,
     /// Position within the source page
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<Position>,
@@ -378,6 +384,7 @@ mod tests {
                 caption: Some("Test image".to_string()),
                 alt_text: None,
                 barcode: None,
+                ocr_text: None,
                 position: Some(Position { x: 10.0, y: 20.0 }),
             },
         );
