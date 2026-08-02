@@ -157,8 +157,11 @@ pub fn shape_to_svg(xml_fragment: &str) -> Option<ShapeSvg> {
         "rect" => Some(rect_body(el, sx, sy, w, h, &fill_attr, &stroke_attr)),
         "ellipse" => Some(ellipse_body(w, h, &fill_attr, &stroke_attr)),
         "line" => Some(line_body(el, sx, sy, stroke_col, stroke_w, &dash)),
-        "polygon" | "curv" => polygon_body(el, sx, sy, &fill_attr, &stroke_attr),
-        "arc" => Some(arc_body(w, h, &stroke_attr, stroke_col)),
+        "polygon" => polygon_body(el, sx, sy, &fill_attr, &stroke_attr),
+        "curv" => curv_body(el, sx, sy, &fill_attr, &stroke_attr)
+            .or_else(|| polygon_body(el, sx, sy, &fill_attr, &stroke_attr)),
+        "arc" => arc_path_body(el, sx, sy, &fill_attr, &stroke_attr, stroke_col)
+            .or_else(|| Some(arc_body(w, h, &stroke_attr, stroke_col))),
         _ => None,
     }?;
 
@@ -278,10 +281,10 @@ fn line_body(el: Node, sx: f64, sy: f64, stroke_col: &str, stroke_w: f64, dash: 
     )
 }
 
-/// `polygon`/`curv` share the same `hc:pt` point-list geometry. `curv`'s
-/// control-point handles are dropped, so curves render as their straight-line
-/// hull — a known M1 approximation (real bezier geometry is M2), mirroring
-/// `hwpx_render`.
+/// `polygon` point-list geometry. Also the fallback for `curv` when no
+/// `hp:seg` children exist (control points then render as their
+/// straight-line hull — the M1 behavior; real bezier geometry lives in
+/// `curv_body`).
 fn polygon_body(el: Node, sx: f64, sy: f64, fill_attr: &str, stroke_attr: &str) -> Option<String> {
     let mut pts: Vec<String> = Vec::new();
     for c in el.children().filter(|c| c.is_element()) {
@@ -300,9 +303,139 @@ fn polygon_body(el: Node, sx: f64, sy: f64, fill_attr: &str, stroke_attr: &str) 
     }
 }
 
-/// `arc` is approximated as a full unfilled ellipse (matches `hwpx_render`)
-/// — the actual start/end sweep angles are not drawn. Real arc geometry is
-/// M2.
+/// `curv` real geometry (P2-M2): the `hc:pt` list already interleaves control
+/// points; each `hp:seg` describes how many points the next segment consumes —
+/// CURVE = 3 (`C ctrl1 ctrl2 end`), LINE = 1 (`L end`). Port of rhwp
+/// `shape_layout.rs::curve_to_path_commands_scaled`.
+///
+/// ASSUMPTION (unverified — the corpus has no curv sample, mirroring the
+/// `rotationInfo` precedent above): segments appear as `<hp:seg type="…">`
+/// children where type is `"CURVE"`/`"1"` for bezier and anything else for
+/// line. When no `seg` children exist at all we return None so the caller
+/// falls back to the M1 straight-hull rendering.
+fn curv_body(el: Node, sx: f64, sy: f64, fill_attr: &str, stroke_attr: &str) -> Option<String> {
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut segs: Vec<bool> = Vec::new(); // true = bezier
+    for c in el.children().filter(|c| c.is_element()) {
+        match local_name(&c) {
+            "pt" => pts.push((num(Some(c), "x", 0.0) * sx, num(Some(c), "y", 0.0) * sy)),
+            "seg" => {
+                let t = c.attribute("type").unwrap_or("");
+                segs.push(t.eq_ignore_ascii_case("curve") || t == "1");
+            }
+            _ => {}
+        }
+    }
+    if segs.is_empty() || pts.len() < 2 {
+        return None;
+    }
+    let mut d = format!("M {} {}", pt(pts[0].0), pt(pts[0].1));
+    let mut i = 1;
+    let mut seg_idx = 0;
+    while i < pts.len() {
+        let bezier = segs.get(seg_idx).copied().unwrap_or(false);
+        if bezier && i + 2 < pts.len() {
+            d.push_str(&format!(
+                " C {} {} {} {} {} {}",
+                pt(pts[i].0),
+                pt(pts[i].1),
+                pt(pts[i + 1].0),
+                pt(pts[i + 1].1),
+                pt(pts[i + 2].0),
+                pt(pts[i + 2].1)
+            ));
+            i += 3;
+        } else {
+            d.push_str(&format!(" L {} {}", pt(pts[i].0), pt(pts[i].1)));
+            i += 1;
+        }
+        seg_idx += 1;
+    }
+    Some(format!(r#"<path d="{}"{}{}/>"#, d, fill_attr, stroke_attr))
+}
+
+/// `arc` real geometry (P2-M2): `hc:center`/`hc:ax1`/`hc:ax2` describe the
+/// ellipse center and the two arc endpoints; the sweep runs axis1→axis2 with
+/// sweep=0 (SVG Y-down counter-clockwise), large_arc from the angular span.
+/// `@arcType` closes the path: 1/PIE = sector (`L center Z`), 2/CHORD = bow
+/// (`Z`), otherwise an open arc. Port of rhwp `shape_layout.rs` Arc branch.
+/// Returns None (→ M1 full-ellipse fallback) when `hc:center` is absent.
+fn arc_path_body(
+    el: Node,
+    sx: f64,
+    sy: f64,
+    fill_attr: &str,
+    stroke_attr: &str,
+    stroke_col: &str,
+) -> Option<String> {
+    let center = find_child(el, "center")?;
+    let ax1 = find_child(el, "ax1")?;
+    let ax2 = find_child(el, "ax2")?;
+    let cx = num(Some(center), "x", 0.0) * sx;
+    let cy = num(Some(center), "y", 0.0) * sy;
+    let (x1, y1) = (num(Some(ax1), "x", 0.0) * sx, num(Some(ax1), "y", 0.0) * sy);
+    let (x2, y2) = (num(Some(ax2), "x", 0.0) * sx, num(Some(ax2), "y", 0.0) * sy);
+
+    let (dx1, dy1) = (x1 - cx, y1 - cy);
+    let (dx2, dy2) = (x2 - cx, y2 - cy);
+    let r1 = (dx1 * dx1 + dy1 * dy1).sqrt();
+    let r2 = (dx2 * dx2 + dy2 * dy2).sqrt();
+    if r1 <= 0.1 || r2 <= 0.1 {
+        return None;
+    }
+    let a1 = dy1.atan2(dx1);
+    let a2 = dy2.atan2(dx2);
+    let (rx, ry) = {
+        let a1_abs = a1.abs();
+        let a2_abs = a2.abs();
+        if (a1_abs - std::f64::consts::FRAC_PI_2).abs() < 0.3 && a2_abs < 0.3 {
+            (r2, r1)
+        } else if a1_abs < 0.3 && (a2_abs - std::f64::consts::FRAC_PI_2).abs() < 0.3 {
+            (r1, r2)
+        } else {
+            (r1.max(r2), r1.min(r2))
+        }
+    };
+    let mut sweep = a1 - a2;
+    if sweep < 0.0 {
+        sweep += 2.0 * std::f64::consts::PI;
+    }
+    let large_arc = i32::from(sweep > std::f64::consts::PI);
+
+    let mut d = format!(
+        "M {} {} A {} {} 0 {} 0 {} {}",
+        pt(x1),
+        pt(y1),
+        pt(rx),
+        pt(ry),
+        large_arc,
+        pt(x2),
+        pt(y2)
+    );
+    let arc_type = el.attribute("arcType").unwrap_or("0");
+    match arc_type {
+        "1" | "PIE" | "pie" | "CIRCULARSECTOR" => {
+            d.push_str(&format!(" L {} {} Z", pt(cx), pt(cy)));
+        }
+        "2" | "CHORD" | "chord" | "BOW" | "bow" => d.push_str(" Z"),
+        _ => {}
+    }
+    let sa = if stroke_attr.is_empty() {
+        format!(r#" stroke="{}" stroke-width="0.3""#, escape_xml(stroke_col))
+    } else {
+        stroke_attr.to_string()
+    };
+    // 열린 호는 채우면 시각적으로 왜곡되므로 닫힌 타입에만 fill 적용
+    let fa = if arc_type == "0" || arc_type.eq_ignore_ascii_case("arc") {
+        r#" fill="none""#
+    } else {
+        fill_attr
+    };
+    Some(format!(r#"<path d="{}"{}{}/>"#, d, fa, sa))
+}
+
+/// `arc` fallback: approximated as a full unfilled ellipse (matches
+/// `hwpx_render`) when `hc:center`/`hc:ax1`/`hc:ax2` are absent.
 fn arc_body(w: f64, h: f64, stroke_attr: &str, stroke_col: &str) -> String {
     let sa = if !stroke_attr.is_empty() {
         stroke_attr.to_string()
@@ -501,13 +634,39 @@ mod tests {
 
     #[test]
     fn test_curv_renders_as_straight_line_polygon() {
+        // seg 자식이 없으면 M1 직선 헐 폴백 유지
         let xml = r##"<hp:curv id="1"><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/><hc:pt x="0" y="0"/><hc:pt x="1000" y="1000"/></hp:curv>"##;
         let shape = shape_to_svg(xml).expect("parses");
         assert!(shape.svg.contains(r#"<polygon points="0,0 10,10""#), "{}", shape.svg);
     }
 
     #[test]
+    fn test_curv_bezier_segments_render_as_cubic_path() {
+        // CURVE seg = 점 3개 소비 (ctrl1, ctrl2, end) — P2-M2 실기하
+        let xml = r##"<hp:curv id="1"><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/><hc:pt x="0" y="0"/><hc:pt x="300" y="0"/><hc:pt x="700" y="1000"/><hc:pt x="1000" y="1000"/><hp:seg type="CURVE"/></hp:curv>"##;
+        let shape = shape_to_svg(xml).expect("parses");
+        assert!(
+            shape.svg.contains(r#"<path d="M 0 0 C 3 0 7 10 10 10""#),
+            "{}",
+            shape.svg
+        );
+    }
+
+    #[test]
+    fn test_curv_mixed_line_and_curve_segments() {
+        // LINE seg = 점 1개 소비, 이후 CURVE seg = 점 3개 소비
+        let xml = r##"<hp:curv id="1"><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/><hc:pt x="0" y="0"/><hc:pt x="500" y="0"/><hc:pt x="600" y="0"/><hc:pt x="900" y="1000"/><hc:pt x="1000" y="1000"/><hp:seg type="LINE"/><hp:seg type="CURVE"/></hp:curv>"##;
+        let shape = shape_to_svg(xml).expect("parses");
+        assert!(
+            shape.svg.contains(r#"d="M 0 0 L 5 0 C 6 0 9 10 10 10""#),
+            "{}",
+            shape.svg
+        );
+    }
+
+    #[test]
     fn test_arc_renders_as_ellipse_approximation() {
+        // center/ax1/ax2 부재 시 M1 타원 폴백 유지
         let xml = r##"<hp:arc id="1"><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/><hp:lineShape color="#000000" width="33" style="SOLID"/></hp:arc>"##;
         let shape = shape_to_svg(xml).expect("parses");
         assert!(
@@ -515,6 +674,37 @@ mod tests {
             "{}",
             shape.svg
         );
+    }
+
+    #[test]
+    fn test_arc_real_geometry_open_arc() {
+        // ax1=위(90°), ax2=오른쪽(0°) — 분리 규칙에 따라 rx=r2, ry=r1.
+        // 열린 호(arcType 기본 0): A 커맨드 + fill=none, Z 없음.
+        let xml = r##"<hp:arc id="1"><hp:orgSz width="2000" height="1000"/><hp:curSz width="2000" height="1000"/><hc:center x="1000" y="500"/><hc:ax1 x="1000" y="1000"/><hc:ax2 x="2000" y="500"/></hp:arc>"##;
+        let shape = shape_to_svg(xml).expect("parses");
+        // 90° 스윕(ax1=아래 90° → ax2=오른쪽 0°)이므로 large_arc=0
+        assert!(
+            shape.svg.contains(r#"<path d="M 10 10 A 10 5 0 0 0 20 5""#),
+            "{}",
+            shape.svg
+        );
+        assert!(shape.svg.contains(r#"fill="none""#), "{}", shape.svg);
+        assert!(!shape.svg.contains('Z'), "open arc must not close: {}", shape.svg);
+    }
+
+    #[test]
+    fn test_arc_pie_closes_through_center() {
+        let xml = r##"<hp:arc id="1" arcType="1"><hp:orgSz width="2000" height="1000"/><hp:curSz width="2000" height="1000"/><hc:center x="1000" y="500"/><hc:ax1 x="1000" y="1000"/><hc:ax2 x="2000" y="500"/></hp:arc>"##;
+        let shape = shape_to_svg(xml).expect("parses");
+        assert!(shape.svg.contains(" L 10 5 Z"), "pie must close via center: {}", shape.svg);
+    }
+
+    #[test]
+    fn test_arc_chord_closes_directly() {
+        let xml = r##"<hp:arc id="1" arcType="CHORD"><hp:orgSz width="2000" height="1000"/><hp:curSz width="2000" height="1000"/><hc:center x="1000" y="500"/><hc:ax1 x="1000" y="1000"/><hc:ax2 x="2000" y="500"/></hp:arc>"##;
+        let shape = shape_to_svg(xml).expect("parses");
+        assert!(shape.svg.contains("Z\""), "chord must close: {}", shape.svg);
+        assert!(!shape.svg.contains(" L 10 5 Z"), "chord must not pass center: {}", shape.svg);
     }
 
     #[test]
