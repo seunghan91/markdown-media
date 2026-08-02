@@ -909,16 +909,72 @@ fn own_table_caption(table_xml: &str) -> Option<String> {
     caption_text_at(table_xml, cap)
 }
 
-fn collect_image_captions(section: &str, out: &mut Vec<(String, String)>) {
+const PIC_OPEN: &str = "<hp:pic";
+const PIC_CLOSE: &str = "</hp:pic>";
+
+/// Pair every `<hp:pic …>` with its matching `</hp:pic>` in a single pass,
+/// returned in document order as `(start, close_start)` byte offsets.
+///
+/// Pictures nest, so a per-picture `find_matching_close` would rescan each
+/// descendant subtree once per ancestor — quadratic on a deeply nested (or
+/// crafted) section. Both scan cursors here advance monotonically, so the
+/// whole traversal stays linear in the section length. An unclosed opening
+/// tag simply yields no span instead of abandoning the pictures after it.
+fn pic_spans(xml: &str) -> Vec<(usize, usize)> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next_open = xml.find(PIC_OPEN);
+    let mut next_close = xml.find(PIC_CLOSE);
+    loop {
+        match (next_open, next_close) {
+            #[allow(clippy::unnecessary_map_or)] // `is_none_or` is above our MSRV
+            (Some(open), close) if close.map_or(true, |c| open < c) => {
+                stack.push(open);
+                let from = open + PIC_OPEN.len();
+                next_open = xml[from..].find(PIC_OPEN).map(|i| from + i);
+            }
+            (_, Some(close)) => {
+                if let Some(start) = stack.pop() {
+                    spans.push((start, close));
+                }
+                let from = close + PIC_CLOSE.len();
+                next_close = xml[from..].find(PIC_CLOSE).map(|i| from + i);
+            }
+            // Only `(None, None)` reaches here — guards don't count towards
+            // exhaustivity, so this arm has to be a wildcard.
+            _ => break,
+        }
+    }
+    // Closes pop innermost-first; callers expect document order.
+    spans.sort_unstable_by_key(|&(start, _)| start);
+    spans
+}
+
+/// Drop nested `<hp:pic …>…</hp:pic>` subtrees from a caption's XML.
+///
+/// A picture can be placed *inside* another picture's caption; without this
+/// the inner picture's `[이미지: id]` placeholder is collected as part of the
+/// outer caption and ends up inside the outer image's alt text.
+fn strip_nested_pics(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
     let mut pos = 0usize;
-    while let Some(rel) = section[pos..].find("<hp:pic") {
-        let pic_start = pos + rel;
-        let pic_end = match section[pic_start..].find("</hp:pic>") {
-            Some(i) => pic_start + i,
-            None => break,
-        };
+    for (start, close) in pic_spans(xml) {
+        // Spans are document-ordered, so anything already consumed is nested
+        // inside a picture that was dropped whole.
+        if start < pos {
+            continue;
+        }
+        out.push_str(&xml[pos..start]);
+        pos = close + PIC_CLOSE.len();
+    }
+    out.push_str(&xml[pos..]);
+    out
+}
+
+fn collect_image_captions(section: &str, out: &mut Vec<(String, String)>) {
+    // Every picture gets its own turn, nested ones included.
+    for (pic_start, pic_end) in pic_spans(section) {
         let pic = &section[pic_start..pic_end];
-        pos = pic_end + "</hp:pic>".len();
 
         let Some(cap_start) = pic.find("<hp:caption") else { continue };
         let Some(img_at) = pic.find("<hc:img") else { continue };
@@ -929,7 +985,9 @@ fn collect_image_captions(section: &str, out: &mut Vec<(String, String)>) {
         let Some(id) = extract_attr(&pic[img_at..img_tag_end], "binaryItemIDRef") else {
             continue;
         };
-        if let Some(text) = caption_text_at(pic, cap_start) {
+        // Strip first: a nested picture inside this caption carries its own
+        // `</hp:caption>`, which would otherwise bound the text extraction.
+        if let Some(text) = caption_text_at(&strip_nested_pics(&pic[cap_start..]), 0) {
             out.push((id, text));
         }
     }
@@ -3555,6 +3613,50 @@ mod tests {
         assert_eq!(
             out,
             vec![("a".to_string(), "첫째".to_string()), ("b".to_string(), "둘째".to_string())]
+        );
+    }
+
+    /// A picture placed *inside* another picture's caption. Structure mirrors
+    /// `tests/realworld/mois/훈령_124300_1.hwpx` section0, the only nesting in
+    /// the corpus. Before the fix the inner picture's `[이미지: …]` placeholder
+    /// leaked into the outer alt text (`verify_bundle --strict` caught it as a
+    /// legacy syntax marker) and the caption landed on the wrong image.
+    #[test]
+    fn nested_picture_caption_stays_with_its_own_image() {
+        let section = r##"<hp:pic><hc:img binaryItemIDRef="outer"/><hp:caption><hp:subList><hp:p><hp:run><hp:t>&lt;바깥 캡션&gt;</hp:t></hp:run><hp:run><hp:pic><hc:img binaryItemIDRef="inner"/><hp:caption><hp:subList><hp:p><hp:run><hp:t>안쪽 캡션</hp:t></hp:run></hp:p></hp:subList></hp:caption></hp:pic></hp:run></hp:p></hp:subList></hp:caption></hp:pic>"##;
+        let mut out = Vec::new();
+        collect_image_captions(section, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                ("outer".to_string(), "<바깥 캡션>".to_string()),
+                ("inner".to_string(), "안쪽 캡션".to_string()),
+            ],
+            "each picture keeps its own caption, with no placeholder leakage"
+        );
+    }
+
+    /// Deeply nested pictures must not make the traversal quadratic — a
+    /// crafted section is untrusted input. 2000 levels finished in ~1ms once
+    /// the per-picture rescan was replaced by a single pass; the pre-fix
+    /// version took multiple seconds.
+    #[test]
+    fn deeply_nested_pictures_stay_linear() {
+        const DEPTH: usize = 2000;
+        let mut section = String::new();
+        for i in 0..DEPTH {
+            section.push_str(&format!(r##"<hp:pic><hc:img binaryItemIDRef="img{i}"/>"##));
+        }
+        section.push_str(&PIC_CLOSE.repeat(DEPTH));
+
+        let started = std::time::Instant::now();
+        let spans = pic_spans(&section);
+        let elapsed = started.elapsed();
+
+        assert_eq!(spans.len(), DEPTH);
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "traversal of {DEPTH} nested pictures took {elapsed:?} — quadratic regression"
         );
     }
 
