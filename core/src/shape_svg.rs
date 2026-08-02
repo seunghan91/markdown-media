@@ -73,10 +73,49 @@ pub fn shape_to_svg(xml_fragment: &str) -> Option<ShapeSvg> {
     let doc = Document::parse(&wrapped).ok()?;
     let el = doc.root_element().children().find(|c| c.is_element())?;
     let tag = local_name(&el);
-    if !matches!(tag, "rect" | "ellipse" | "line" | "polygon" | "curv" | "arc") {
+    if !matches!(
+        tag,
+        "rect" | "ellipse" | "line" | "polygon" | "curv" | "arc" | "container"
+    ) {
         return None;
     }
 
+    let (body, w, h) = shape_body(el, 0)?;
+
+    let dt = find_child(el, "drawText");
+    let has_drawtext = dt.is_some();
+    let alt = match dt.map(collect_drawtext) {
+        Some(text) if !text.trim().is_empty() => {
+            let summary: String = text.trim().chars().take(60).collect();
+            format!("{tag} shape ({summary})")
+        }
+        _ => format!("{tag} shape"),
+    };
+
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}pt" height="{h}pt">{body}</svg>"#,
+        w = pt(w),
+        h = pt(h),
+        body = body
+    );
+
+    Some(ShapeSvg {
+        svg,
+        width_pt: hwpunit_to_pt(w),
+        height_pt: hwpunit_to_pt(h),
+        alt,
+        has_drawtext,
+    })
+}
+
+/// Nesting guard for `hp:container` recursion (P2-M2).
+const MAX_CONTAINER_DEPTH: u32 = 8;
+
+/// Render one shape element to its SVG body plus its extent (in HWPUNIT,
+/// already scaled to `curSz` space, rotation applied). Extracted from
+/// `shape_to_svg` so `hp:container` can recurse per child.
+fn shape_body(el: Node, depth: u32) -> Option<(String, f64, f64)> {
+    let tag = local_name(&el);
     let org_sz = find_child(el, "orgSz");
     let cur_sz = find_child(el, "curSz");
     let ow = num(org_sz, "width", 0.0);
@@ -98,12 +137,55 @@ pub fn shape_to_svg(xml_fragment: &str) -> Option<ShapeSvg> {
         }
     };
     // Area shapes need positive extent to draw anything meaningful; `line`
-    // is legitimately zero-height (horizontal) or zero-width (vertical).
-    if tag != "line" && (w <= 0.0 || h <= 0.0) {
+    // is legitimately zero-height (horizontal) or zero-width (vertical), and
+    // `container` may omit its own size (extent then derives from children).
+    if !matches!(tag, "line" | "container") && (w <= 0.0 || h <= 0.0) {
         return None;
     }
     let sx = if ow > 0.0 { w / ow } else { 1.0 };
     let sy = if oh > 0.0 { h / oh } else { 1.0 };
+
+    // `container`: group of child shapes, each placed at its own
+    // `hp:offset` (hwpx_render draw_object "container" arm mirror). A child
+    // that fails to render is skipped rather than failing the whole group.
+    if tag == "container" {
+        if depth >= MAX_CONTAINER_DEPTH {
+            return None;
+        }
+        let mut parts: Vec<String> = Vec::new();
+        let (mut bw, mut bh) = (w, h);
+        for ch in el.children().filter(|c| c.is_element()) {
+            let ctag = local_name(&ch);
+            if !matches!(
+                ctag,
+                "rect" | "ellipse" | "line" | "polygon" | "curv" | "arc" | "container"
+            ) {
+                continue;
+            }
+            let Some((cbody, cw, chh)) = shape_body(ch, depth + 1) else {
+                continue;
+            };
+            let off = find_child(ch, "offset");
+            let ox = num(off, "x", 0.0);
+            let oy = num(off, "y", 0.0);
+            if ox != 0.0 || oy != 0.0 {
+                parts.push(format!(
+                    r#"<g transform="translate({} {})">{}</g>"#,
+                    pt(ox),
+                    pt(oy),
+                    cbody
+                ));
+            } else {
+                parts.push(cbody);
+            }
+            bw = bw.max(ox + cw);
+            bh = bh.max(oy + chh);
+        }
+        if parts.is_empty() || bw <= 0.0 || bh <= 0.0 {
+            return None;
+        }
+        return Some((parts.concat(), bw, bh));
+    }
 
     let line_shape = find_child(el, "lineShape");
     let lstyle = line_shape.and_then(|l| l.attribute("style")).unwrap_or("SOLID");
@@ -192,30 +274,7 @@ pub fn shape_to_svg(xml_fragment: &str) -> Option<ShapeSvg> {
         body
     };
 
-    let dt = find_child(el, "drawText");
-    let has_drawtext = dt.is_some();
-    let alt = match dt.map(collect_drawtext) {
-        Some(text) if !text.trim().is_empty() => {
-            let summary: String = text.trim().chars().take(60).collect();
-            format!("{tag} shape ({summary})")
-        }
-        _ => format!("{tag} shape"),
-    };
-
-    let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}pt" height="{h}pt">{body}</svg>"#,
-        w = pt(w),
-        h = pt(h),
-        body = body
-    );
-
-    Some(ShapeSvg {
-        svg,
-        width_pt: hwpunit_to_pt(w),
-        height_pt: hwpunit_to_pt(h),
-        alt,
-        has_drawtext,
-    })
+    Some((body, w, h))
 }
 
 // ─── shape body renderers ──────────────────────────────
@@ -705,6 +764,41 @@ mod tests {
         let shape = shape_to_svg(xml).expect("parses");
         assert!(shape.svg.contains("Z\""), "chord must close: {}", shape.svg);
         assert!(!shape.svg.contains(" L 10 5 Z"), "chord must not pass center: {}", shape.svg);
+    }
+
+    #[test]
+    fn test_container_groups_children_with_offsets() {
+        // container 자식 2개: rect(offset 0,0) + ellipse(offset 1000,0).
+        // 각 자식은 자체 orgSz/curSz 좌표계로 그려지고 offset translate 로 배치.
+        let xml = r##"<hp:container id="9"><hp:orgSz width="2000" height="1000"/><hp:curSz width="2000" height="1000"/><hp:rect id="1"><hp:offset x="0" y="0"/><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/></hp:rect><hp:ellipse id="2"><hp:offset x="1000" y="0"/><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/></hp:ellipse></hp:container>"##;
+        let shape = shape_to_svg(xml).expect("container parses");
+        assert!(shape.svg.contains(r#"viewBox="0 0 20 10""#), "{}", shape.svg);
+        assert!(
+            shape.svg.contains(r#"<g transform="translate(10 0)"><ellipse"#),
+            "offset child must be translated: {}",
+            shape.svg
+        );
+        assert_eq!(shape.alt, "container shape");
+    }
+
+    #[test]
+    fn test_container_nested_recursion_capped() {
+        // MAX_CONTAINER_DEPTH 초과 중첩은 None (스택 폭주 방지)
+        let mut inner = r##"<hp:rect id="1"><hp:orgSz width="100" height="100"/><hp:curSz width="100" height="100"/></hp:rect>"##.to_string();
+        for i in 0..10 {
+            inner = format!(
+                r##"<hp:container id="c{i}"><hp:orgSz width="100" height="100"/><hp:curSz width="100" height="100"/>{inner}</hp:container>"##
+            );
+        }
+        assert!(shape_to_svg(&inner).is_none(), "deep nesting must be rejected");
+    }
+
+    #[test]
+    fn test_container_without_own_size_uses_child_bounds() {
+        let xml = r##"<hp:container id="9"><hp:rect id="1"><hp:offset x="500" y="500"/><hp:orgSz width="1000" height="1000"/><hp:curSz width="1000" height="1000"/></hp:rect></hp:container>"##;
+        let shape = shape_to_svg(xml).expect("parses");
+        // 자식 바운딩 = offset(500,500) + 자식 크기(1000,1000) = 1500×1500 → 15pt
+        assert!(shape.svg.contains(r#"viewBox="0 0 15 15""#), "{}", shape.svg);
     }
 
     #[test]

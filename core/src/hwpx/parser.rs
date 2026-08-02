@@ -1375,10 +1375,13 @@ fn extract_runs_text_with_formatting(xml: &str, char_styles: &HashMap<u32, CharS
 ///   - nested `<hp:run>…</hp:run>` → SKIP (processed as part of the ctrl
 ///     that contains it; don't leak its `<hp:t>` content into the outer run)
 ///   - `<hp:rect>`/`<hp:ellipse>`/`<hp:line>`/`<hp:polygon>`/`<hp:curv>`/
-///     `<hp:arc>` → pure shape (no drawText): `[도형: shapeN]` marker +
-///     collected into `collector.shapes` as an SVG asset (see
-///     `crate::shape_svg`). Shape WITH a drawText body: its text is kept
-///     inline instead (no asset — see the P2 plan's textbox policy).
+///     `<hp:arc>`/`<hp:container>` → pure shape (no drawText): `[도형:
+///     shapeN]` marker + collected into `collector.shapes` as an SVG asset
+///     (see `crate::shape_svg`). Shape WITH a drawText body anywhere in the
+///     subtree: its text is kept inline instead (no asset — see the P2
+///     plan's textbox policy, applied at container level for groups). A
+///     `container` consumes its whole subtree, so child shapes become one
+///     grouped asset instead of scattering into individual ones (P2-M2).
 ///   - `<hp:chart>`/`<hp:ole>` → `[차트: chartN]` / `[개체: oleN]` marker
 ///     only (original bytes aren't collected here — deferred to the
 ///     main.rs wiring pass).
@@ -1417,13 +1420,17 @@ fn walk_run_body(body: &str, collector: &mut ShapeCollector) -> String {
         let shape_polygon = find_tag_open(body, pos, "<hp:polygon").map(|i| (i, "polygon"));
         let shape_curv = find_tag_open(body, pos, "<hp:curv").map(|i| (i, "curv"));
         let shape_arc = find_tag_open(body, pos, "<hp:arc").map(|i| (i, "arc"));
+        // Group shape (P2-M2): consumes its whole subtree, so child shapes
+        // inside never surface as separate candidates.
+        let shape_container =
+            find_tag_open(body, pos, "<hp:container").map(|i| (i, "container"));
         let chart = find_tag_open(body, pos, "<hp:chart").map(|i| (i, "chart"));
         let ole = find_tag_open(body, pos, "<hp:ole").map(|i| (i, "ole"));
 
         let candidates = [
             t1, t2, tself, lb1, lb2, tab, tab2, fws, img, ctrl, ctrl2, eq1, eq2,
             nested_run, nested_run2, shape_rect, shape_ellipse, shape_line,
-            shape_polygon, shape_curv, shape_arc, chart, ole,
+            shape_polygon, shape_curv, shape_arc, shape_container, chart, ole,
         ];
         let Some((abs, kind)) = candidates.iter().filter_map(|c| *c).min_by_key(|(i, _)| *i) else {
             break;
@@ -1552,7 +1559,7 @@ fn walk_run_body(body: &str, collector: &mut ShapeCollector) -> String {
                 };
                 pos = close + 9;
             }
-            "rect" | "ellipse" | "line" | "polygon" | "curv" | "arc" => {
+            "rect" | "ellipse" | "line" | "polygon" | "curv" | "arc" | "container" => {
                 let tag_end = match body[abs..].find('>') {
                     Some(i) => abs + i + 1,
                     None => break,
