@@ -520,44 +520,95 @@ impl Default for ShapeComponent {
     }
 }
 
-/// Parse SHAPE_COMPONENT record
+/// Parse SHAPE_COMPONENT record.
 ///
-/// SHAPE_COMPONENT structure:
-/// - Flags: 4 bytes
-/// - Rotation: 2 bytes (degrees * 10)
-/// - X coord: 4 bytes (signed)
-/// - Y coord: 4 bytes (signed)
-/// - Width: 4 bytes
-/// - Height: 4 bytes
-/// - X flip: 1 byte
-/// - Y flip: 1 byte
-/// - ...
+/// [M3 finding] The previous layout assumption here (flags@0, rotation@4,
+/// x@6, y@10, width@14, height@18) does NOT match real files — it decoded
+/// garbage sizes (height=1,037,303,808 was observed and guarded in C7).
+/// Byte-dumping SHAPE_COMPONENT payloads across samples/input/
+/// (shaperect / shapeline / shapecomponent-rect-fill / aligns / matrix, all
+/// 217+ bytes) shows the actual layout, matching the HWP 5.0 spec's drawing
+/// object common header:
+///
+/// ```text
+///  0..8   ctrl id, repeated twice ("cer$cer$" = $rec, "nil$nil$" = $lin)
+///  8..12  offset x (i32)          12..16  offset y (i32)
+/// 16..18  group level (u16)       18..20  local file version (u16)
+/// 20..24  original width (i32)    24..28  original height (i32)
+/// 28..32  current width (i32)     32..36  current height (i32)
+/// 36..40  attr flags (u32)
+/// 40..42  rotation angle (i16)    42..46  center x    46..50  center y
+/// ```
+///
+/// (verified: cur/org sizes decode to plausible HWPUNIT extents and
+/// center == cur/2 in every sampled record)
 pub fn parse_shape_component(data: &[u8], shape_type: ShapeType) -> Option<ShapeComponent> {
-    if data.len() < 24 {
+    if data.len() < 36 {
         return None;
     }
 
-    let _flags = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    let rotation = i16::from_le_bytes([data[4], data[5]]);
-    let x = i32::from_le_bytes([data[6], data[7], data[8], data[9]]);
-    let y = i32::from_le_bytes([data[10], data[11], data[12], data[13]]);
-    let width = u32::from_le_bytes([data[14], data[15], data[16], data[17]]);
-    let height = u32::from_le_bytes([data[18], data[19], data[20], data[21]]);
-    let x_flip = data.get(22).map(|&b| b != 0).unwrap_or(false);
-    let y_flip = data.get(23).map(|&b| b != 0).unwrap_or(false);
+    let x = i32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+    let y = i32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+    let cur_w = i32::from_le_bytes([data[28], data[29], data[30], data[31]]);
+    let cur_h = i32::from_le_bytes([data[32], data[33], data[34], data[35]]);
+    let rotation = if data.len() >= 42 {
+        i16::from_le_bytes([data[40], data[41]])
+    } else {
+        0
+    };
 
     Some(ShapeComponent {
         shape_type,
         x,
         y,
-        width,
-        height,
-        rotation: rotation / 10,  // Convert from degrees * 10 to degrees
-        x_flip,
-        y_flip,
+        width: cur_w.max(0) as u32,
+        height: cur_h.max(0) as u32,
+        rotation: rotation / 10, // degrees * 10 → degrees (spec convention)
+        x_flip: false,
+        y_flip: false,
         bin_data_id: None,
         alt_text: None,
     })
+}
+
+/// Original + current extents from a SHAPE_COMPONENT payload (see the
+/// layout table on [`parse_shape_component`]). Returned separately because
+/// the RECTANGLE/LINE child payload coordinates live in the *original*
+/// coordinate space and get scaled to the current extent — exactly the
+/// HWPX `orgSz`/`curSz` pair `shape_svg` consumes.
+pub fn parse_shape_component_sizes(data: &[u8]) -> Option<((i32, i32), (i32, i32))> {
+    if data.len() < 36 {
+        return None;
+    }
+    let v = |off: usize| i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+    Some(((v(20), v(24)), (v(28), v(32))))
+}
+
+/// SHAPE_COMPONENT_RECTANGLE payload (33 bytes, verified against
+/// shaperect.hwp / aligns.hwp / matrix.hwp — every instance is exactly 33):
+/// round-corner ratio (1 byte) + four corner points (i32 x/y each), the
+/// same 4-point geometry HWPX exposes as `hc:pt0`..`hc:pt3`.
+pub fn parse_rect_payload(data: &[u8]) -> Option<[(i32, i32); 4]> {
+    if data.len() < 33 {
+        return None;
+    }
+    let p = |off: usize| {
+        (
+            i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]),
+            i32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]),
+        )
+    };
+    Some([p(1), p(9), p(17), p(25)])
+}
+
+/// SHAPE_COMPONENT_LINE payload (20 bytes, verified against shapeline.hwp):
+/// start x/y + end x/y (i32 each) + attribute word.
+pub fn parse_line_payload(data: &[u8]) -> Option<((i32, i32), (i32, i32))> {
+    if data.len() < 16 {
+        return None;
+    }
+    let v = |off: usize| i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
+    Some(((v(0), v(4)), (v(8), v(12))))
 }
 
 /// Parse SHAPE_COMPONENT_PICTURE record
@@ -1011,6 +1062,52 @@ mod tests {
         let (shape, bin_id) = parse_picture_component(&data).expect("parses");
         assert_eq!(bin_id, 2);
         assert_eq!(shape.bin_data_id, Some(2));
+    }
+
+    #[test]
+    fn test_parse_shape_component_real_layout() {
+        // Real SHAPE_COMPONENT prefix captured from shaperect.hwp (M3
+        // investigation): "$rec" ctrl id doubled, offset 0,0, org/cur
+        // 11865×8214, rotation 0, center = cur/2.
+        let hex = "636572246365722400000000000000000000010\
+0592e000016200000592e000016200000000000000000\
+2c1700000b100000";
+        let data: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let shape = parse_shape_component(&data, ShapeType::Rectangle).expect("parses");
+        assert_eq!((shape.x, shape.y), (0, 0));
+        assert_eq!((shape.width, shape.height), (11865, 8214));
+        assert_eq!(shape.rotation, 0);
+        let ((ow, oh), (cw, ch)) = parse_shape_component_sizes(&data).expect("sizes");
+        assert_eq!((ow, oh, cw, ch), (11865, 8214, 11865, 8214));
+    }
+
+    #[test]
+    fn test_parse_rect_payload_real_bytes() {
+        // shaperect.hwp SHAPE_COMPONENT_RECTANGLE #1 (33 bytes): round=0 +
+        // 4 corners (0,0) (11865,0) (11865,8214) (0,8214).
+        let hex = "000000000000000000592e000000000000592e0000162000000000000016200000";
+        let data: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(data.len(), 33);
+        let pts = parse_rect_payload(&data).expect("parses");
+        assert_eq!(pts, [(0, 0), (11865, 0), (11865, 8214), (0, 8214)]);
+    }
+
+    #[test]
+    fn test_parse_line_payload_real_bytes() {
+        // shapeline.hwp SHAPE_COMPONENT_LINE #1 (20 bytes): (0,0)→(2100,2050).
+        let hex = "0000000000000000340800000208000000000000";
+        let data: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let ((x1, y1), (x2, y2)) = parse_line_payload(&data).expect("parses");
+        assert_eq!((x1, y1, x2, y2), (0, 0, 2100, 2050));
     }
 
     #[test]

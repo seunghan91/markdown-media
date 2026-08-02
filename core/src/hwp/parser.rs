@@ -4,9 +4,12 @@ use super::record::{
     parse_char_shape, parse_para_char_shape, extract_para_text_formatted,
     parse_cell_list_header, parse_picture_component, CellSpan,
     CharShape, ParaCharShapeMapping,
+    parse_shape_component_sizes, parse_rect_payload, parse_line_payload,
     HWPTAG_PARA_TEXT, HWPTAG_PARA_HEADER, HWPTAG_TABLE, HWPTAG_LIST_HEADER,
     HWPTAG_PARA_CHAR_SHAPE, HWPTAG_CHAR_SHAPE, HWPTAG_PARA_SHAPE, HWPTAG_CTRL_HEADER,
-    HWPTAG_SHAPE_COMPONENT_PICTURE, HWPTAG_BIN_DATA, HWPTAG_EQEDIT,
+    HWPTAG_SHAPE_COMPONENT, HWPTAG_SHAPE_COMPONENT_PICTURE,
+    HWPTAG_SHAPE_COMPONENT_RECTANGLE, HWPTAG_SHAPE_COMPONENT_LINE,
+    HWPTAG_BIN_DATA, HWPTAG_EQEDIT,
 };
 use crate::ir::{blocks_to_markdown, IRBlock, IRCell, IRTable};
 use std::collections::HashMap;
@@ -20,6 +23,20 @@ pub struct HwpParser {
     char_shapes: HashMap<u32, CharShape>,
     /// Paragraph shape definitions from DocInfo (outline_level per paraShapeId)
     para_shapes: HashMap<u32, ParaShapeInfo>,
+    /// Pure drawing shapes collected during `extract_blocks` (P2-M3):
+    /// binary SHAPE_COMPONENT_RECTANGLE/LINE payloads re-synthesized as
+    /// HWPX-equivalent XML fragments so the CLI can render them through the
+    /// same `shape_svg` emitter the HWPX path uses.
+    collected_shapes: Vec<HwpShapeData>,
+}
+
+/// One collected HWP drawing shape: `id` matches the `![{id}](assets/{id})`
+/// reference the IR emits; `xml` is a synthesized HWPX-style fragment
+/// consumable by `crate::shape_svg::shape_to_svg`.
+#[derive(Debug, Clone)]
+pub struct HwpShapeData {
+    pub id: String,
+    pub xml: String,
 }
 
 /// Minimal ParaShape info extracted from DocInfo
@@ -37,6 +54,7 @@ impl HwpParser {
             ole_reader,
             char_shapes: HashMap::new(),
             para_shapes: HashMap::new(),
+            collected_shapes: Vec::new(),
         })
     }
 
@@ -50,6 +68,7 @@ impl HwpParser {
             ole_reader,
             char_shapes: HashMap::new(),
             para_shapes: HashMap::new(),
+            collected_shapes: Vec::new(),
         })
     }
 
@@ -305,7 +324,7 @@ impl HwpParser {
     /// new `HWPTAG_TABLE`, end-of-section trailing flush), same
     /// `LIST_HEADER` cell placement, same `gso` / `fn` / `en` subtree
     /// skipping to prevent duplicate emission.
-    fn parse_section_records_to_blocks(&self, data: &[u8]) -> Vec<IRBlock> {
+    fn parse_section_records_to_blocks(&mut self, data: &[u8]) -> Vec<IRBlock> {
         let mut parser = RecordParser::new(data);
         let records = parser.parse_all();
 
@@ -353,6 +372,25 @@ impl HwpParser {
                                 extract_subtree_text(&records, i, 200, "\n")
                             {
                                 push_paragraph(&mut blocks, box_text);
+                            } else if let Some(xml) = extract_subtree_shape(&records, i, 200) {
+                                // Pure drawing shape (no picture, no text) —
+                                // synthesize an HWPX-style fragment so main.rs
+                                // renders it via shape_svg (P2-M3). Mirrors
+                                // the HWPX textbox policy: shapes with text
+                                // were already consumed by the branch above.
+                                let n = self.collected_shapes.len() + 1;
+                                let id = format!("shape{n}");
+                                self.collected_shapes.push(HwpShapeData { id: id.clone(), xml });
+                                blocks.push(IRBlock::Image {
+                                    alt: id,
+                                    kind: crate::ir::MediaKind::Shape,
+                                    src: None,
+                                    width: None,
+                                    height: None,
+                                    original_name: None,
+                                    caption: None,
+                                    inline: true,
+                                });
                             }
                             let end = subtree_end(&records, i, 200);
                             i = end;
@@ -1163,6 +1201,7 @@ impl HwpParser {
             images,
             tables,
             metadata,
+            shapes: std::mem::take(&mut self.collected_shapes),
         })
     }
 }
@@ -1845,6 +1884,58 @@ struct SubtreeImage {
     height: Option<u32>,
 }
 
+/// Walk a gso ctrl's subtree looking for a pure drawing shape (P2-M3):
+/// a SHAPE_COMPONENT record (org/cur extents) followed by a
+/// SHAPE_COMPONENT_RECTANGLE or SHAPE_COMPONENT_LINE geometry payload.
+/// Returns a synthesized HWPX-style XML fragment for `shape_svg`.
+///
+/// Only called after the picture and text-box branches have both missed, so
+/// anything found here is a shape that previously vanished silently.
+/// ELLIPSE/POLYGON/CURVE payloads have no sample in the corpus and stay
+/// unhandled (M3 scope = verified-by-real-bytes only).
+fn extract_subtree_shape(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> Option<String> {
+    if ctrl_idx >= records.len() {
+        return None;
+    }
+    let ctrl_level = records[ctrl_idx].level;
+    let end = (ctrl_idx + max_lookahead + 1).min(records.len());
+
+    let mut sizes: Option<((i32, i32), (i32, i32))> = None;
+    for r in records.iter().take(end).skip(ctrl_idx + 1) {
+        if r.level <= ctrl_level {
+            break;
+        }
+        match r.tag_id {
+            HWPTAG_SHAPE_COMPONENT => {
+                sizes = parse_shape_component_sizes(&r.data);
+            }
+            HWPTAG_SHAPE_COMPONENT_RECTANGLE => {
+                let pts = parse_rect_payload(&r.data)?;
+                let ((ow, oh), (cw, ch)) = sizes?;
+                if cw <= 0 || ch <= 0 {
+                    return None;
+                }
+                return Some(format!(
+                    r#"<hp:rect><hp:orgSz width="{ow}" height="{oh}"/><hp:curSz width="{cw}" height="{ch}"/><hc:pt0 x="{x0}" y="{y0}"/><hc:pt1 x="{x1}" y="{y1}"/><hc:pt2 x="{x2}" y="{y2}"/><hc:pt3 x="{x3}" y="{y3}"/></hp:rect>"#,
+                    x0 = pts[0].0, y0 = pts[0].1,
+                    x1 = pts[1].0, y1 = pts[1].1,
+                    x2 = pts[2].0, y2 = pts[2].1,
+                    x3 = pts[3].0, y3 = pts[3].1,
+                ));
+            }
+            HWPTAG_SHAPE_COMPONENT_LINE => {
+                let ((x1, y1), (x2, y2)) = parse_line_payload(&r.data)?;
+                let ((ow, oh), (cw, ch)) = sizes?;
+                return Some(format!(
+                    r#"<hp:line><hp:orgSz width="{ow}" height="{oh}"/><hp:curSz width="{cw}" height="{ch}"/><hp:startPt x="{x1}" y="{y1}"/><hp:endPt x="{x2}" y="{y2}"/></hp:line>"#,
+                ));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn extract_subtree_image_id(records: &[HwpRecord], ctrl_idx: usize, max_lookahead: usize) -> Option<SubtreeImage> {
     if ctrl_idx >= records.len() {
         return None;
@@ -2486,6 +2577,9 @@ pub struct MdmDocument {
     pub images: Vec<ImageData>,
     pub tables: Vec<TableData>,
     pub metadata: Metadata,
+    /// Pure drawing shapes (P2-M3) — synthesized HWPX-style fragments the
+    /// CLI renders to SVG assets via `shape_svg` (same wiring as HWPX).
+    pub shapes: Vec<HwpShapeData>,
 }
 
 impl MdmDocument {

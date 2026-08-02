@@ -1201,6 +1201,52 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                             mdx_content = mdx_content.replace(&md_img, &replacement);
                         }
                     }
+
+                    // Pure drawing shapes (P2-M3): IR emits them as
+                    // `![shapeN](assets/shapeN)` with the synthesized HWPX
+                    // fragment carried in `mdm.shapes` — render via the same
+                    // shape_svg emitter the HWPX path uses and rewrite.
+                    let mut shape_saved = 0usize;
+                    for shape in &mdm.shapes {
+                        let md_ref = format!("![{id}](assets/{id})", id = shape.id);
+                        if !mdx_content.contains(&md_ref) {
+                            continue;
+                        }
+                        match shape_svg::shape_to_svg(&shape.xml) {
+                            Some(svg) => {
+                                let meta = AssetMetadata {
+                                    width: Some((svg.width_pt * 96.0 / 72.0).round() as u32),
+                                    height: Some((svg.height_pt * 96.0 / 72.0).round() as u32),
+                                    alt_text: Some(svg.alt.clone()),
+                                    format: Some("svg".to_string()),
+                                    ..Default::default()
+                                };
+                                let hash_filename = mv2.add_asset(svg.svg.as_bytes(), MediaType::Shape, "svg", None, meta);
+                                if let Some(asset) = asset_by_filename(&mv2, &hash_filename) {
+                                    if let Err(e) = save_asset_file(output, asset, svg.svg.as_bytes()) {
+                                        eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", shape.id, e);
+                                    } else {
+                                        shape_saved += 1;
+                                        if verbose {
+                                            println!("  \u{1f4d0} Saved: {} ({} bytes)", asset.src, svg.svg.len());
+                                        }
+                                    }
+                                    let replacement = format!("![{}]({})", svg.alt, asset.src);
+                                    mdx_content = mdx_content.replace(&md_ref, &replacement);
+                                }
+                            }
+                            None => {
+                                eprintln!(
+                                    "  \u{26a0}\u{fe0f}  shape '{}' could not be rendered to SVG — reference left unresolved",
+                                    shape.id
+                                );
+                            }
+                        }
+                    }
+                    if shape_saved > 0 {
+                        println!("  \u{2713} Extracted {} shapes to assets/images/", shape_saved);
+                    }
+
                     let unresolved = count_unresolved_image_refs(&mdx_content);
                     if unresolved > 0 {
                         eprintln!(
