@@ -166,6 +166,8 @@ pub struct PdfImage {
 pub enum ImageFormat {
     Jpeg,
     Png,
+    /// JPEG 2000 (`/JPXDecode`) — passed through unchanged.
+    Jp2,
     Raw,  // Uncompressed or unknown format
 }
 
@@ -982,26 +984,75 @@ impl PdfParser {
                     continue;
                 }
 
-                // Determine format from filter
-                let filter: Option<Vec<u8>> = dict.get(b"Filter")
+                // `/ImageMask true` XObjects are 1-bit paint stencils, not
+                // pictures — in practice they pair with a same-size colour
+                // image as its alpha channel (verified in
+                // bench/fixtures/mixed/press_brief_mixed.pdf: Im1/Im3/Im5 are
+                // masks for Im2/Im4/Im6). Emitting them standalone yields
+                // black rectangles and duplicate assets, so skip them.
+                // (Compositing a mask onto its sibling needs content-stream
+                // analysis — out of scope here.)
+                let is_mask = dict
+                    .get(b"ImageMask")
                     .ok()
-                    .and_then(|f| f.as_name().ok())
-                    .map(|n| n.to_vec());
+                    .and_then(|m| m.as_bool().ok())
+                    .unwrap_or(false);
+                if is_mask {
+                    continue;
+                }
+
+                // `/Filter` is a name (`/FlateDecode`) OR an array of names
+                // (`/Filter [/FlateDecode]`, or a chain like
+                // `[/ASCII85Decode /DCTDecode]`). Reading only the name form
+                // silently misfiled every array-form image as Raw.
+                let filter: Option<Vec<u8>> = dict
+                    .get(b"Filter")
+                    .ok()
+                    .and_then(|f| match f.as_name() {
+                        Ok(n) => Some(n.to_vec()),
+                        // For a chain, the last filter is the image codec.
+                        Err(_) => f.as_array().ok().and_then(|arr| {
+                            arr.iter()
+                                .rev()
+                                .find_map(|o| o.as_name().ok())
+                                .map(|n| n.to_vec())
+                        }),
+                    });
 
                 let (format, data) = match filter.as_deref() {
                     Some(b"DCTDecode") => {
                         // JPEG - use raw stream content
                         (ImageFormat::Jpeg, stream.content.clone())
                     }
-                    Some(b"FlateDecode") => {
-                        // Compressed data - decompress
-                        match decompress_flate(&stream.content) {
-                            Ok(decompressed) => (ImageFormat::Raw, decompressed),
-                            Err(_) => continue,
+                    Some(b"JPXDecode") => {
+                        // JPEG 2000 — pass through with its own extension so
+                        // it isn't mistaken for a viewable PNG/JPEG.
+                        (ImageFormat::Jp2, stream.content.clone())
+                    }
+                    Some(b"FlateDecode") | Some(b"LZWDecode") | None => {
+                        // Decompressed (or already-plain) *pixel samples* —
+                        // not an image file. Wrap them in a PNG container
+                        // using the XObject's own geometry, otherwise the
+                        // asset is a headerless blob no renderer can open.
+                        let raw = if filter.is_some() {
+                            match decompress_flate(&stream.content) {
+                                Ok(d) => d,
+                                Err(_) => continue,
+                            }
+                        } else {
+                            stream.content.clone()
+                        };
+                        let spec = PixelSpec::from_dict(dict, &doc, width, height);
+                        match spec.and_then(|s| s.to_png(&raw)) {
+                            Some(png) => (ImageFormat::Png, png),
+                            // Unsupported colour space / bit depth: keep the
+                            // bytes but leave the format Raw so the caller
+                            // emits a note instead of a broken image link.
+                            None => (ImageFormat::Raw, raw),
                         }
                     }
                     _ => {
-                        // Raw or unsupported format
+                        // Unknown codec — preserve bytes, flag as Raw.
                         (ImageFormat::Raw, stream.content.clone())
                     }
                 };
@@ -1438,6 +1489,311 @@ fn get_pdf_string(_doc: &lopdf::Document, dict: &lopdf::Dictionary, key: &[u8]) 
 fn decompress_flate(data: &[u8]) -> io::Result<Vec<u8>> {
     let mut decoder = ZlibDecoder::new(data);
     read_limited(&mut decoder, MAX_PDF_STREAM)
+}
+
+/// Geometry needed to turn a PDF image XObject's decompressed *samples* into
+/// a real image file.
+///
+/// A `/FlateDecode`d image stream is not a PNG — it is raw component samples
+/// with no header, so writing it straight to `foo.raw` produces a file no
+/// renderer, browser or vision model can open. This carries the XObject's
+/// `/Width`, `/Height`, `/BitsPerComponent` and colour space so the samples
+/// can be wrapped in a minimal PNG container instead.
+#[derive(Debug, Clone)]
+struct PixelSpec {
+    width: u32,
+    height: u32,
+    bits: u8,
+    kind: PixelKind,
+}
+
+#[derive(Debug, Clone)]
+enum PixelKind {
+    Gray,
+    Rgb,
+    Cmyk,
+    /// `/Indexed` — palette bytes (RGB triples) plus the base component count.
+    Indexed(Vec<u8>),
+}
+
+impl PixelSpec {
+    /// Read the colour space and bit depth off an image XObject dictionary.
+    /// `/ICCBased` streams are reduced to their `/N` component count, which
+    /// is what actually determines the sample layout.
+    fn from_dict(
+        dict: &lopdf::Dictionary,
+        doc: &lopdf::Document,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        let bits = dict
+            .get(b"BitsPerComponent")
+            .ok()
+            .and_then(|b| b.as_i64().ok())
+            .unwrap_or(8) as u8;
+
+        // `/ImageMask true` images are 1-bit stencils regardless of colour space.
+        let is_mask = dict
+            .get(b"ImageMask")
+            .ok()
+            .and_then(|m| m.as_bool().ok())
+            .unwrap_or(false);
+        if is_mask {
+            return Some(PixelSpec { width, height, bits: 1, kind: PixelKind::Gray });
+        }
+
+        let cs = dict.get(b"ColorSpace").ok()?;
+        let kind = Self::color_space_kind(cs, doc)?;
+        Some(PixelSpec { width, height, bits, kind })
+    }
+
+    fn color_space_kind(obj: &lopdf::Object, doc: &lopdf::Document) -> Option<PixelKind> {
+        // Resolve one level of indirection.
+        let resolved = match obj {
+            lopdf::Object::Reference(id) => doc.get_object(*id).ok()?,
+            other => other,
+        };
+        match resolved {
+            lopdf::Object::Name(n) => match n.as_slice() {
+                b"DeviceGray" | b"CalGray" | b"G" => Some(PixelKind::Gray),
+                b"DeviceRGB" | b"CalRGB" | b"RGB" => Some(PixelKind::Rgb),
+                b"DeviceCMYK" | b"CMYK" => Some(PixelKind::Cmyk),
+                _ => None,
+            },
+            lopdf::Object::Array(arr) => {
+                let family = arr.first()?.as_name().ok()?;
+                match family {
+                    b"ICCBased" => {
+                        let stream_ref = arr.get(1)?;
+                        let stream = match stream_ref {
+                            lopdf::Object::Reference(id) => doc.get_object(*id).ok()?,
+                            other => other,
+                        };
+                        let n = stream
+                            .as_stream()
+                            .ok()?
+                            .dict
+                            .get(b"N")
+                            .ok()?
+                            .as_i64()
+                            .ok()?;
+                        match n {
+                            1 => Some(PixelKind::Gray),
+                            3 => Some(PixelKind::Rgb),
+                            4 => Some(PixelKind::Cmyk),
+                            _ => None,
+                        }
+                    }
+                    b"Indexed" | b"I" => {
+                        // [/Indexed base hival lookup] — expand via the palette.
+                        let base = Self::color_space_kind(arr.get(1)?, doc)?;
+                        let lookup = match arr.get(3)? {
+                            lopdf::Object::String(s, _) => s.clone(),
+                            lopdf::Object::Reference(id) => {
+                                let o = doc.get_object(*id).ok()?;
+                                match o {
+                                    lopdf::Object::String(s, _) => s.clone(),
+                                    lopdf::Object::Stream(st) => {
+                                        st.decompressed_content().unwrap_or_else(|_| st.content.clone())
+                                    }
+                                    _ => return None,
+                                }
+                            }
+                            lopdf::Object::Stream(st) => st
+                                .decompressed_content()
+                                .unwrap_or_else(|_| st.content.clone()),
+                            _ => return None,
+                        };
+                        // Normalize the palette to RGB triples.
+                        let palette = match base {
+                            PixelKind::Rgb => lookup,
+                            PixelKind::Gray => lookup.iter().flat_map(|&g| [g, g, g]).collect(),
+                            PixelKind::Cmyk => lookup
+                                .chunks_exact(4)
+                                .flat_map(|c| cmyk_to_rgb(c[0], c[1], c[2], c[3]))
+                                .collect(),
+                            PixelKind::Indexed(_) => return None,
+                        };
+                        Some(PixelKind::Indexed(palette))
+                    }
+                    b"DeviceN" | b"Separation" => {
+                        // Alternate space decides the layout; 1 component in.
+                        Some(PixelKind::Gray)
+                    }
+                    b"DeviceGray" | b"CalGray" => Some(PixelKind::Gray),
+                    b"DeviceRGB" | b"CalRGB" => Some(PixelKind::Rgb),
+                    b"DeviceCMYK" => Some(PixelKind::Cmyk),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Wrap raw samples in a PNG. Returns `None` when the sample buffer is
+    /// too short for the declared geometry or the layout isn't supported —
+    /// the caller then keeps the bytes as-is rather than emitting a
+    /// half-decoded image.
+    fn to_png(&self, samples: &[u8]) -> Option<Vec<u8>> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        // Rows are padded to byte boundaries in PDF image data.
+        let comps = match self.kind {
+            PixelKind::Gray | PixelKind::Indexed(_) => 1,
+            PixelKind::Rgb => 3,
+            PixelKind::Cmyk => 4,
+        };
+        let row_bits = w * comps * self.bits as usize;
+        let row_bytes = row_bits.div_ceil(8);
+        if samples.len() < row_bytes * h {
+            return None;
+        }
+
+        // Expand every supported layout to 8-bit gray or RGB.
+        let (out, channels): (Vec<u8>, u8) = match (&self.kind, self.bits) {
+            (PixelKind::Gray, 8) => (
+                (0..h).flat_map(|y| samples[y * row_bytes..y * row_bytes + w].to_vec()).collect(),
+                1,
+            ),
+            (PixelKind::Gray, 1) => {
+                let mut out = Vec::with_capacity(w * h);
+                for y in 0..h {
+                    let row = &samples[y * row_bytes..(y + 1) * row_bytes];
+                    for x in 0..w {
+                        let bit = (row[x / 8] >> (7 - (x % 8))) & 1;
+                        out.push(if bit == 1 { 255 } else { 0 });
+                    }
+                }
+                (out, 1)
+            }
+            (PixelKind::Rgb, 8) => (
+                (0..h)
+                    .flat_map(|y| samples[y * row_bytes..y * row_bytes + w * 3].to_vec())
+                    .collect(),
+                3,
+            ),
+            (PixelKind::Cmyk, 8) => {
+                let mut out = Vec::with_capacity(w * h * 3);
+                for y in 0..h {
+                    let row = &samples[y * row_bytes..y * row_bytes + w * 4];
+                    for px in row.chunks_exact(4) {
+                        out.extend_from_slice(&cmyk_to_rgb(px[0], px[1], px[2], px[3]));
+                    }
+                }
+                (out, 3)
+            }
+            (PixelKind::Indexed(palette), bits @ (1 | 2 | 4 | 8)) => {
+                let mut out = Vec::with_capacity(w * h * 3);
+                let max_idx = palette.len() / 3;
+                for y in 0..h {
+                    let row = &samples[y * row_bytes..(y + 1) * row_bytes];
+                    for x in 0..w {
+                        let idx = read_bits(row, x, bits) as usize;
+                        let base = idx.min(max_idx.saturating_sub(1)) * 3;
+                        if base + 2 < palette.len() {
+                            out.extend_from_slice(&palette[base..base + 3]);
+                        } else {
+                            out.extend_from_slice(&[0, 0, 0]);
+                        }
+                    }
+                }
+                (out, 3)
+            }
+            _ => return None,
+        };
+
+        Some(encode_png(self.width, self.height, channels, &out))
+    }
+}
+
+/// Read the `x`-th `bits`-wide sample out of a packed row.
+fn read_bits(row: &[u8], x: usize, bits: u8) -> u8 {
+    match bits {
+        8 => row.get(x).copied().unwrap_or(0),
+        4 => {
+            let b = row.get(x / 2).copied().unwrap_or(0);
+            if x % 2 == 0 { b >> 4 } else { b & 0x0F }
+        }
+        2 => {
+            let b = row.get(x / 4).copied().unwrap_or(0);
+            (b >> (6 - 2 * (x % 4))) & 0x03
+        }
+        1 => {
+            let b = row.get(x / 8).copied().unwrap_or(0);
+            (b >> (7 - (x % 8))) & 1
+        }
+        _ => 0,
+    }
+}
+
+/// Naive CMYK → RGB (no colour management; PDF's DeviceCMYK is
+/// device-dependent anyway).
+fn cmyk_to_rgb(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
+    let f = |v: u8| 255u32.saturating_sub(v as u32);
+    let kf = f(k);
+    [
+        ((f(c) * kf) / 255) as u8,
+        ((f(m) * kf) / 255) as u8,
+        ((f(y) * kf) / 255) as u8,
+    ]
+}
+
+/// Minimal PNG writer (8-bit gray or RGB, no interlacing, filter type 0).
+///
+/// Deliberately hand-rolled on `flate2` rather than the `image` crate: PDF
+/// support must not start depending on the optional `image-processing`
+/// feature just to emit a container.
+fn encode_png(width: u32, height: u32, channels: u8, pixels: &[u8]) -> Vec<u8> {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write as _;
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in bytes {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    fn chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut body = Vec::with_capacity(4 + data.len());
+        body.extend_from_slice(tag);
+        body.extend_from_slice(data);
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&crc32(&body).to_be_bytes());
+    }
+
+    let color_type: u8 = if channels == 1 { 0 } else { 2 };
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, color_type, 0, 0, 0]);
+
+    let stride = width as usize * channels as usize;
+    let mut raw = Vec::with_capacity((stride + 1) * height as usize);
+    for y in 0..height as usize {
+        raw.push(0); // filter: None
+        let start = y * stride;
+        raw.extend_from_slice(&pixels[start..(start + stride).min(pixels.len())]);
+    }
+    let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+    let _ = enc.write_all(&raw);
+    let idat = enc.finish().unwrap_or_default();
+
+    let mut out = Vec::with_capacity(idat.len() + 64);
+    out.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &idat);
+    chunk(&mut out, b"IEND", &[]);
+    out
 }
 
 /// Extract numeric value from PDF object (handles both Integer and Real types)
@@ -2322,6 +2678,7 @@ impl ImageFormat {
         match self {
             ImageFormat::Jpeg => "jpg",
             ImageFormat::Png => "png",
+            ImageFormat::Jp2 => "jp2",
             ImageFormat::Raw => "raw",
         }
     }
@@ -3157,7 +3514,95 @@ mod tests {
     fn test_image_format_extension() {
         assert_eq!(ImageFormat::Jpeg.extension(), "jpg");
         assert_eq!(ImageFormat::Png.extension(), "png");
+        assert_eq!(ImageFormat::Jp2.extension(), "jp2");
         assert_eq!(ImageFormat::Raw.extension(), "raw");
+    }
+
+    /// The PNG container written around decompressed PDF samples must be a
+    /// real, signature-bearing PNG — the whole point of the P3-1 fix is that
+    /// a headerless `.raw` dump is unopenable by every renderer.
+    #[test]
+    fn test_encode_png_emits_valid_container() {
+        // 2×2 RGB: red, green / blue, white
+        let px: Vec<u8> = vec![
+            255, 0, 0, 0, 255, 0, //
+            0, 0, 255, 255, 255, 255,
+        ];
+        let png = encode_png(2, 2, 3, &px);
+        assert_eq!(&png[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert_eq!(&png[12..16], b"IHDR");
+        // IHDR payload: width, height, bit depth 8, colour type 2 (truecolour)
+        assert_eq!(&png[16..20], &2u32.to_be_bytes());
+        assert_eq!(&png[20..24], &2u32.to_be_bytes());
+        assert_eq!(png[24], 8);
+        assert_eq!(png[25], 2);
+        assert!(png.ends_with(&[0xAE, 0x42, 0x60, 0x82]), "IEND CRC");
+    }
+
+    #[test]
+    fn test_encode_png_grayscale_colour_type() {
+        let png = encode_png(2, 1, 1, &[0, 255]);
+        assert_eq!(png[25], 0, "1 channel must declare colour type 0");
+    }
+
+    #[test]
+    fn test_pixel_spec_expands_1bit_gray_to_png() {
+        // 8×1 stencil row: alternating bits → alternating black/white pixels.
+        let spec = PixelSpec {
+            width: 8,
+            height: 1,
+            bits: 1,
+            kind: PixelKind::Gray,
+        };
+        let png = spec.to_png(&[0b1010_1010]).expect("1bpc gray wraps");
+        assert_eq!(&png[0..4], &[0x89, b'P', b'N', b'G']);
+    }
+
+    #[test]
+    fn test_pixel_spec_rejects_truncated_samples() {
+        let spec = PixelSpec {
+            width: 100,
+            height: 100,
+            bits: 8,
+            kind: PixelKind::Rgb,
+        };
+        // Far fewer bytes than 100*100*3 — must refuse rather than emit a
+        // half-filled image.
+        assert!(spec.to_png(&[0u8; 32]).is_none());
+    }
+
+    #[test]
+    fn test_indexed_palette_expands_to_rgb() {
+        // 2-entry palette (red, blue), 1 bit per index, 2 pixels.
+        let spec = PixelSpec {
+            width: 2,
+            height: 1,
+            bits: 1,
+            kind: PixelKind::Indexed(vec![255, 0, 0, 0, 0, 255]),
+        };
+        let png = spec.to_png(&[0b0100_0000]).expect("indexed wraps");
+        assert_eq!(png[25], 2, "indexed expands to truecolour");
+    }
+
+    #[test]
+    fn test_cmyk_to_rgb_endpoints() {
+        assert_eq!(cmyk_to_rgb(0, 0, 0, 0), [255, 255, 255], "no ink = white");
+        assert_eq!(cmyk_to_rgb(0, 0, 0, 255), [0, 0, 0], "full K = black");
+        assert_eq!(cmyk_to_rgb(255, 0, 0, 0), [0, 255, 255], "full C = cyan");
+    }
+
+    #[test]
+    fn test_read_bits_packing() {
+        // 0b1101_0010 read as 1/2/4/8-bit samples
+        let row = [0b1101_0010u8];
+        assert_eq!(read_bits(&row, 0, 1), 1);
+        assert_eq!(read_bits(&row, 1, 1), 1);
+        assert_eq!(read_bits(&row, 2, 1), 0);
+        assert_eq!(read_bits(&row, 0, 2), 0b11);
+        assert_eq!(read_bits(&row, 1, 2), 0b01);
+        assert_eq!(read_bits(&row, 0, 4), 0b1101);
+        assert_eq!(read_bits(&row, 1, 4), 0b0010);
+        assert_eq!(read_bits(&row, 0, 8), 0b1101_0010);
     }
 
     #[test]
