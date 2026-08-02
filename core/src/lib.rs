@@ -54,6 +54,7 @@ pub mod legal;
 pub mod form;
 pub mod manifest;
 pub mod shape_svg;
+pub mod chart_data;
 #[cfg(feature = "wmf")]
 pub mod wmf;
 pub mod utils;

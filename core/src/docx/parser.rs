@@ -195,6 +195,18 @@ fn emu_to_px(emu: u32) -> u32 {
     emu / 9525
 }
 
+/// Resolve a relationship `Target` to its ZIP part path (P2-M4).
+/// Targets in `word/_rels/document.xml.rels` are relative to `word/`
+/// (`charts/chart1.xml`), except when already absolute (`/word/…`).
+fn normalize_word_part(target: &str) -> String {
+    let t = target.trim_start_matches("./");
+    match t.strip_prefix('/') {
+        Some(abs) => abs.to_string(),
+        None if t.starts_with("word/") => t.to_string(),
+        None => format!("word/{t}"),
+    }
+}
+
 /// rel_id -> (alt, width_px, height_px), collected from `w:drawing` elements in the
 /// body while parsing, then used to backfill `DocxImage` metadata in `extract_images()`.
 type BodyImageInfo = HashMap<String, (Option<String>, Option<u32>, Option<u32>)>;
@@ -1107,6 +1119,8 @@ impl<R: Read + Seek> DocxParser<R> {
         let mut current_cell: Option<TableCell> = None;
         // For collecting formatted cell content (runs converted to markdown)
         let mut cell_inlines: Vec<InlineElement> = Vec::new();
+        // `<c:chart r:id>` reference seen inside the current w:drawing (P2-M4)
+        let mut drawing_chart_rel: Option<String> = None;
 
         let mut in_paragraph = false;
         let mut in_run = false;
@@ -1210,6 +1224,7 @@ impl<R: Read + Seek> DocxParser<R> {
                         b"drawing" if in_run => {
                             in_drawing = true;
                             drawing_rel_id = None;
+                            drawing_chart_rel = None;
                             drawing_alt = None;
                             drawing_cx = None;
                             drawing_cy = None;
@@ -1237,6 +1252,17 @@ impl<R: Read + Seek> DocxParser<R> {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"embed" {
                                     drawing_rel_id = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
+                        // `<c:chart r:id="rIdN"/>` inside a drawing's
+                        // graphicData — a chartSpace part reference, not an
+                        // image (P2-M4). `blip`'s `r:embed` and this `r:id`
+                        // are mutually exclusive within one drawing.
+                        b"chart" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    drawing_chart_rel = Some(String::from_utf8_lossy(&attr.value).to_string());
                                 }
                             }
                         }
@@ -1499,6 +1525,16 @@ impl<R: Read + Seek> DocxParser<R> {
                                 }
                             }
                         }
+                        // `<c:chart r:id="rIdN"/>` — self-closing in practice,
+                        // so this Empty-event arm is the one that actually
+                        // fires (the Start arm above mirrors it defensively).
+                        b"chart" if in_drawing => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.local_name().as_ref() == b"id" {
+                                    drawing_chart_rel = Some(String::from_utf8_lossy(&attr.value).to_string());
+                                }
+                            }
+                        }
                         b"pStyle" if in_paragraph => {
                             for attr in e.attributes().flatten() {
                                 if attr.key.local_name().as_ref() == b"val" {
@@ -1655,6 +1691,31 @@ impl<R: Read + Seek> DocxParser<R> {
                         }
                         b"drawing" => {
                             if in_drawing {
+                                // Chart drawing (P2-M4): resolve the chartSpace
+                                // part and inline its data as a Markdown table,
+                                // so the plotted numbers stay readable text
+                                // instead of vanishing with the drawing. An
+                                // unreadable/unparseable part is skipped.
+                                if let Some(rel_id) = drawing_chart_rel.take() {
+                                    if let Some(part) = self
+                                        .relationships
+                                        .get(&rel_id)
+                                        .map(|t| normalize_word_part(t))
+                                    {
+                                        if let Ok(xml) = self.read_archive_file(&part) {
+                                            if let Some(data) = crate::chart_data::parse_chart_xml(&xml) {
+                                                let elem = InlineElement::Run(TextRun {
+                                                    text: format!("\n\n{}\n", data.to_markdown_table().trim_end()),
+                                                    ..Default::default()
+                                                });
+                                                current_para.inlines.push(elem.clone());
+                                                if in_table_cell {
+                                                    cell_inlines.push(elem);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 if let Some(rel_id) = drawing_rel_id.take() {
                                     let filename = self.relationships.get(&rel_id)
                                         .map(|target| {
@@ -1683,6 +1744,7 @@ impl<R: Read + Seek> DocxParser<R> {
                                 }
                                 in_drawing = false;
                                 drawing_rel_id = None;
+                                drawing_chart_rel = None;
                                 drawing_alt = None;
                                 drawing_cx = None;
                                 drawing_cy = None;
@@ -2409,6 +2471,34 @@ mod tests {
             InlineElement::ImageRef { filename, .. } => assert_eq!(filename, "image1.wmf"),
             _ => unreachable!(),
         }
+    }
+
+    /// P2-M4: `<c:chart r:id>` inside a `w:drawing` resolves through
+    /// `word/_rels/document.xml.rels` to `word/charts/chart1.xml`, whose
+    /// chartSpace data lands in the body as a Markdown table — same parser
+    /// the HWPX path uses.
+    #[test]
+    fn test_docx_chart_becomes_markdown_table() {
+        let mut parser = DocxParser::open(fixture_path("chart_basic.docx"))
+            .expect("chart_basic.docx should open");
+        let doc = parser.parse().expect("chart_basic.docx should parse");
+        let md = doc.to_markdown();
+
+        assert!(
+            md.contains("**차트: 부서별 집계 (세로 막대(묶은))**"),
+            "chart caption missing:\n{md}"
+        );
+        assert!(md.contains("| 항목 | 영업부 | 기술부 |"), "header row missing:\n{md}");
+        assert!(md.contains("| 상반기 | 340 | 280 |"), "data row missing:\n{md}");
+        assert!(md.contains("| 하반기 | 410 | 305 |"), "data row missing:\n{md}");
+        // Surrounding paragraphs must survive untouched.
+        assert!(md.contains("차트 데이터 추출 테스트 문서입니다."), "{md}");
+        assert!(md.contains("차트 뒤에 이어지는 문단입니다."), "{md}");
+        // A chart is not an image — nothing should land in the media list.
+        assert!(
+            parser.extract_images().expect("images").is_empty(),
+            "chart parts must not be extracted as images"
+        );
     }
 
     #[test]

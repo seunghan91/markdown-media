@@ -635,3 +635,39 @@ fn golden_emphasis_dot_preserved_as_mark() {
     check_golden("emphasis_dot_preserved", &sections);
 }
 
+
+// ─── P2-M4: chart data extraction (generator round-trip) ─────────────────────
+
+/// HWPX charts are `Chart/chartN.xml` OOXML chartSpace parts referenced by
+/// `<hp:chart chartIDRef>`. The corpus has no Hancom-authored chart file, so
+/// this round-trips through the writer (`hwpx_gen`, itself a port of
+/// claw-hwp's Hancom-compatible chart assembly): generate → parse → assert
+/// the plotted numbers came back as a Markdown table rather than an opaque
+/// `[차트: chartN]` marker.
+#[test]
+fn chart_part_becomes_markdown_data_table() {
+    let md = "# 분기 실적\n\n\
+              ```chart\n\
+              type: column\n\
+              cat: 1분기, 2분기, 3분기\n\
+              목표: 120, 150, 180\n\
+              실적: 110, 165, 175\n\
+              ```\n\n\
+              뒤따르는 문단.\n";
+    let bytes = mdm_core::hwpx_gen::markdown_to_hwpx(md, &mdm_core::hwpx_gen::GenOptions::default())
+        .expect("chart HWPX generates");
+
+    let mut parser = HwpxParser::from_bytes(bytes).expect("generated HWPX parses");
+    let doc = parser.parse().expect("parse succeeds");
+    let body = doc.sections.join("\n");
+
+    assert!(
+        !body.contains("[차트:"),
+        "chart marker should be replaced by its data table:\n{body}"
+    );
+    assert!(body.contains("**차트: 세로 막대(묶은)**"), "caption missing:\n{body}");
+    assert!(body.contains("| 항목 | 목표 | 실적 |"), "header row missing:\n{body}");
+    assert!(body.contains("| 1분기 | 120 | 110 |"), "row 1 missing:\n{body}");
+    assert!(body.contains("| 3분기 | 180 | 175 |"), "row 3 missing:\n{body}");
+    assert!(body.contains("뒤따르는 문단."), "surrounding text lost:\n{body}");
+}

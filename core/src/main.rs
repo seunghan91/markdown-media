@@ -19,6 +19,7 @@ mod watch;
 mod ocr;
 mod manifest;
 mod shape_svg;
+mod chart_data;
 #[cfg(feature = "wmf")]
 mod wmf;
 mod pdf;

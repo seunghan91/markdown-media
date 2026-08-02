@@ -108,7 +108,14 @@ def make_minimal_emf() -> bytes:
     return bytes(buf)
 
 
-def content_types_xml() -> str:
+def content_types_xml(extra_parts: list[str] | None = None) -> str:
+    overrides = ""
+    for part in extra_parts or []:
+        if "chart" in part:
+            overrides += (
+                f'\n  <Override PartName="/{part}" ContentType='
+                '"application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>'
+            )
     return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -119,8 +126,8 @@ def content_types_xml() -> str:
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
-  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
-</Types>"""
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>{overrides}
+</Types>""".replace("{overrides}", overrides)
 
 
 def package_rels_xml() -> str:
@@ -132,11 +139,17 @@ def package_rels_xml() -> str:
 </Relationships>"""
 
 
-def document_rels_xml(image_rels: list[tuple[str, str]]) -> str:
+def document_rels_xml(
+    image_rels: list[tuple[str, str]],
+    extra_rels: list[tuple[str, str, str]] | None = None,
+) -> str:
+    base = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     rels = "\n".join(
-        f'  <Relationship Id="{rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/{target}"/>'
+        f'  <Relationship Id="{rid}" Type="{base}/image" Target="media/{target}"/>'
         for rid, target in image_rels
     )
+    for rid, kind, target in extra_rels or []:
+        rels += f'\n  <Relationship Id="{rid}" Type="{base}/{kind}" Target="{target}"/>'
     return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 {rels}
@@ -268,12 +281,17 @@ def write_docx(
     body_paragraphs: list[str],
     media: dict[str, bytes],
     image_rels: list[tuple[str, str]],
+    extra_parts: dict[str, str] | None = None,
+    extra_rels: list[tuple[str, str, str]] | None = None,
 ) -> None:
+    """extra_parts: ZIP 경로 → XML 본문. extra_rels: (rId, 관계타입 접미사, Target)."""
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("[Content_Types].xml", content_types_xml())
+        zf.writestr("[Content_Types].xml", content_types_xml(list((extra_parts or {}).keys())))
         zf.writestr("_rels/.rels", package_rels_xml())
         zf.writestr("word/document.xml", document_xml(body_paragraphs))
-        zf.writestr("word/_rels/document.xml.rels", document_rels_xml(image_rels))
+        zf.writestr("word/_rels/document.xml.rels", document_rels_xml(image_rels, extra_rels))
+        for part_path, part_xml in (extra_parts or {}).items():
+            zf.writestr(part_path, part_xml)
         zf.writestr("word/styles.xml", styles_xml())
         zf.writestr("docProps/core.xml", core_props_xml())
         zf.writestr("docProps/app.xml", app_props_xml())
@@ -353,10 +371,88 @@ def build_images_metafile() -> None:
     )
 
 
+def chart_space_xml() -> str:
+    """OOXML DrawingML chartSpace — HWPX의 Chart/chartN.xml과 동일 스키마.
+    (hwpx_gen이 생성하는 실물 chart1.xml 구조를 그대로 축약)"""
+    NS_C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+
+    def ser(idx: int, col: str, name: str, values: list[int]) -> str:
+        cats = ["상반기", "하반기"]
+        cat_pts = "".join(
+            f'<c:pt idx="{i}"><c:v>{c}</c:v></c:pt>' for i, c in enumerate(cats)
+        )
+        val_pts = "".join(
+            f'<c:pt idx="{i}"><c:v>{v}</c:v></c:pt>' for i, v in enumerate(values)
+        )
+        return (
+            f'<c:ser><c:idx val="{idx}"/><c:order val="{idx}"/>'
+            f'<c:tx><c:strRef><c:f>Sheet1!${col}$1</c:f><c:strCache>'
+            f'<c:ptCount val="1"/><c:pt idx="0"><c:v>{name}</c:v></c:pt>'
+            f"</c:strCache></c:strRef></c:tx>"
+            f'<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$3</c:f><c:strCache>'
+            f'<c:ptCount val="{len(cats)}"/>{cat_pts}</c:strCache></c:strRef></c:cat>'
+            f'<c:val><c:numRef><c:f>Sheet1!${col}$2:${col}$3</c:f><c:numCache>'
+            f'<c:formatCode>General</c:formatCode><c:ptCount val="{len(values)}"/>'
+            f"{val_pts}</c:numCache></c:numRef></c:val></c:ser>"
+        )
+
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<c:chartSpace xmlns:c="{NS_C}" xmlns:a="{NS_A}" xmlns:r="{NS_R}">'
+        "<c:chart>"
+        '<c:title><c:tx><c:rich><a:p><a:r><a:t>부서별 집계</a:t></a:r></a:p>'
+        "</c:rich></c:tx></c:title>"
+        '<c:plotArea><c:layout/><c:barChart><c:barDir val="col"/>'
+        '<c:grouping val="clustered"/><c:varyColors val="0"/>'
+        + ser(0, "B", "영업부", [340, 410])
+        + ser(1, "C", "기술부", [280, 305])
+        + "</c:barChart></c:plotArea></c:chart></c:chartSpace>"
+    )
+
+
+def chart_drawing_paragraph(rid: str, doc_pr_id: int, cx: int, cy: int) -> str:
+    """<w:drawing> 안에 a:graphicData/c:chart(r:id) 를 담은 차트 참조 문단."""
+    NS_C = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+    return (
+        "<w:p><w:r><w:drawing>"
+        f'<wp:inline distT="0" distB="0" distL="0" distR="0">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/>'
+        f'<wp:docPr id="{doc_pr_id}" name="차트 {doc_pr_id}" descr="분기 집계 차트"/>'
+        "<a:graphic><a:graphicData "
+        f'uri="{NS_C}">'
+        f'<c:chart xmlns:c="{NS_C}" r:id="{rid}"/>'
+        "</a:graphicData></a:graphic>"
+        "</wp:inline></w:drawing></w:r></w:p>"
+    )
+
+
+def build_chart_basic() -> None:
+    """차트 1개(본문 wp:inline 참조) + 앞뒤 텍스트 문단 (P2-M4).
+
+    word/charts/chart1.xml 은 HWPX Chart/chartN.xml 과 같은 OOXML chartSpace
+    스키마라, 같은 chart_data 파서로 데이터 표가 나오는지 검증하는 픽스처.
+    """
+    paragraphs = [
+        text_paragraph("차트 데이터 추출 테스트 문서입니다."),
+        chart_drawing_paragraph(rid="rIdChart1", doc_pr_id=1, cx=5486400, cy=3200400),
+        text_paragraph("차트 뒤에 이어지는 문단입니다."),
+    ]
+    write_docx(
+        FIXTURES_DIR / "chart_basic.docx",
+        paragraphs,
+        media={},
+        image_rels=[],
+        extra_parts={"word/charts/chart1.xml": chart_space_xml()},
+        extra_rels=[("rIdChart1", "chart", "charts/chart1.xml")],
+    )
+
+
 if __name__ == "__main__":
     build_images_basic()
     build_images_anchor()
     build_images_metafile()
+    build_chart_basic()
     print(f"생성됨: {FIXTURES_DIR / 'images_basic.docx'}")
     print(f"생성됨: {FIXTURES_DIR / 'images_anchor.docx'}")
     print(f"생성됨: {FIXTURES_DIR / 'images_metafile.docx'}")
+    print(f"생성됨: {FIXTURES_DIR / 'chart_basic.docx'}")

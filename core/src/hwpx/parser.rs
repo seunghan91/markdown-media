@@ -79,6 +79,10 @@ struct ShapeCollector {
     shapes: Vec<ShapeAsset>,
     chart_count: usize,
     ole_count: usize,
+    /// `[차트: chartN]` marker id → the `chartIDRef` ZIP part path it points
+    /// at (P2-M4). The part bytes are read later, in `parse()`, where the
+    /// archive is reachable.
+    chart_refs: Vec<(String, String)>,
 }
 
 /// HWPX document parser, generic over the underlying reader type.
@@ -370,6 +374,35 @@ impl<R: Read + Seek> HwpxParser<R> {
                     section_idx += 1;
                 }
                 Err(_) => break,
+            }
+        }
+
+        // Charts (P2-M4): `<hp:chart chartIDRef="Chart/chartN.xml">` points at
+        // an OOXML chartSpace part. Its `c:numCache`/`c:strCache` blocks already
+        // hold the plotted numbers, so replace the `[차트: chartN]` marker with a
+        // Markdown data table rather than leaving an opaque reference — the
+        // values then survive into any downstream LLM/RAG pipeline as text.
+        // Substitution happens here (not in the CLI wiring pass like shapes)
+        // because a chart produces no asset file, and doing it parser-side means
+        // the library/Python/WASM consumers get the tables too.
+        // A part that's missing or unparseable leaves the marker untouched.
+        for (marker_id, part) in std::mem::take(&mut collector.chart_refs) {
+            let xml = match self.archive.by_name(&part) {
+                Ok(mut file) => match read_limited_to_string(&mut file, MAX_HWPX_XML) {
+                    Ok(x) => x,
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            };
+            let Some(data) = crate::chart_data::parse_chart_xml(&xml) else {
+                continue;
+            };
+            let marker = format!("[차트: {marker_id}]");
+            let table = data.to_markdown_table();
+            for s in &mut sections {
+                if s.contains(&marker) {
+                    *s = s.replace(&marker, &format!("\n\n{}\n", table.trim_end()));
+                }
             }
         }
 
@@ -1634,6 +1667,16 @@ fn walk_run_body(body: &str, collector: &mut ShapeCollector) -> String {
                 };
                 *count += 1;
                 let marker = format!("[{label}: {kind}{count}]");
+                if kind == "chart" {
+                    // `chartIDRef` is the chartSpace part path inside the ZIP
+                    // (e.g. `Chart/chart1.xml`) — remember it so `parse()` can
+                    // pull the data out into a Markdown table (P2-M4).
+                    if let Some(part) = extract_attr(&body[abs..tag_end], "chartIDRef") {
+                        collector
+                            .chart_refs
+                            .push((format!("{kind}{}", collector.chart_count), part));
+                    }
+                }
                 if !out.is_empty() && !out.ends_with(char::is_whitespace) {
                     out.push(' ');
                 }
