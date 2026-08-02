@@ -817,6 +817,71 @@ fn strip_sec_pr(xml: &str) -> String {
 /// The caption is text the author wrote (`< 성과점검 흐름도 >`), so it beats
 /// anything inferred — but it is rare: 5 of 222 corpus HWPX files carry
 /// `hp:caption` at all.
+/// Hoist pure drawing shapes out of a table's XML before the table parser
+/// runs (P4-2).
+///
+/// Pictures and shapes reach the output through two parallel text paths;
+/// `walk_run_body` handles body runs and got shape support in P2-M1, but
+/// table cells go through `extract_runs_text`, which has no collector — so
+/// 121 pure shapes across the corpus vanished silently. Threading a collector
+/// through the whole table/cell chain would touch every signature, so instead
+/// each pure shape subtree is swapped for an `<hp:t>` marker in a copy of the
+/// table XML: the existing extractor then carries the marker through as
+/// ordinary cell text, and main.rs rewrites it to the SVG asset exactly as it
+/// does for body shapes.
+///
+/// Shapes carrying `<hp:drawText>` are left untouched — their text is already
+/// picked up by the cell extractor, and emitting an asset too would duplicate
+/// it (same textbox policy as the body path).
+fn hoist_cell_shapes(table_xml: &str, collector: &mut ShapeCollector) -> String {
+    const SHAPE_TAGS: [&str; 7] = [
+        "rect", "ellipse", "line", "polygon", "curv", "arc", "container",
+    ];
+    let mut out = String::with_capacity(table_xml.len());
+    let mut pos = 0usize;
+    loop {
+        // Earliest shape opening at or after `pos`, boundary-safe.
+        let next = SHAPE_TAGS
+            .iter()
+            .filter_map(|t| {
+                find_tag_open(table_xml, pos, &format!("<hp:{t}")).map(|i| (i, *t))
+            })
+            .min_by_key(|(i, _)| *i);
+        let Some((abs, tag)) = next else { break };
+
+        let Some(tag_end_rel) = table_xml[abs..].find('>') else { break };
+        let tag_end = abs + tag_end_rel + 1;
+        if table_xml[abs..tag_end].ends_with("/>") {
+            out.push_str(&table_xml[pos..tag_end]);
+            pos = tag_end;
+            continue;
+        }
+        let open_tag = format!("<hp:{tag} ");
+        let close_tag = format!("</hp:{tag}>");
+        let Some(close) = find_matching_close(table_xml, tag_end, &open_tag, &close_tag) else {
+            break;
+        };
+        let subtree_end = close + close_tag.len();
+        let subtree = &table_xml[abs..subtree_end];
+
+        out.push_str(&table_xml[pos..abs]);
+        if subtree.contains("<hp:drawText") {
+            out.push_str(subtree);
+        } else {
+            let n = collector.shapes.len() + 1;
+            let id = format!("shape{n}");
+            collector.shapes.push(ShapeAsset {
+                id: id.clone(),
+                xml: subtree.to_string(),
+            });
+            out.push_str(&format!("<hp:t>[도형: {id}]</hp:t>"));
+        }
+        pos = subtree_end;
+    }
+    out.push_str(&table_xml[pos..]);
+    out
+}
+
 /// Text of the `<hp:caption>` starting at `at`, bounded by its own closing
 /// tag. Bounding matters: without it the extractor runs past `</hp:caption>`
 /// and swallows the following table body into the caption.
@@ -927,6 +992,9 @@ fn parse_section_xml(
             let scan_from = tbl_pos + "<hp:tbl ".len();
             if let Some(tbl_end) = find_matching_close(xml, scan_from, "<hp:tbl ", "</hp:tbl>") {
                 let table_xml = &xml[tbl_pos..tbl_end + 9];
+                // Pure shapes inside cells become `[도형: shapeN]` markers
+                // before parsing — the cell extractor has no collector (P4-2).
+                let table_xml = &hoist_cell_shapes(table_xml, collector);
 
                 let mut hoisted: Vec<Table> = Vec::new();
                 if let Some(table) = parse_table_ctx(
