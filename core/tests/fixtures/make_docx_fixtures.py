@@ -52,28 +52,45 @@ def make_solid_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
 
 
 def make_minimal_wmf() -> bytes:
-    """Standard (non-placeable) WMF: a bare METAHEADER + a single META_EOF
-    record — no D7CDC69A placeable-header magic (that's a separate,
-    Windows-added wrapper the parser's WMF sniff doesn't require).
+    """Standard (non-placeable) WMF with actual drawable content — no
+    D7CDC69A placeable-header magic (that's a separate, Windows-added
+    wrapper the parser's WMF sniff doesn't require).
 
     METAHEADER (18 bytes): mtType(WORD) mtHeaderSize(WORD) mtVersion(WORD)
     mtSize(DWORD, in WORDs) mtNoObjects(WORD) mtMaxRecord(DWORD, in WORDs)
-    mtNoParameters(WORD). META_EOF record (6 bytes): rdSize(DWORD)=3 (WORDs)
-    + rdFunction(WORD)=0x0000.
+    mtNoParameters(WORD). Records: [rdSize(DWORD, WORDs)][rdFunction(WORD)]
+    [params...]. mtType=1 시작을 유지해 기존 바이트-보존 assert와 호환.
+
+    P2-M2: SETWINDOWEXT + SETWINDOWORG + RECTANGLE 레코드를 넣어
+    WMF→SVG 변환기가 실제 요소를 그리도록 함 (헤더+EOF 뿐이면 퇴화
+    SVG 가드가 None으로 강등해 변환 없이 원본 보존됨).
     """
-    eof_record = struct.pack("<IH", 3, 0x0000)
-    total_words = 9 + len(eof_record) // 2
+
+    def record(function: int, params: list[int]) -> bytes:
+        size_words = 3 + len(params)  # rdSize(2 WORDs) + rdFunction + params
+        return struct.pack("<IH", size_words, function) + b"".join(
+            struct.pack("<H", p) for p in params
+        )
+
+    records = (
+        record(0x020C, [200, 300])          # SETWINDOWEXT (y, x)
+        + record(0x020B, [0, 0])            # SETWINDOWORG
+        + record(0x041B, [150, 100, 50, 20])  # RECTANGLE (bottom right top left)
+        + record(0x0000, [])                # META_EOF
+    )
+    max_record_words = 7  # RECTANGLE: 3 + 4 params
+    total_words = 9 + len(records) // 2
     header = struct.pack(
         "<HHHIHIH",
-        1,            # mtType = memory metafile
-        9,            # mtHeaderSize (WORDs)
-        0x0300,       # mtVersion = Windows 3.0
-        total_words,  # mtSize (WORDs)
-        0,            # mtNoObjects
-        3,            # mtMaxRecord (WORDs) — the EOF record itself
-        0,            # mtNoParameters (reserved)
+        1,                 # mtType = memory metafile
+        9,                 # mtHeaderSize (WORDs)
+        0x0300,            # mtVersion = Windows 3.0
+        total_words,       # mtSize (WORDs)
+        0,                 # mtNoObjects
+        max_record_words,  # mtMaxRecord (WORDs)
+        0,                 # mtNoParameters (reserved)
     )
-    return header + eof_record
+    return header + records
 
 
 def make_minimal_emf() -> bytes:

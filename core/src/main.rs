@@ -731,6 +731,31 @@ fn save_manifest(manifest: &ManifestV2, output_dir: &Path, stem: &str) -> io::Re
     Ok(())
 }
 
+/// WMF로 보이는 바이트를 SVG로 변환 시도한다 (P2-M2).
+///
+/// 확장자 `wmf` 또는 placeable(0x9AC6CDD7)/표준 METAHEADER 시그니처일 때만
+/// 변환기를 태우고, 변환 실패·퇴화 SVG는 None — 호출자는 원본 바이트를
+/// 그대로 보존한다(무언 소실 금지). EMF는 여기서 다루지 않는다(보존 종착).
+#[cfg(feature = "wmf")]
+fn try_wmf_to_svg(data: &[u8], ext: &str) -> Option<Vec<u8>> {
+    let looks_wmf = ext.eq_ignore_ascii_case("wmf")
+        || data.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A])
+        || (data.len() >= 18
+            && (data[0] == 0x01 || data[0] == 0x02)
+            && data[1] == 0x00
+            && data[2] == 0x09
+            && data[3] == 0x00);
+    if !looks_wmf {
+        return None;
+    }
+    wmf::convert_wmf_to_svg(data)
+}
+
+#[cfg(not(feature = "wmf"))]
+fn try_wmf_to_svg(_data: &[u8], _ext: &str) -> Option<Vec<u8>> {
+    None
+}
+
 /// Save a single asset file under `output_dir` using the asset's `src` path.
 fn save_asset_file(output_dir: &Path, asset: &manifest::Asset, data: &[u8]) -> io::Result<()> {
     let full_path = output_dir.join(&asset.src);
@@ -1064,18 +1089,28 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
             // to the manifest's content-hash filename, so the mdx rewrite pass
             // below can resolve `![imageN](assets/imageN)` to a real asset path.
             let mut bin_id_map: HashMap<u16, String> = HashMap::new();
+            // idx → WMF에서 변환된 SVG 바이트 (저장 루프가 원본 대신 사용)
+            let mut converted_svg: HashMap<usize, Vec<u8>> = HashMap::new();
             for (fallback_idx, img) in mdm.images.iter().enumerate() {
-                let ext = Path::new(&img.name)
+                let orig_ext = Path::new(&img.name)
                     .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("bin");
+                let (data, ext, format): (&[u8], &str, String) =
+                    match try_wmf_to_svg(&img.data, orig_ext) {
+                        Some(svg) => {
+                            converted_svg.insert(fallback_idx, svg);
+                            (converted_svg[&fallback_idx].as_slice(), "svg", "svg".into())
+                        }
+                        None => (&img.data, orig_ext, img.format.clone()),
+                    };
                 let meta = AssetMetadata {
-                    format: Some(img.format.clone()),
+                    format: Some(format),
                     width: img.width,
                     height: img.height,
                     ..Default::default()
                 };
-                let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, Some(&img.name), meta);
+                let hash_filename = mv2.add_asset(data, MediaType::Image, ext, Some(&img.name), meta);
                 image_map.push((img.name.clone(), hash_filename.clone()));
 
                 match hwp::ole::parse_bin_data_id(&img.original_name) {
@@ -1103,12 +1138,15 @@ fn convert_file(input: &Path, output: &Path, format: &str, extract_images: bool,
                 for (idx, img) in mdm.images.iter().enumerate() {
                     if let Some((_, hash_filename)) = image_map.get(idx) {
                         if let Some(asset) = asset_by_filename(&mv2, hash_filename) {
-                            if let Err(e) = save_asset_file(output, asset, &img.data) {
+                            let bytes: &[u8] = converted_svg
+                                .get(&idx)
+                                .map_or(img.data.as_slice(), Vec::as_slice);
+                            if let Err(e) = save_asset_file(output, asset, bytes) {
                                 eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", img.name, e);
                             } else {
                                 saved += 1;
                                 if verbose {
-                                    println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, img.data.len());
+                                    println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, bytes.len());
                                 }
                             }
                         }
@@ -1406,26 +1444,31 @@ fn convert_hwpx(input: &Path, output: &Path, format: &str, _extract_images: bool
                     let mut image_map: Vec<(String, String)> = Vec::new();
                     for img in &doc.image_info {
                         let filename = img.path.split('/').next_back().unwrap_or(&img.id);
-                        let ext = Path::new(filename)
+                        let orig_ext = Path::new(filename)
                             .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("bin");
+                        let (data, ext): (std::borrow::Cow<[u8]>, &str) =
+                            match try_wmf_to_svg(&img.data, orig_ext) {
+                                Some(svg) => (std::borrow::Cow::Owned(svg), "svg"),
+                                None => (std::borrow::Cow::Borrowed(&img.data[..]), orig_ext),
+                            };
                         let meta = AssetMetadata {
                             format: Some(ext.to_string()),
                             width: img.width,
                             height: img.height,
                             ..Default::default()
                         };
-                        let hash_filename = mv2.add_asset(&img.data, MediaType::Image, ext, Some(filename), meta);
+                        let hash_filename = mv2.add_asset(&data, MediaType::Image, ext, Some(filename), meta);
                         image_map.push((img.id.clone(), hash_filename.clone()));
 
                         if let Some(asset) = asset_by_filename(&mv2, &hash_filename) {
-                            if let Err(e) = save_asset_file(output, asset, &img.data) {
+                            if let Err(e) = save_asset_file(output, asset, &data) {
                                 eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", filename, e);
                             } else {
                                 saved_count += 1;
                                 if verbose {
-                                    println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, img.data.len());
+                                    println!("  \u{1f4f7} Saved: {} ({} bytes)", asset.src, data.len());
                                 }
                             }
                         }
@@ -1858,10 +1901,15 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                     let mut saved = 0usize;
                     for image in &doc.images {
                         if let Some(ref data) = image.data {
-                            let ext = Path::new(&image.filename)
+                            let orig_ext = Path::new(&image.filename)
                                 .extension()
                                 .and_then(|e| e.to_str())
                                 .unwrap_or("bin");
+                            let (data, ext): (std::borrow::Cow<[u8]>, &str) =
+                                match try_wmf_to_svg(data, orig_ext) {
+                                    Some(svg) => (std::borrow::Cow::Owned(svg), "svg"),
+                                    None => (std::borrow::Cow::Borrowed(&data[..]), orig_ext),
+                                };
                             let meta = AssetMetadata {
                                 width: image.width,
                                 height: image.height,
@@ -1869,12 +1917,12 @@ fn convert_docx(input: &Path, output: &Path, format: &str, verbose: bool) {
                                 alt_text: image.alt_text.clone(),
                                 ..Default::default()
                             };
-                            let hash_filename = mv2.add_asset(data, MediaType::Image, ext, Some(&image.filename), meta);
+                            let hash_filename = mv2.add_asset(&data, MediaType::Image, ext, Some(&image.filename), meta);
                             image_map.push((image.id.clone(), hash_filename.clone()));
 
                             // Save image using manifest asset path
                             if let Some(asset) = asset_by_filename(&mv2, &hash_filename) {
-                                if let Err(e) = save_asset_file(output, asset, data) {
+                                if let Err(e) = save_asset_file(output, asset, &data) {
                                     eprintln!("  \u{26a0}\u{fe0f}  Failed to save {}: {}", image.filename, e);
                                 } else {
                                     saved += 1;
