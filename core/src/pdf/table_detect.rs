@@ -1733,26 +1733,6 @@ pub fn detect_line_tables(
         if matrix.iter().all(|r| r.iter().all(|c| c.trim().is_empty())) {
             continue;
         }
-        // A header row with no data rows under it is a ruled title box, not a
-        // table. Korean government documents box their banners: `보도자료`, the
-        // press release headline, `Ⅰ` beside its chapter title, `사업 1 |
-        // 전자정부 표준화 체계 개선`.
-        //
-        // The obvious worry is demoting a legitimate one-row table — a contact
-        // block, a form summary. The corpus says otherwise: across all 16
-        // reference documents in `bench/ground_truth` there is **not one**
-        // table without data rows, while the detector produces them freely
-        // (11 of the 27 it finds in standards_plan). Real contact blocks do
-        // carry data rows — `담당부서 | 디지털기반안전과` comes through with
-        // three of them and is untouched here.
-        //
-        // Dropping the grid keeps its text: the renderer then emits the blocks
-        // inside it inline, which is what the reference documents have.
-        // Under-segmented grids get their reconstruction attempt above first,
-        // so a genuine table mis-cut into one row is rebuilt before this point.
-        if matrix.len() <= 1 {
-            continue;
-        }
         // Prefer the span-aware IR from the extracted cells.
         let ir = cells_to_ir_table(grid, &cells, &mut matrix);
         let pdf = matrix_to_pdf_table(&matrix, page, grid.bbox);
