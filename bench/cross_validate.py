@@ -23,6 +23,25 @@ class OutputSet:
     text: str
     tokens: set[str]
     lines: set[str]
+    dense: str = ""
+    """Whole output, whitespace stripped and lowercased — see `_dense`."""
+
+
+# Below this length a whitespace-free needle matches by coincidence.
+_MIN_DENSE_LEN = 12
+
+
+def _dense(s: str) -> str:
+    """Collapse a string to comparable form: no whitespace, lowercased.
+
+    Line and token equality both fall apart on Korean PDFs because parsers
+    disagree about where spaces go inside a phrase — MDM writes `투표연령 하향
+    (19 → 18 세)` where the external ones write `투표연령 하향(19→18세)`. Nothing
+    is missing, yet every such line counts as a miss. Comparing whitespace-free
+    substrings asks the question that actually matters: is this content present
+    at all?
+    """
+    return "".join(s.split()).lower()
 
 
 _MD_STRIP = ("# ", "## ", "### ", "#### ", "##### ", "###### ",
@@ -89,7 +108,8 @@ def run_all_adapters(pdf: Path, adapters: dict) -> list[OutputSet]:
         kwargs = {k: v for k, v in cfg.items() if k != "module"}
         res = mod.convert(pdf, **kwargs)
         toks, lines = _tokenize(res.markdown)
-        out.append(OutputSet(adapter=name, text=res.markdown, tokens=toks, lines=lines))
+        out.append(OutputSet(adapter=name, text=res.markdown, tokens=toks,
+                             lines=lines, dense=_dense(res.markdown)))
     return out
 
 
@@ -111,6 +131,17 @@ def analyze(outputs: list[OutputSet], primary: str = "mdm") -> dict:
     mdm_only_lines = mdm.lines - set.union(*(o.lines for o in others))
     mdm_only_tokens = mdm.tokens - set.union(*(o.tokens for o in others))
 
+    # The signal that survives whitespace disagreement: consensus content that
+    # is nowhere in MDM's output, not merely spaced or line-broken differently.
+    # Measured on changes_brochure, this cuts 32 "missing" lines down to the
+    # handful that are genuinely absent.
+    absent = sorted(
+        (l for l in consensus_lines
+         if len(_dense(l)) >= _MIN_DENSE_LEN and _dense(l) not in mdm.dense),
+        key=len,
+        reverse=True,
+    )
+
     return {
         "primary_lines": len(mdm.lines),
         "primary_tokens": len(mdm.tokens),
@@ -120,9 +151,11 @@ def analyze(outputs: list[OutputSet], primary: str = "mdm") -> dict:
         "missing_from_primary_tokens": len(missing_tokens),
         "primary_only_lines": len(mdm_only_lines),
         "primary_only_tokens": len(mdm_only_tokens),
+        "absent_from_primary": len(absent),
         # Sample a few for inspection
         "missing_samples": sorted(missing_from_mdm, key=len, reverse=True)[:5],
         "primary_only_samples": sorted(mdm_only_lines, key=len, reverse=True)[:5],
+        "absent_samples": absent[:8],
     }
 
 
@@ -148,17 +181,20 @@ def main() -> int:
     fixtures = {p.stem: p for p in fx_root.rglob("*.pdf")}
 
     if args.all:
-        print(f"{'fixture':<28} {'lines':>8} {'miss':>6} {'only':>6} {'miss%':>7}")
+        # `absent` is the column to read. `miss` counts line-equality failures,
+        # which whitespace differences dominate on Korean text.
+        print(f"{'fixture':<28} {'lines':>8} {'miss':>6} {'only':>6} {'absent':>7}")
+        totals = 0
         for stem, pdf in sorted(fixtures.items()):
             outs = run_all_adapters(pdf, adapters)
             a = analyze(outs)
             if not a:
                 continue
-            miss_pct = (a["missing_from_primary_lines"] / a["consensus_lines"] * 100
-                        if a["consensus_lines"] else 0.0)
+            totals += a["absent_from_primary"]
             print(f"{stem:<28} {a['primary_lines']:>8} "
                   f"{a['missing_from_primary_lines']:>6} {a['primary_only_lines']:>6} "
-                  f"{miss_pct:>6.1f}%")
+                  f"{a['absent_from_primary']:>7}")
+        print(f"\ncontent absent from MDM across all fixtures: {totals}")
         return 0
 
     if not args.fixture:
@@ -175,7 +211,12 @@ def main() -> int:
     print(f"# Cross-validation: {args.fixture}\n")
     print(f"MDM lines: {a['primary_lines']}, tokens: {a['primary_tokens']}")
     print(f"External consensus lines: {a['consensus_lines']}, tokens: {a['consensus_tokens']}")
-    print(f"\nMissing from MDM (external consensus MDM lacks):")
+    print(f"\nAbsent from MDM (consensus content nowhere in the output, "
+          f"whitespace ignored): {a['absent_from_primary']}")
+    for s in a["absent_samples"]:
+        print(f"    ! {s[:120]}")
+    print(f"\nMissing from MDM by line equality (whitespace-sensitive — mostly "
+          f"formatting, read `absent` above instead):")
     print(f"  lines: {a['missing_from_primary_lines']}, tokens: {a['missing_from_primary_tokens']}")
     for s in a["missing_samples"]:
         print(f"    - {s[:120]}")
