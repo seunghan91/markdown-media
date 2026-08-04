@@ -1733,6 +1733,33 @@ pub fn detect_line_tables(
         if matrix.iter().all(|r| r.iter().all(|c| c.trim().is_empty())) {
             continue;
         }
+        // A header row with no data rows under it is a ruled title box, not a
+        // table. Korean government documents box their banners: `보도자료`, the
+        // press release headline, `Ⅰ` beside its chapter title, `사업 1 |
+        // 전자정부 표준화 체계 개선`.
+        //
+        // The obvious worry is demoting a legitimate one-row table — a contact
+        // block, a form summary. The corpus says otherwise: across all 16
+        // reference documents in `bench/ground_truth` there is not one table
+        // without data rows, while the detector produces them freely (11 of the
+        // 27 it finds in standards_plan). Real contact blocks do carry data
+        // rows — `담당부서 | 디지털기반안전과` comes through with three of them
+        // and is untouched here.
+        //
+        // This shipped once as 6532e28 and was reverted the same morning. The
+        // rule was sound; what it exposed was not. These banner grids had been
+        // masking spurious nine-column cluster tables underneath them, and once
+        // the mask came off those tables scattered body text across a grid —
+        // fourteen sentences left the corpus while the bench score went *up*,
+        // because the reference documents contain the same spurious tables.
+        // Both halves of that trap are now closed: the projection-density gate
+        // in `detect_tables_from_positions` stops the cluster tables at the
+        // source, and the renderer no longer drops a block just because some
+        // table's region covers it (`table_carries`). Re-measured across the
+        // corpus, this rule now costs zero lost text.
+        if matrix.len() <= 1 {
+            continue;
+        }
         // Prefer the span-aware IR from the extracted cells.
         let ir = cells_to_ir_table(grid, &cells, &mut matrix);
         let pdf = matrix_to_pdf_table(&matrix, page, grid.bbox);
@@ -1811,6 +1838,16 @@ fn cells_to_ir_table(grid: &TableGrid, cells: &[ExtractedCell], matrix: &mut [Ve
 /// Merge line-based tables with text-cluster tables: a cluster table is
 /// dropped when its vertical span overlaps any line table on the same page
 /// (line-based geometry is more precise). Line tables come first.
+///
+/// The test is Y only, so what suppresses a cluster table is the *presence* of
+/// a line table in its band rather than anything about its own quality. That
+/// is how the banner-grid revert happened: dropping the banners removed the
+/// suppressor, and spurious cluster tables in the same band came back to life.
+/// Adding an X test would not fix it — cluster tables carry
+/// `x_left = -∞, x_right = +∞` because text runs give a start position and no
+/// extent, so every X comparison is trivially true. Judging them on their own
+/// merits is what the projection-density gate in `detect_tables_from_positions`
+/// now does, which is why the coupling here no longer decides correctness.
 pub fn merge_line_and_cluster(
     line_tables: Vec<PdfTable>,
     cluster_tables: Vec<PdfTable>,
