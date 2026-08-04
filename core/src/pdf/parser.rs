@@ -2470,6 +2470,9 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
 
     // ── Step 1: group texts into rows by Y proximity ──────────────────────
     const Y_TOLERANCE: f64 = 5.0;
+    // Share of rows that must fill at least half their columns. See the
+    // projection-density gate below for the corpus measurements behind it.
+    const MIN_DENSE_ROW_RATIO: f64 = 0.5;
     let mut rows: Vec<Vec<&PositionedText>> = Vec::new();
     for text in texts {
         let mut found_row = false;
@@ -2659,6 +2662,39 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
             if max_col_spacing > 180.0 {
                 continue;
             }
+        }
+
+        // Projection-density discriminator: in a real table most rows fill most
+        // of their columns. Prose projected onto anchor columns does not — a
+        // Korean PDF draws one visual line as several `Tj` runs, so a banner
+        // like `( 온라인 ) 2026. 4. 10.( 금 ) 11:00` becomes nine anchors, and
+        // every body paragraph below it then snaps two or three fragments onto
+        // that grid and scatters the rest.
+        //
+        // Rows count as full at half their columns. Note what that does and
+        // does not reach: `table_rows` already dropped every row with fewer
+        // than two non-empty cells above, so at 4 columns or fewer the half
+        // is met by construction and the ratio is exactly 1.000 — this gate
+        // is inert below 5 columns. That is the intended range. The failure
+        // being closed is column *over*-splitting, where a nine-way anchor
+        // grid scatters prose; a bogus two-column table is a different fault
+        // and this is not the check that catches it.
+        //
+        // Across the 27 cluster tables in `bench/fixtures`, the ≥5-column ones
+        // — the only ones the gate can judge — run 0.517 to 1.000 when genuine
+        // and sit at 0.238 (korean_press2 p1) and 0.286 (korean_plan /
+        // press_brief_mixed p1) when they swallowed body text. Nothing lands
+        // between 0.29 and 0.51, so 0.5 separates them with room on both sides.
+        //
+        // Dropping the table keeps its text: the renderer emits the rows as
+        // prose instead, which is where those 14 sentences went missing when
+        // 6532e28 removed the banner grids that had been masking these tables.
+        let dense_rows = table_rows
+            .iter()
+            .filter(|r| r.iter().filter(|c| !c.is_empty()).count() * 2 >= mode_cols)
+            .count();
+        if (dense_rows as f64) < table_rows.len() as f64 * MIN_DENSE_ROW_RATIO {
+            continue;
         }
 
         let (y_top, y_bottom) = row_ys
@@ -2966,6 +3002,42 @@ impl PdfDocument {
         candidates
     }
 
+    /// Whether table `ti` carries most of `text`, ignoring whitespace.
+    ///
+    /// Word by word against the whole table, not a substring match on the
+    /// joined block. A layout block is built from text runs grouped by Y, so
+    /// it routinely spans several cells and picks them up in an order the
+    /// table does not repeat; requiring the joined run to appear verbatim
+    /// reported "not carried" for text the table plainly showed, and the block
+    /// came out a second time as prose (46 duplicated lines across the corpus
+    /// against 12 before). Counting words instead asks the question that
+    /// matters — did this content survive into the table — and leaves the
+    /// arrangement to the table.
+    ///
+    /// A majority is enough. The block that goes missing when a grid is
+    /// dropped shares nothing with the table that swallowed it (`행정안전부는`
+    /// against a table of dates and agency names), so the two cases sit at
+    /// opposite ends and no finer cut is needed.
+    fn table_carries(&self, ti: usize, text: &str) -> bool {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if words.is_empty() {
+            return true;
+        }
+        let hay: String = self.tables[ti]
+            .rows
+            .iter()
+            .flatten()
+            .flat_map(|c| c.split_whitespace())
+            .collect();
+        let present = words.iter().filter(|w| hay.contains(*w)).count();
+        // A majority, except that a majority of two is one — and one word of a
+        // two-word block matching is exactly how a date or a heading fragment
+        // gets suppressed against a table that only holds its label. Short
+        // blocks have to match whole.
+        let needed = if words.len() <= 2 { words.len() } else { words.len().div_ceil(2) };
+        present >= needed
+    }
+
     /// Header/Footer regions (top/bottom 10%) are stripped.
     pub fn to_markdown_with_layout(&self) -> String {
         if self.layout.is_empty() {
@@ -3120,7 +3192,22 @@ impl PdfDocument {
                     force_new_paragraph = true;
                     last_y = self.tables[ti].y_bottom;
                 }
-                continue;
+                // Falling inside a table's region is not proof the table says
+                // the same thing. Dropping the block assumes it does, and when
+                // that assumption is wrong the sentence leaves the document
+                // entirely — the table was already emitted, so nothing takes
+                // its place. It happened here: removing a banner grid pushed a
+                // body paragraph into the Y-region of a table that had already
+                // been written, and `행정안전부는 국민이 일상에서 …` vanished.
+                //
+                // So only suppress the block when a covering table actually
+                // carries its text. Whitespace is ignored on both sides — the
+                // renderer respaces CJK, and the cells were joined from
+                // separate text runs, so the same sentence rarely agrees
+                // character for character.
+                if covered_by_tables.iter().any(|&ti| self.table_carries(ti, &elem.content)) {
+                    continue;
+                }
             }
 
             // Image elements
@@ -3964,6 +4051,130 @@ mod tests {
 
         let tables = detect_tables_from_positions(&texts, 1);
         assert!(tables.is_empty());
+    }
+
+    /// Rows of `n` text runs at the given Y, one run per anchor from the left.
+    fn runs(y: f64, xs: &[f64]) -> Vec<PositionedText> {
+        xs.iter()
+            .map(|&x| PositionedText {
+                text: format!("c{}", x as i64),
+                x,
+                y,
+                page: 1,
+                font_size: None,
+                font_name: None,
+            })
+            .collect()
+    }
+
+    /// Prose scattered across a wide anchor grid is not a table.
+    ///
+    /// This is the shape that cost the corpus fourteen sentences: a Korean
+    /// press banner drawn as nine separate text runs becomes nine anchor
+    /// columns, and the body paragraphs below it then snap two or three
+    /// fragments each onto that grid. The rows exist, they just do not fill.
+    #[test]
+    fn prose_projected_onto_wide_anchor_grid_is_rejected() {
+        const XS: [f64; 9] = [100.0, 150.0, 200.0, 250.0, 300.0, 350.0, 400.0, 450.0, 500.0];
+        let mut texts = Vec::new();
+        // Three full-width rows: enough for the mode gate to settle on 9.
+        for (i, y) in [700.0, 690.0, 680.0].iter().enumerate() {
+            let _ = i;
+            texts.extend(runs(*y, &XS));
+        }
+        // Body text: each row touches only a couple of anchors. Row lengths are
+        // kept distinct so none of them outvotes 9 for the mode.
+        texts.extend(runs(670.0, &XS[..2]));
+        texts.extend(runs(660.0, &XS[..2]));
+        texts.extend(runs(650.0, &XS[..3]));
+        texts.extend(runs(640.0, &XS[..3]));
+        texts.extend(runs(630.0, &XS[..4]));
+        texts.extend(runs(620.0, &XS[..4]));
+
+        let tables = detect_tables_from_positions(&texts, 1);
+        assert!(
+            tables.is_empty(),
+            "9-column grid with 3 of 9 rows filled should be rejected, got {:?}",
+            tables.iter().map(|t| (t.column_count, t.rows.len())).collect::<Vec<_>>()
+        );
+    }
+
+    /// The density gate must not take a genuine wide table with it.
+    #[test]
+    fn dense_wide_table_survives_the_density_gate() {
+        const XS: [f64; 9] = [100.0, 150.0, 200.0, 250.0, 300.0, 350.0, 400.0, 450.0, 500.0];
+        let mut texts = Vec::new();
+        for y in [700.0, 690.0, 680.0, 670.0, 660.0] {
+            texts.extend(runs(y, &XS));
+        }
+        // A couple of sparse rows, as real tables have — still a clear majority
+        // of rows filled.
+        texts.extend(runs(650.0, &XS[..2]));
+        texts.extend(runs(640.0, &XS[..2]));
+
+        let tables = detect_tables_from_positions(&texts, 1);
+        assert_eq!(tables.len(), 1, "5 of 7 rows filled is a table");
+        assert_eq!(tables[0].column_count, 9);
+    }
+
+    /// A table only suppresses the text it actually carries.
+    #[test]
+    fn table_carries_matches_on_words_not_layout() {
+        let doc = doc_with_tables(vec![PdfTable {
+            page: 1,
+            rows: vec![
+                vec!["보도시점".into(), "2026. 4. 10.".into()],
+                vec!["담당부서".into(), "참여혁신조직실".into()],
+            ],
+            column_count: 2,
+            y_top: 700.0,
+            y_bottom: 600.0,
+            x_left: 50.0,
+            x_right: 300.0,
+        }]);
+
+        // Carried, even though the block joins cells in its own order and
+        // spacing — this must stay suppressed or the table prints twice.
+        assert!(doc.table_carries(0, "담당부서 참여혁신조직실"));
+        assert!(doc.table_carries(0, "보도시점 2026. 4. 10."));
+        // Not carried: the sentence that went missing when its own grid was
+        // dropped and this table's region happened to cover it.
+        assert!(!doc.table_carries(0, "행정안전부는 국민이 일상에서 체감할 수 있는"));
+
+        // A majority of two is one, which would let a two-word block ride in on
+        // its label alone and take the other word out of the document with it.
+        assert!(!doc.table_carries(0, "담당부서 없는내용"));
+        assert!(!doc.table_carries(0, "보도시점 2027. 9. 30."));
+        // One word still has to be the word.
+        assert!(doc.table_carries(0, "담당부서"));
+        assert!(!doc.table_carries(0, "국가유산청"));
+    }
+
+    /// Text a covering table does not carry still reaches the output.
+    ///
+    /// Dropping a block because some table's region covers it assumes the
+    /// table repeats it. When that is wrong the sentence leaves the document
+    /// for good — the table was already emitted, so nothing takes its place.
+    #[test]
+    fn block_not_carried_by_its_covering_table_is_still_emitted() {
+        let mut doc = doc_with_tables(vec![PdfTable {
+            page: 1,
+            rows: vec![vec!["보도시점".into(), "2026. 4. 10.".into()]],
+            column_count: 2,
+            y_top: 700.0,
+            y_bottom: 600.0,
+            x_left: f64::NEG_INFINITY,
+            x_right: f64::INFINITY,
+        }]);
+        doc.layout = vec![
+            text_at(1, 690.0, (50.0, 300.0), "보도시점 2026. 4. 10."),
+            text_at(1, 650.0, (50.0, 300.0), "행정안전부는 국민이 일상에서 체감할 수 있는 제도를 선정했다."),
+        ];
+
+        let md = doc.to_markdown_with_layout();
+        assert!(md.contains("행정안전부는"), "uncarried block must survive:\n{md}");
+        // The carried block stays suppressed — the table already shows it.
+        assert_eq!(md.matches("보도시점").count(), 1, "carried text must not double:\n{md}");
     }
 
     #[test]
