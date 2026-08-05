@@ -2472,7 +2472,7 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
     const Y_TOLERANCE: f64 = 5.0;
     // Share of rows that must fill at least half their columns. See the
     // projection-density gate below for the corpus measurements behind it.
-    const MIN_DENSE_ROW_RATIO: f64 = 0.5;
+    const MIN_DENSE_ROW_RATIO: f64 = 0.4;
     let mut rows: Vec<Vec<&PositionedText>> = Vec::new();
     for text in texts {
         let mut found_row = false;
@@ -2684,7 +2684,23 @@ fn detect_tables_from_positions(texts: &[PositionedText], page: usize) -> Vec<Pd
         // — the only ones the gate can judge — run 0.517 to 1.000 when genuine
         // and sit at 0.238 (korean_press2 p1) and 0.286 (korean_plan /
         // press_brief_mixed p1) when they swallowed body text. Nothing lands
-        // between 0.29 and 0.51, so 0.5 separates them with room on both sides.
+        // between 0.29 and 0.51, and the threshold sits in the middle of that
+        // empty band. It was 0.5 first, which is the wrong end of it: the
+        // narrowest genuine table (korean_plan p6, 15 dense of 29 rows) cleared
+        // it by half a row, so one row losing a cell would have rejected a real
+        // table, while the far side kept six rows of slack. 0.4 leaves ~3.3
+        // rows on both sides of the same measurements and changes no verdict in
+        // the corpus.
+        //
+        // One variant was measured and rejected, so it does not get retried:
+        // taking the denominator from every row in the segment rather than only
+        // the rows that survived the ≥2-cells filter. That filter does drop
+        // scattered rows from numerator and denominator alike, which flatters
+        // exactly the prose-scattering case this gate exists to catch. But the
+        // segment also holds the prose around the table, and counting it
+        // collapses the empty band from 0.231 wide to 0.005 (genuine falls to
+        // 0.190, bogus rises only to 0.185). The paradox is real; closing it
+        // this way costs the separation that makes the gate work.
         //
         // Dropping the table keeps its text: the renderer emits the rows as
         // prose instead, which is where those 14 sentences went missing when
@@ -3018,6 +3034,11 @@ impl PdfDocument {
     /// dropped shares nothing with the table that swallowed it (`행정안전부는`
     /// against a table of dates and agency names), so the two cases sit at
     /// opposite ends and no finer cut is needed.
+    ///
+    /// `hay` is rebuilt per call rather than cached per table. Measured over
+    /// `bench/fixtures`: 940 calls rebuilding 871 KB in total, 262 KB on the
+    /// heaviest document, whose parse takes 300 ms. There is no cost here to
+    /// optimize away.
     fn table_carries(&self, ti: usize, text: &str) -> bool {
         let words: Vec<&str> = text.split_whitespace().collect();
         if words.is_empty() {
@@ -4115,6 +4136,44 @@ mod tests {
         let tables = detect_tables_from_positions(&texts, 1);
         assert_eq!(tables.len(), 1, "5 of 7 rows filled is a table");
         assert_eq!(tables[0].column_count, 9);
+    }
+
+    /// The narrowest genuine table in the corpus, at the shape that sets the
+    /// threshold.
+    ///
+    /// `korean_plan` p6 is a real 13-column table that fills 15 of its 29 rows —
+    /// 0.517, the low-water mark for genuine tables in `bench/fixtures`. It
+    /// cleared the original 0.5 threshold by half a row, so a single row losing
+    /// a cell would have thrown the table away. This pins the margin: raising
+    /// `MIN_DENSE_ROW_RATIO` back above 0.517 fails here.
+    #[test]
+    fn narrowest_genuine_table_keeps_its_margin() {
+        const XS: [f64; 13] = [
+            100.0, 140.0, 180.0, 220.0, 260.0, 300.0, 340.0, 380.0, 420.0, 460.0, 500.0, 540.0,
+            580.0,
+        ];
+        let mut texts = Vec::new();
+        let mut y = 700.0;
+        // 15 rows fill all 13 columns.
+        for _ in 0..15 {
+            texts.extend(runs(y, &XS));
+            y -= 10.0;
+        }
+        // 14 rows reach 6 of 13 — kept by the ≥2-cells filter, short of dense.
+        for _ in 0..14 {
+            texts.extend(runs(y, &XS[..6]));
+            y -= 10.0;
+        }
+
+        let tables = detect_tables_from_positions(&texts, 1);
+        assert_eq!(
+            tables.len(),
+            1,
+            "15 dense of 29 rows (0.517) is the corpus low-water mark for a genuine table, got {:?}",
+            tables.iter().map(|t| (t.column_count, t.rows.len())).collect::<Vec<_>>()
+        );
+        assert_eq!(tables[0].column_count, 13);
+        assert_eq!(tables[0].rows.len(), 29);
     }
 
     /// A table only suppresses the text it actually carries.
