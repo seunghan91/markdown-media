@@ -1314,14 +1314,14 @@ pub fn extract_cells(grid: &TableGrid, horizontals: &[LineSegment], verticals: &
             if occupied[r][c] {
                 continue;
             }
-            // colSpan
+            // colSpan, from row `r` alone — the rows below are not known yet,
+            // because rowSpan is what we work out next. The rowSpan loop
+            // re-checks this width against every row it takes.
             let mut col_span = 1;
             while c + col_span < num_cols {
                 if v_borders[r][c + col_span] {
                     break;
                 }
-                // require no vertical border across covered rows so far
-                cells_no_op();
                 col_span += 1;
             }
             // rowSpan
@@ -1329,6 +1329,19 @@ pub fn extract_cells(grid: &TableGrid, horizontals: &[LineSegment], verticals: &
             'outer: while r + row_span < num_rows {
                 for dc in 0..col_span {
                     if h_borders[r + row_span][c + dc] {
+                        break 'outer;
+                    }
+                }
+                // A row this cell would swallow can be divided where row `r` is
+                // not: partial rules give a row boundary that `h_borders` reads
+                // as open for these columns, and the row below it may still
+                // carry its own interior verticals. Taking it would merge cells
+                // the ruling lines hold apart, and `occupied` then hides them
+                // for good. Rare — 2 cells in `bench/fixtures` span both
+                // directions at all and neither trips this — but it is silent
+                // when it happens.
+                for dc in 1..col_span {
+                    if v_borders[r + row_span][c + dc] {
                         break 'outer;
                     }
                 }
@@ -1355,8 +1368,6 @@ pub fn extract_cells(grid: &TableGrid, horizontals: &[LineSegment], verticals: &
     }
     cells
 }
-#[inline]
-fn cells_no_op() {}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Text → cell assignment (simplified cellTextToString) and matrix build.
@@ -2025,6 +2036,51 @@ mod tests {
         // Top row: one cell spanning 2 cols. Bottom row: two unit cells.
         let top_span = cells.iter().find(|c| c.row == 0 && c.col == 0).unwrap();
         assert_eq!(top_span.col_span, 2, "missing middle border → colspan 2");
+    }
+
+    /// A rowspan must stop at a row that is divided where the first row is not.
+    ///
+    /// colSpan is settled on row `r` before rowSpan is known, so a cell that is
+    /// undivided on top can extend down over a row that carries its own
+    /// interior vertical. The cells under it get marked occupied and never
+    /// emitted — the merge is silent.
+    #[test]
+    fn rowspan_stops_at_a_row_the_cell_would_swallow() {
+        // 3 columns × 2 rows. Top row: no divider at x=100 (so colspan 2 over
+        // columns 0-1). The rule at y=100 covers only column 2, so the
+        // horizontal check leaves rows 0 and 1 joined for columns 0-1 — but the
+        // bottom row does have the divider at x=100.
+        let mut h = vec![hseg(0.0, 300.0, 0.0), hseg(0.0, 300.0, 200.0)];
+        h.push(hseg(200.0, 300.0, 100.0));
+        let v = vec![
+            vseg(0.0, 200.0, 0.0),
+            vseg(0.0, 100.0, 100.0),
+            vseg(0.0, 200.0, 200.0),
+            vseg(0.0, 200.0, 300.0),
+        ];
+        let grids = build_table_grids(&h, &v);
+        assert_eq!(grids.len(), 1);
+        let cells = extract_cells(&grids[0], &h, &v);
+
+        let top = cells
+            .iter()
+            .find(|c| c.row == 0 && c.col == 0)
+            .expect("top-left cell");
+        assert_eq!(top.col_span, 2, "top row has no divider at x=100");
+        assert_eq!(
+            top.row_span, 1,
+            "the bottom row is divided at x=100; the cell must not take it"
+        );
+        assert!(
+            cells.iter().any(|c| c.row == 1 && c.col == 0),
+            "bottom-left cell must survive, got {:?}",
+            cells.iter().map(|c| (c.row, c.col, c.row_span, c.col_span)).collect::<Vec<_>>()
+        );
+        assert!(
+            cells.iter().any(|c| c.row == 1 && c.col == 1),
+            "bottom-middle cell must survive, got {:?}",
+            cells.iter().map(|c| (c.row, c.col, c.row_span, c.col_span)).collect::<Vec<_>>()
+        );
     }
 
     #[test]
