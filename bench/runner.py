@@ -9,6 +9,9 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
+import shutil
+import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -45,6 +48,25 @@ def load_ground_truth(gt_root: Path, pdf_path: Path) -> str | None:
     return gt.read_text(encoding="utf-8") if gt.exists() else None
 
 
+def missing_binaries(adapters: dict) -> list[str]:
+    """Adapter binaries that are not there.
+
+    A binary that does not exist is not a slow run or a weak score — every
+    fixture comes back empty, every metric prints `-`, and the run still exits
+    0. The shipped `config.toml` points at `../core/target/release/hwp2mdm`,
+    which is wrong on any machine that sets `CARGO_TARGET_DIR` elsewhere, so
+    this is the default experience rather than an edge case.
+    """
+    out = []
+    for name, cfg in adapters.items():
+        binary = cfg.get("binary")
+        if not binary:
+            continue
+        if not Path(binary).exists() and shutil.which(binary) is None:
+            out.append(f"{name}: {binary}")
+    return out
+
+
 def run_one(adapter_name: str, adapter_cfg: dict, pdf: Path, category: str,
             gt: str | None, metric_names: list[str]) -> SampleResult:
     mod = importlib.import_module(adapter_cfg["module"])
@@ -74,6 +96,10 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = tomllib.loads(Path(args.config).read_text())
+    # Adapters the shipped config declares are the ones the gate judges.
+    # Anything `--config-local` adds is a comparison parser a developer
+    # installed locally, so its absence is their business, not a failed run.
+    gated_adapters = set(cfg.get("adapters", {}))
     if args.config_local and Path(args.config_local).exists():
         local = tomllib.loads(Path(args.config_local).read_text())
         for k, v in local.items():
@@ -84,12 +110,32 @@ def main() -> int:
 
     fx_root = Path(cfg["run"]["fixtures_root"])
     gt_root = Path(cfg["run"]["ground_truth_root"])
+    adapters = cfg.get("adapters", {})
+    metric_names = cfg.get("metrics", {}).get("enabled", [])
+
+    # Checked before a results directory exists — an empty run left on disk
+    # becomes the "latest" one the gate reads.
+    if not metric_names:
+        print("[metrics].enabled is empty — the run would score nothing.",
+              file=sys.stderr)
+        return 2
+
+    absent = missing_binaries({k: v for k, v in adapters.items() if k in gated_adapters})
+    if absent:
+        print("adapter binary not found — nothing would be measured:", file=sys.stderr)
+        for a in absent:
+            print(f"  {a}", file=sys.stderr)
+        print("Set it in config.local.toml ([adapters.<name>] binary = ...); "
+              "cargo puts the build wherever CARGO_TARGET_DIR points.", file=sys.stderr)
+        return 2
+    for a in missing_binaries({k: v for k, v in adapters.items() if k not in gated_adapters}):
+        print(f"note: local adapter binary not found, it will score nothing — {a}",
+              file=sys.stderr)
+
     out_root = Path(cfg["run"]["results_root"]) / datetime.now().strftime("%Y-%m-%d_%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)
 
     fixtures = discover_fixtures(fx_root)
-    adapters = cfg.get("adapters", {})
-    metric_names = cfg.get("metrics", {}).get("enabled", [])
 
     jobs = []
     with ThreadPoolExecutor(max_workers=cfg["run"]["parallel_workers"]) as ex:
@@ -142,6 +188,55 @@ def main() -> int:
     (out_root / "scoreboard.md").write_text("\n".join(lines))
     print(f"{len(results)} samples → {matrix_path}")
     print(f"scoreboard → {out_root / 'scoreboard.md'}")
+
+    # The results are still written — they are what you read to find out why —
+    # but the exit code has to say when nothing was measured, because the
+    # scoreboard says it with a dash and says it next to real numbers.
+    def unmeasured(r: SampleResult) -> bool:
+        if r.adapter not in gated_adapters:
+            return False
+        if r.exit_code != 0 or r.error:
+            # Checked before the reference, because a conversion that failed is
+            # a broken build or a broken PDF either way. With a reference it
+            # would score anyway — empty output is a finite BLEU 0 and CER 1,
+            # which reads as a very bad document rather than as no document.
+            return True
+        if load_ground_truth(gt_root, Path(r.fixture)) is None:
+            return False
+        # Every enabled metric, not merely some number: a metric that is absent
+        # drops out of the gate's comparison silently, since the gate can only
+        # compare what both sides have.
+        return any(
+            not isinstance(r.metrics.get(m), (int, float))
+            or not math.isfinite(float(r.metrics[m]))
+            for m in metric_names
+        )
+
+    if not results:
+        print("\nno samples — fixtures_root held no PDF, or no adapter was "
+              "configured. Nothing was measured.", file=sys.stderr)
+        return 2
+
+    unscored = [r for r in results if unmeasured(r)]
+    if unscored:
+        print(f"\n{len(unscored)} of {len(results)} samples were not fully "
+              f"measured:", file=sys.stderr)
+        for r in unscored[:5]:
+            bad = [m for m in metric_names
+                   if not isinstance(r.metrics.get(m), (int, float))]
+            nan = [m for m in metric_names
+                   if isinstance(r.metrics.get(m), (int, float))
+                   and not math.isfinite(float(r.metrics[m]))]
+            if r.error or r.exit_code != 0:
+                detail = r.error or f"exit {r.exit_code}"
+            elif nan:
+                detail = f"NaN: {', '.join(nan)}"
+            else:
+                detail = f"missing: {', '.join(bad)}"
+            print(f"  {r.adapter} {Path(r.fixture).stem}: {detail}", file=sys.stderr)
+        if len(unscored) > 5:
+            print(f"  … and {len(unscored) - 5} more", file=sys.stderr)
+        return 2
     return 0
 
 

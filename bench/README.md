@@ -55,19 +55,52 @@ that `.gitignore` already expects at `bench/.venv/`:
 cd bench
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python runner.py --config config.toml
 ```
 
-Without those libraries every metric silently comes back `nan` while the run
-still reports success — check the scoreboard, not the exit code.
+Then set the binary path. `config.toml` ships
+`binary = "../core/target/release/hwp2mdm"`, which is relative to the working
+directory and therefore wrong for any run started outside `bench/` — and wrong
+inside it too if `CARGO_TARGET_DIR` sends builds elsewhere. Put an absolute path
+in `config.local.toml`, which is gitignored:
+
+```toml
+[adapters.mdm]
+module = "adapters.mdm"
+binary = "/absolute/path/to/hwp2mdm"
+```
+
+Now run it from a directory that is **not** `bench/` and not above it. `nltk`
+refuses to import anything that resolves inside the working directory, `.venv`
+lives inside `bench/`, so a run started from `bench/` cannot import `regex` and
+every `bleu`/`rouge_l` comes back NaN. `PYTHONSAFEPATH` does not help — the
+package really is under the cwd, which is the thing being refused.
+
+The roots have to stay relative even so, or the fixture keys stop matching the
+baseline and the per-fixture level of the gate compares nothing. A directory of
+symlinks satisfies both. Set `BENCH` to this directory's absolute path:
+
+```bash
+BENCH=$PWD                       # from bench/
+mkdir -p "$BENCH/results" /tmp/mdmbench && cd /tmp/mdmbench
+for p in fixtures ground_truth results metrics.py; do ln -sfn "$BENCH/$p" .; done
+
+PYTHONPATH=$BENCH "$BENCH/.venv/bin/python" "$BENCH/runner.py" \
+  --config "$BENCH/config.toml" --config-local "$BENCH/config.local.toml"
+```
 
 `runner.py` takes only `--config` and `--config-local`; fixture and output roots
-come from the config file.
+come from the config file. It exits `2` instead of writing a green-looking run
+when an adapter binary is missing, when a conversion fails, or when a fixture
+that has a reference is not fully scored.
 
 ## The gate
 
+Run it from the same directory as the bench run — it reads `results/` and
+`metrics.py` relative to the cwd, not from the config:
+
 ```bash
-.venv/bin/python check_regression.py --baseline baseline-metrics.2026-08-03.json --config config.toml
+PYTHONPATH=$BENCH "$BENCH/.venv/bin/python" "$BENCH/check_regression.py" \
+  --baseline "$BENCH/baseline-metrics.2026-08-03.json" --config "$BENCH/config.toml"
 ```
 
 Three levels, because an aggregate hides things:
@@ -83,6 +116,17 @@ BLEU in a change whose mean went **up** 0.001. Tolerances are `slice_drop_max` a
 `fixture_drop_max` in `config.toml`.
 
 Exit codes: `0` pass, `1` regression, `2` gate blocked.
+
+`2` is the one to read carefully. It means no verdict was reached, which is not
+the same as passing, and every one of these used to print `all gates passed`:
+
+- a metric came back `nan`, so it was never measured — `nan` loses every
+  comparison, which the gate read as "no drop"
+- the run scored nothing at all
+- a comparison level had no baseline group in common with the run, so it
+  compared nothing while printing one `ok` per group it did have
+- `metrics.py` changed since the baseline was recorded, so the two are on
+  different scales
 
 ### Baselines
 

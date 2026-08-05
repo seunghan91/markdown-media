@@ -133,11 +133,12 @@ class TsedMetric:
     Returns 1 - editdist / max(|hyp_tree|, |ref_tree|), in [0, 1]."""
     name = "tsed"
     def score(self, hyp: str, ref: str) -> float:
-        try:
-            from apted import APTED
-            import mistune
-        except ImportError:
-            return 0.0
+        # Not caught: a missing dependency used to come back as 0.0, which is a
+        # real score — the worst one — so an uninstalled `apted` read as a
+        # document that matched nothing. `score_all` turns the raise into NaN
+        # plus an `_error`, which the runner and the gate both refuse to pass.
+        from apted import APTED
+        import mistune
         md = mistune.create_markdown(renderer=None)
         hyp_ast = md(_normalize(hyp)) or []
         ref_ast = md(_normalize(ref)) or []

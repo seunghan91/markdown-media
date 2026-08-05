@@ -4,7 +4,14 @@
   "commit": "a1386413a28d541bc8d579a9806cda1bfca483e5",
   "adapter": "mdm",
   "normalization": "image refs collapsed to <IMG:alt> in metrics._normalize (path dropped; alt/count/order preserved)",
-  "metrics_py_sha256_16": "dec360ebcdc3a7d3",
+  "metrics_py_sha256_16": "afc7a112e5e4d45c",
+  "metrics_py_sha256_16_history": [
+    {
+      "sha": "dec360ebcdc3a7d3",
+      "superseded": "2026-08-05",
+      "why": "TsedMetric stopped catching ImportError and returning 0.0 — a missing apted/mistune was scoring as a perfect mismatch instead of failing. Only the dependency-missing branch changed, so no score can move: re-measured all 16 fixtures x 5 metrics across 4 adapters before and after, every value identical to 1e-12. The hash was advanced rather than the scores re-recorded, so every floor in this file still describes a1386413."
+    }
+  ],
   "dependency_pins": {
     "apted": "1.0.3",
     "jiwer": "4.0.0",
