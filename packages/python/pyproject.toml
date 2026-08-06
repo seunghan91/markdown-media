@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "mdm-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "High-performance HWP/HWPX/PDF/DOCX to Markdown converter (Rust-powered)"
 license = {text = "MIT"}
 requires-python = ">=3.8"

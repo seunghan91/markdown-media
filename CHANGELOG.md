@@ -5,6 +5,84 @@ All notable changes to MDM are documented here. The format follows
 versioning applies to `mdm-core` (Rust crate) and `mdm-desktop` (Tauri
 app); sub-packages under `packages/` version independently.
 
+## [0.4.0] — 2026-08-06
+
+0.3.0 이후 72커밋. 아래 [0.3.1] 항목은 태그된 적이 없어 이 릴리스에
+함께 실린다.
+
+### ⚠️ Breaking
+
+- **이미지 참조 문법이 표준 CommonMark 로 바뀌었다** — `@[[image_N]]`
+  → `![alt](path)`. 출력 마크다운을 파싱하는 쪽은 수정이 필요하다.
+  코퍼스 기준 685곳이 해당된다.
+
+### 무언 소실 제거 — 이번 릴리스의 큰 줄기
+
+문서에 있는데 출력에 없던 것들을 형식별로 찾아 배선했다.
+
+- **본문 이미지 참조** — HWP(`bin_id`↔BinData 스트림 매핑) · HWPX(마커
+  치환 + 미참조 목록) · DOCX(`w:drawing` 앵커 파싱)
+- **도형 → SVG** — HWPX 도형 개체 단위 이미터(`shape_svg`), curv 3차
+  베지어·arc 실기하, container 그룹 도형, HWP v5 바이너리
+  `SHAPE_COMPONENT` 실측 레이아웃
+- **WMF/EMF → SVG** — rhwp WMF 파서 vendoring, 실패 시 원본 보존 폴백.
+  DOCX 미디어 화이트리스트에 EMF/WMF/TIFF 추가
+- **차트** — `chartSpace` → 마크다운 데이터 표 (HWPX·DOCX 공용)
+- **표 셀 안 도형** — HWPX 121건 해소
+- **캡션** — HWPX 그림·표 캡션을 alt/제목으로 승격 (ID 대신 원저자 캡션)
+
+### 이미지 속 텍스트
+
+- **OCR** — 전 포맷 이미지 OCR, 이미지 직후 배치
+- **QR 디코딩** — 코퍼스 최대 이미지 범주를 텍스트로
+
+### PDF 표 검출
+
+- 표 감지 **비결정성** 제거, 겹치는 표 영역의 텍스트 소실 수정
+- 페이지 테두리를 표로 오검출하던 그리드 기각
+- 데이터 행 없는 그리드는 표가 아니라 괘선 제목 상자로 (한국 정부문서
+  배너)
+- 산문을 격자에 흩뿌리던 클러스터 표를 **투영 밀도 게이트**로 차단.
+  임계는 코퍼스가 비워 둔 띠(0.286~0.517)의 중앙인 0.4
+- 표에 덮였다는 이유만으로 블록을 버리지 않음 (`table_carries`) —
+  코퍼스 텍스트 소실 14건 → 0건
+- `rowspan` 이 아래 행의 세로 경계를 넘어 셀을 삼키던 결함
+- 압축 이미지 XObject 를 PNG 로 감싸 실제로 열리게 (`.raw` 결함)
+
+### 벤치 하네스
+
+- `bench/` 신규 — 러너·지표(BLEU/ROUGE-L/CER/edit/TSED)·회귀 게이트,
+  overall/slice/fixture 3단계
+- 게이트가 **측정이 죽어도 통과를 찍던 경로 10종**을 exit 2 로 차단
+  (없는 binary · NaN 지표 · fixture 키 불일치 · 변환 실패 · 부분 지표 ·
+  baseline 부재 등)
+- ⚠️ `ground_truth/` 는 이 파서의 옛 출력이다. 점수는 품질이 아니라
+  드리프트를 잰다 — `bench/README.md` 참조
+
+### 바인딩·API
+
+- `packages/core-native` — WASM/Python 과 동일한 unified document API
+  (1.1.0), PR 마다 napi 바인딩 검증하는 CI
+- `packages/python` — `extract_images` 노출, PDF `convert_bytes` 가
+  `parse_from_memory` 사용
+- `api/` 를 mdm-core(PyPI) 위로 재작성 — 임시 파일과 레거시 Python
+  컨버터 제거
+
+### 데스크톱
+
+- **LaTeX 수식** — `pulldown-latex` → MathML, WebView 네이티브 렌더
+  (KaTeX/MathJax 의존성 없음)
+- vendored rhwp 기반 **HWP 편집/저장** 브리지, 뷰어 좌측 사이드바로
+  액션 통합, SVG 내보내기
+
+### 기타
+
+- HWPX 하이퍼링크 필드를 `[text](url)` 로, 한컴 실제 탭 형식
+  `<hp:tab width=…>` 인식
+- 병합 셀은 HTML `<table>` 로 emit
+- 본문 글꼴 Pretendard → SUIT (`font-display: swap`)
+- clippy 부채 107 → 0, CI clippy 게이트, MSRV 정정
+
 ## [0.3.1] — 2026-04-17
 
 ### 핵심 주제
