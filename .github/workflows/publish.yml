@@ -86,12 +86,17 @@ jobs:
     name: npm
     if: github.event.inputs.target == 'npm' || github.event.inputs.target == 'all' || github.event_name == 'release'
     runs-on: ubuntu-latest
+    # npm Trusted Publishing (OIDC): no NPM_TOKEN; needs id-token and npm >= 11.5.1.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      - run: npm install -g npm@latest
       - uses: dtolnay/rust-toolchain@stable
 
       # `core/pkg` is wasm-pack's output and is not in the repository, so the
@@ -102,16 +107,24 @@ jobs:
         run: |
           curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
           wasm-pack build core --target web --out-dir pkg
+      # wasm-pack names the package after the crate (`mdm-core`); the npm
+      # package and its Trusted Publisher entry are `@markdown-media/wasm`.
+      # Skip a version that is already on npm instead of hiding every failure.
       - name: Publish @markdown-media/wasm
         working-directory: core/pkg
-        run: npm publish --access public || true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm pkg set name=@markdown-media/wasm
+          V=$(node -p "require('./package.json').version")
+          if npm view "@markdown-media/wasm@$V" version >/dev/null 2>&1; then
+            echo "@markdown-media/wasm@$V already published, skipping"
+          else
+            npm publish --access public
+          fi
 
+      # Never published yet: OIDC cannot create a package, so the first
+      # release must be a manual `npm publish`, then add a Trusted Publisher.
       - name: Publish @markdown-media/viewer
         working-directory: packages/viewer-js
         run: |
           npm install
           npm publish --access public || true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

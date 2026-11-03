@@ -85,8 +85,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+
+      # npm Trusted Publishing (OIDC): no NPM_TOKEN; needs npm >= 11.5.1.
+      - run: npm install -g npm@latest
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -120,11 +123,7 @@ jobs:
               echo "Skipping $dir (no .node file)"
             fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish main package
         working-directory: ${{ env.WORKING_DIR }}
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
